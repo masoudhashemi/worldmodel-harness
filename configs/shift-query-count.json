@@ -1,0 +1,9 @@
+{
+  "shift_id": "salesforce-query-count-string",
+  "url": "https://yourinstance.salesforce.com/services/data/v61.0/query",
+  "method": "GET",
+  "field": "count",
+  "transformation": "integer_to_string",
+  "start_task_index": 0,
+  "after_matching_calls": 0
+}

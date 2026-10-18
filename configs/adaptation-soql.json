@@ -1,0 +1,12 @@
+{
+  "domain": "simple",
+  "goal": "Create a read-only retrieval_recipe to execute a caller-supplied Salesforce SOQL query using api_fetch GET and the documented salesforce.query URL. Bind params as JSON with q equal to inputs.query. Verify that the observed records field has type array, using predicate type and expected array; then stop. This only verifies a retrieval response, not a business task. Do not use hard-coded record values or write operations.",
+  "parameter_types": {"query": "string"},
+  "trials": [
+    {"task_name": "simple.email_sf_contact_title_update", "inputs": {"query": "SELECT Id, FirstName, LastName, Title FROM Contact"}},
+    {"task_name": "simple.email_sf_contact_city_update", "inputs": {"query": "SELECT Id, FirstName, LastName, MailingCity FROM Contact"}}
+  ],
+  "estimated_reuses": 100,
+  "estimated_saving_seconds_per_use": 1.0,
+  "max_validation_calls": 8
+}

@@ -1,0 +1,28 @@
+[project]
+name = "worldmodel-harness"
+version = "0.1.0"
+description = "Operational world-model research on the Stirrup harness"
+requires-python = ">=3.13"
+dependencies = ["stirrup[litellm,mcp]==0.2.0", "python-dotenv>=1.0,<2"]
+
+[project.optional-dependencies]
+automationbench = ["automation-bench @ git+https://github.com/zapier/AutomationBench.git@4a8e1061254004d9dac807054eed33fad7d1ff14"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[project.scripts]
+worldmodel = "worldmodel_harness.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = ["pytest>=8,<10", "ruff>=0.14"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
