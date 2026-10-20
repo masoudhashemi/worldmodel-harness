@@ -104,12 +104,15 @@ def extract_workflow_plan(
 
     # Also detect spreadsheet/worksheet prefixes (e.g. ss_bounce -> sheets, ws_bounces -> sheets)
     expanded_terms = set(q_terms)
+    active_services: set[str] = set()
     for w in raw_terms:
         if w.startswith("ss_") or w.startswith("ws_"):
             expanded_terms.add("sheets")
+            active_services.add("sheets")
         for k, v in SERVICE_SYNONYMS.items():
-            if k in w:
+            if w == k or (len(k) >= 4 and k in w):
                 expanded_terms.add(v)
+                active_services.add(v)
 
     # 2. Score candidate start nodes (readers) and target nodes (mutators)
     start_candidates: list[tuple[int, str, OperationNode]] = []
@@ -132,6 +135,9 @@ def extract_workflow_plan(
         if node.action_type == "read":
             start_candidates.append((score, nid, node))
         else:
+            # Target mutations must belong to an active service if any were identified
+            if active_services and node.service not in active_services:
+                continue
             target_candidates.append((score, nid, node))
 
     start_candidates.sort(reverse=True, key=lambda x: x[0])
@@ -171,12 +177,14 @@ def extract_workflow_plan(
         top_starts = [best_targets[0]]
 
     # 3. Find optimal path covering the start and target nodes
-    covering_result = graph.find_path_covering(top_starts, best_targets)
+    covering_result = graph.find_path_covering(
+        top_starts, best_targets, allowed_services=active_services or None
+    )
     if not covering_result:
-        # Fallback: check if the top start node can reach any target
+        # Fallback: check if the top start node can reach any target within allowed services
         for s in top_starts:
             for t in [nid for _, nid, _ in target_candidates[:3]]:
-                res = graph.shortest_path(s, t)
+                res = graph.shortest_path(s, t, allowed_services=active_services or None)
                 if res:
                     covering_result = res
                     break

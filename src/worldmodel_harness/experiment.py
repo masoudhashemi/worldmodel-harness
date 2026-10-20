@@ -163,7 +163,8 @@ class KnowledgeClient:
         selected_messages = list(messages)
         if self.settings.memory != "none":
             started = perf_counter()
-            query = " ".join(m["content"] for m in self.adapter.task.prompt)
+            user_msgs = [m["content"] for m in self.adapter.task.prompt if m.get("role") != "system"]
+            query = " ".join(user_msgs or [m["content"] for m in self.adapter.task.prompt])
             # Unexpected tool output can seed a new neighborhood, without reading hidden state.
             recent = [str(m.content) for m in messages[-3:] if m.role == "tool"]
             if self.settings.memory == "episodes":

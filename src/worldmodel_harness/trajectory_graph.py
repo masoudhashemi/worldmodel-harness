@@ -43,8 +43,6 @@ SERVICE_SYNONYMS = {
     "sheets": "sheets",
     "spreadsheet": "sheets",
     "spreadsheets": "sheets",
-    "ss": "sheets",
-    "ws": "sheets",
     "drive": "google_drive",
     "files": "google_drive",
     "file": "google_drive",
@@ -53,16 +51,14 @@ SERVICE_SYNONYMS = {
     "emails": "gmail",
     "mail": "gmail",
     "gmail": "gmail",
-    "messages": "gmail",
-    "message": "gmail",
+    "draft": "gmail",
+    "drafts": "gmail",
     "mailchimp": "mailchimp",
     "subscriber": "mailchimp",
     "subscribers": "mailchimp",
     "bounce": "mailchimp",
     "bounces": "mailchimp",
     "asana": "asana",
-    "task": "asana",
-    "tasks": "asana",
     "slack": "slack",
     "channel": "slack",
     "chat": "slack",
@@ -151,7 +147,9 @@ class TrajectoryGraph:
     def neighbors(self, node_id: str) -> list[str]:
         return list(self.edges.get(node_id, {}).keys())
 
-    def shortest_path(self, start: str, target: str) -> tuple[list[str], float] | None:
+    def shortest_path(
+        self, start: str, target: str, allowed_services: set[str] | None = None
+    ) -> tuple[list[str], float] | None:
         """Dijkstra shortest path minimizing cumulative transition cost (-ln P)."""
         if start == target:
             return [start], 0.0
@@ -175,6 +173,10 @@ class TrajectoryGraph:
             if d > dist.get(u, float("inf")):
                 continue
             for v, edge in self.edges.get(u, {}).items():
+                v_node = self.nodes.get(v)
+                if v_node and allowed_services is not None:
+                    if v_node.service not in allowed_services and v_node.node_id != "base64_encode":
+                        continue
                 new_d = d + edge.cost
                 if new_d < dist.get(v, float("inf")):
                     dist[v] = new_d
@@ -184,7 +186,10 @@ class TrajectoryGraph:
         return None
 
     def find_path_covering(
-        self, starts: list[str], targets: list[str]
+        self,
+        starts: list[str],
+        targets: list[str],
+        allowed_services: set[str] | None = None,
     ) -> tuple[list[str], float] | None:
         """Find the lowest-cost path starting from one of `starts` covering `targets`."""
         if not targets:
@@ -222,7 +227,7 @@ class TrajectoryGraph:
                 for tgt in ordered_targets:
                     if curr == tgt:
                         continue
-                    segment = self.shortest_path(curr, tgt)
+                    segment = self.shortest_path(curr, tgt, allowed_services=allowed_services)
                     if segment is None:
                         possible = False
                         break
@@ -241,7 +246,7 @@ class TrajectoryGraph:
         # Fallback: try individual shortest paths to any reachable target
         for s in valid_starts:
             for tgt in valid_targets:
-                res = self.shortest_path(s, tgt)
+                res = self.shortest_path(s, tgt, allowed_services=allowed_services)
                 if res is not None:
                     return res
 
