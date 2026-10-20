@@ -72,7 +72,7 @@ def retrieve(
         base = focus * 100 + local * 4 + overlap
         actionable = (
             2
-            if claim.relation in ("tested_response_rule", "endpoint_contract")
+            if claim.relation in ("tested_response_rule", "endpoint_contract", "contrastive_precondition")
             or claim.payload.get("response_rule") is not None
             else (1 if claim.payload.get("workspace_fact") else 0)
         )
@@ -96,11 +96,11 @@ def retrieve(
             c
             for c in candidates.values()
             if c.claim_id not in queued
-            and c.relation == "endpoint_contract"
+            and c.relation in ("endpoint_contract", "contrastive_precondition")
             and c.status == "supported"
             and not c.needs_review
             and (c.valid_until is None or c.valid_until > now)
-        ]
+        ][:2]
     )
     ranked.extend(
         sorted(
@@ -141,7 +141,8 @@ def retrieve(
             continue
         combined = {**selected, **bundle}
         if sum(len(c.model_dump_json()) for c in combined.values()) > max_chars:
-            gaps.add(f"budget:{seed.claim_id}")
+            if seed.claim_id in initial_seeds:
+                gaps.add(f"budget:{seed.claim_id}")
             continue
         selected = combined
         if expand and seed.claim_id in initial_seeds:

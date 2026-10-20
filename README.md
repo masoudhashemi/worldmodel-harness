@@ -41,11 +41,8 @@ binding requires one exact scalar-value source plus matching target identity and
 records its provenance. Kind predicates cannot verify literal task outcomes.
 Conflicting same-route alias schemas stay separate and are reported with scope.
 See [design boundaries](docs/system-design.md#value-abstraction-and-binding-safeguards-v34).
-
-[Tests](docs/value-binding-safeguards-test-results.md): 292 offline tests and lint
-pass. Four free-model smoke attempts passed all final-state grades, but all timed
-out with zero checked finishes. No automatic source binding fired live. These are
-safety improvements, **not demonstrated performance or reliability improvements**.
+Kind predicates cannot verify literal task outcomes. These checks are safety
+constraints on what may be stored, not a measured performance improvement.
 
 ### Direct verification (v3.3 / v3.3.1)
 
@@ -54,20 +51,7 @@ dispatch. Source checks use task-grounded identity plus observed content; effect
 checks use a grounded desired value, current read, and same-record identity.
 Failed updates retain pending requirements and a dedicated audit survives timeout.
 No benchmark answers or grader feedback are installed in this mechanism.
-
-The [two-run v3.3 probe](docs/verification-v33-probe-results.md) had zero schema
-rejections but zero checked finishes: both final states passed and both sessions
-timed out on anchor/evidence assembly. Historical v3.3.1 adds actionable anchor feedback
-and permits repair of an unverified anchor. The subsequent
-[current-code test](docs/current-verification-test-results.md) passed 275 offline
-tests and both final-state grades, but both live sessions timed out with no checked
-finish. One source verification succeeded; duplicate pending requirements and
-identity/anchor assembly still blocked completion. The subsequent
-[12-run current v3.3.1 comparison](docs/current-code-12-run-results.md) found empty
-versus learned grader success of 6/6 versus 5/6 and zero checked finishes in both
-arms. Learned memory reduced discovery calls (34 to 19), but ambiguous contracts
-blocked one task and source/effect verification remained incomplete. This does not
-establish improved reliability. See
+Anchors can be repaired until they match, then they stay fixed. See
 [design and limitations](docs/system-design.md#direct-sourceeffect-verification-v33).
 
 ### Operational-learning v3.1 repair and reliability pilot
@@ -79,40 +63,26 @@ the declared verification URL. Presence/type-only predicates, write acknowledgme
 self-grounding, and changed targets cannot establish completion. Invalid paths,
 uncovered paths, and stale observations now have separate diagnostics. See
 [verification scope and limits](docs/system-design.md#implemented-outcome-verification-v32).
-The v3.1 measurements below are historical; the separate v3.2 follow-up is linked below.
 Target paths can be repaired without changing the desired value/resource/grounding.
-Offline verification: 263 tests pass. The [v3.2 live experiment](docs/verification-v32-experiment-results.md)
-completed twelve free-model trials with the same inputs and budgets: 10/12 grader
-passes but **0/12 checked finishes**, ten timeouts, one turn-limit failure and one
-unresolved finish. Schema repair loops and source-grounding difficulties remain;
-the stronger verifier has not demonstrated a usable completion loop. Do not expand
-the benchmark on the strength of offline tests alone. See its
-[predeclared plan](docs/verification-v32-experiment-plan.md).
+Offline tests cover the verifier. A past live pilot is not retained here and is not
+evidence that the stronger checks produce a usable completion loop.
 
-The [checkpoint reliability plan](docs/checkpoint-reliability-plan.md) tests two
-tasks from empty and learned graph checkpoints with three reset replicates each.
-See the [results and limitations](docs/checkpoint-reliability-results.md). This is
-an explicit in-sample checkpoint protocol, not independent frozen transfer or a
-learning curve. Every trial uses a disposable working copy; source checkpoints
-are hashed and unchanged.
+Checkpoint reliability repeats fixed tasks from an empty store and from a saved
+store. Each trial uses a disposable working copy; the source checkpoint stays
+unchanged. That protocol measures in-sample repeat agreement. It is not independent
+frozen transfer or a learning curve.
 
 The repairs add field/schema feedback at both validation boundaries, array-index
 evidence paths, explicit historical/current goal evidence, conservative
 service/dependency write invalidation, and executable semantic-rule testability
 checks. These are generic interface and evidence repairs, not task-specific
-solutions. Offline verification: 250 tests. Model-selected goal coverage and
-coarse freshness/path diagnostics remain limitations; entirely malformed root
-tool-call JSON can still fail before dispatch in the SDK renderer.
-
-Completed free-model pilot: both checkpoints passed 6/6 final-state grades;
-learned memory finished cleanly 6/6 versus 4/6 from empty memory, with 19 versus
-26 discovery calls. One learned finish used only response-presence predicates,
-so its nominal `checked` status is not value-specific verification. This tiny
-in-sample comparison is not proof of generalization or a monotonic learning curve.
+solutions. Model-selected goal coverage and coarse freshness/path diagnostics remain
+limitations; entirely malformed root tool-call JSON can still fail before dispatch
+in the SDK renderer.
 
 ### Free model for live integration tests
 
-The `smoke` command defaults to [model-free-test.toml](configs/model-free-test.toml). Use the explicit profile override for other integration tests, while [model.toml](configs/model.toml) preserves the Qwen research configuration:
+The `smoke` command defaults to [model-free-test.toml](configs/model-free-test.toml). The default [model.toml](configs/model.toml) also uses free Nemotron. The explicit profile override keeps test selection unambiguous:
 
 ```sh
 WORLDMODEL_MODEL_CONFIG=configs/model-free-test.toml uv run worldmodel smoke
@@ -123,29 +93,13 @@ The override is root-relative and applies to acting, semantic-learning/review an
 
 OpenRouter lists this endpoint as free with tool/structured-output support, subject to availability/rate limits. Its endpoint notice prohibits confidential/personal data; use synthetic fixtures and appropriate public benchmark examples only. Credentials are loaded separately from `.env`, not included in prompts or reports. [Endpoint and data-use notice](https://openrouter.ai/nvidia/nemotron-3-super-120b-a12b:free).
 
-The free-model ticket smoke test [4aebb9962cc245c095ff885ca2bacae6](runs/4aebb9962cc245c095ff885ca2bacae6/summary.json) passed with four model calls and three environment calls (4,216 returned tokens). An operational test exposed double-serialized nested action objects. The compact input parser now decodes that one JSON boundary and then applies the unchanged action schema and dispatch gate; malformed objects remain rejected and API argument strings are not recursively rewritten.
-
-The subsequent one-task operational/semantic diagnostic [0f3a1b9055514b6b98212e8776f71bd7](runs/0f3a1b9055514b6b98212e8776f71bd7/summary.json) made eight environment calls and 15 acting-model calls; it retained three hypotheses and reviewed all three. The final-state grader scored 1.0, **but the session did not finish cleanly**: the synchronous completion callback accessed SQLite from Stirrup's worker thread and raised `ProgrammingError`. The callback is now async and a real-Stirrup scripted regression test passes. The later small-sample pilot exercised checked completion successfully without this threading error. The original saved diagnostic remains an execution-error result, and its task checks were unresolved; neither the grade nor plausible hypothesis reviews establish successful verification or learned improvement.
-
-### Small-sample mechanism diagnostic (free model)
-
-The [prospective experiment plan](docs/small-sample-experiment-plan.md) and
-[results](docs/small-sample-experiment-results.md) cover two synthetic tasks across
-five conditions (ten executions). All final-state grades passed; basic execution
-finished 2/2, fresh operational conditions finished 0/2 each, and learned graph replay
-finished 2/2 with matched task checks. Replay used fewer acting tokens than fresh
-operational/semantic runs but more than the simple baseline. Semantic timeouts and
-untestable rule specifications occurred in those historical runs; procedure construction/reuse was not exercised.
-This is a diagnostic learning signal, not demonstrated causal benefit or generalization.
-The stopped 50-task run was not resumed and no paid fallback was used.
+The compact input parser decodes one extra JSON boundary around a nested action object, then applies the unchanged action schema and dispatch gate. Malformed objects remain rejected, and API argument strings are not recursively rewritten. The completion callback is async so it does not touch SQLite from Stirrup's worker thread.
 
 Graph sharing works for environment-level contracts and structural claims; semantic
-hypotheses are currently restricted by task-name-as-tenant scope. Future reliability
+hypotheses are currently restricted by task-name-as-tenant scope. Reliability
 measurement should use **pass^k at fixed graph/harness checkpoints**, with reset
-replicates and an explicit in-sample protocol. The ten changing-condition executions
-must not be pooled as standard pass^k/pass@k trials. See the plan for formulas and the
-independent frozen-runner overlap restriction. The v3.1 follow-up above adds an
-explicit isolated in-sample checkpoint mode and reports the completed measurement.
+replicates and an explicit in-sample protocol. Changing online graph states must
+not be pooled as standard pass^k/pass@k trials.
 
 ### Current acceptance experiment: learn on the same 50 tasks
 
@@ -425,13 +379,13 @@ not evidence of better discovery or task performance.
 
 Use **Stirrup** as the existing benchmark execution harness, with its **LiteLLM** client routing model calls through **OpenRouter**. Our contribution is the operational world model and its retrieval, learning, and execution-support adaptation, not a new general-purpose agent loop.
 
-The preserved research model is **Qwen3.8 27B**, configured as `openrouter/qwen/qwen3.8-27b` in [configs/model.toml](configs/model.toml). Live tests use the separate free Nemotron profile described above; `smoke` defaults to it. The `openrouter/` prefix is LiteLLM's provider-routing prefix, not part of OpenRouter's native model ID.
+The default model is **Nemotron 3 Super 120B A12B (free)**, configured as `openrouter/nvidia/nemotron-3-super-120b-a12b:free` in [configs/model.toml](configs/model.toml). The live smoke test passed on 2026-10-18. All model-based tests use free Nemotron. The previous Qwen settings are preserved in [configs/model-qwen.toml](configs/model-qwen.toml) for explicit selection; there is no automatic paid-model fallback. The `openrouter/` prefix is LiteLLM's provider-routing prefix, not part of OpenRouter's native model ID.
 
 Model tests load `OPENROUTER_API_KEY` from the repository-root `.env`; an explicitly supplied environment variable takes precedence. Never print credentials, include them in model context, or save them in experiment metadata. `.env` is excluded by `.gitignore`. The configuration loader validates routing and budgets and keeps credentials separate from saved settings.
 
 Before benchmark runs, make generation limits, reasoning settings, context-management policy, retries, and tool access explicit and matched across experimental arms. Do not silently substitute another model on failure. Benchmark adapters must expose only permitted tools and keep hidden scoring information outside agent context.
 
-References: [Stirrup](https://github.com/ArtificialAnalysis/Stirrup), [LiteLLM OpenRouter configuration](https://docs.litellm.ai/docs/providers/openrouter), [selected OpenRouter model](https://openrouter.ai/qwen/qwen3.8-27b).
+References: [Stirrup](https://github.com/ArtificialAnalysis/Stirrup), [LiteLLM OpenRouter configuration](https://docs.litellm.ai/docs/providers/openrouter), [selected OpenRouter model](https://openrouter.ai/nvidia/nemotron-3-super-120b-a12b:free).
 
 ### Running the initial implementation
 
@@ -558,28 +512,7 @@ interruptions; `information_invocations_by_tool` and `information_audit` expose
 that distinction. These invocation counts are not environment-call counts or
 evidence that an uncertainty was resolved.
 
-Passing integration tasks establishes plumbing, not the hypothesis that learned graphs or adaptation improve task-stream value. In the first development smoke comparison, graph-context use increased calls and token usage; retrieval and reuse must earn their costs in subsequent controlled tests.
-
-Initial live integration observations (Qwen3.8 27B via LiteLLM/OpenRouter; one run each, not statistically controlled results):
-
-| Run | Task / mode | Upstream strict pass | Partial credit | Environment calls |
-| --- | --- | --- | --- | --- |
-| `4927e761129e486f9406c0089829b06f` | Simple phone update, no memory | Yes | 1.0 | 8 |
-| `5f1ced87303b4fe19fb15df2e531f4b1` | Same development task, graph access | Yes | 1.0 | 9 |
-| `0179af65f6b74e1c82f0fab9d4a6190b` | Different simple email update, frozen transfer | Yes | 1.0 | 5 |
-| `9b2f7800da9b4f79953600af31a1288f` | Sales multi-hop lookup, frozen transfer | **No** | 2/3 | 33 |
-
-The development store retained 16 documented endpoint contracts. Frozen tasks used that store read-only. The sales run used 274,172 input tokens and 12,136 output tokens (including reasoning); success and costs both need improvement. The two different simple tasks are not a paired efficiency comparison. All four tasks are exploratory development/integration checks and must not later be presented as untouched final-test evidence. Full logs and summaries are local under `runs/`; they are not tracked source artifacts.
-
-After behavioral integration, development run `6213decbc93546678b81de1aee4efa13` passed both simple phone/email tasks and retained 42 interface/behavior claims. Frozen run `3de0a3198f59415fabf4d59416617173` passed a different simple title-update task with five environment calls, 35,096 input tokens, and 918 output tokens. It assessed 27 output-type predictions across three calls; these are correlated field checks, not 27 independent experiments. The development SQLite file's SHA-256 was identical before/after frozen evaluation (`11f10819226d5486b1e425ffa4b38065fb2482079ac1dd0159484b608ee5551f`). These checks establish that learned structural predictions are exercised without mutating frozen knowledge, not that graph organization or adaptation improves value.
-
-Information-tool integration run `42a778250b7441a4ba382d88ada8b64c` used Qwen3.8-27B through LiteLLM/OpenRouter and passed the simple phone-update task with eight environment calls and 45,179 total tokens. The model chose ordinary discovery (three calls), with **zero `inspect_contract` invocations**. Direct adapter tests exercise the new probe/refresh path against the actual AutomationBench API; the live run establishes compatibility, not use or exploration benefit.
-
-Composition replay `bd6d11978bf8421b98162b3f5ac37547` used a separate copy of the existing two-task development store and recovered two `gmail.users.messages.list → gmail.users.messages.get` connections (`messages.*.id → path.id`). Both remain hypotheses because the observed request shapes differ. This is retrospective observation analysis, not counterfactual validation or a new model run. A deterministic integration test also executes fresh upstream list/get calls and checks that the resulting connection contains no live message ID.
-
-Multi-call adaptation run `01d2231fb0c047e6a226221a74ca45e2` adopted `gmail-find-first-message` after two fresh-world validations (four underlying API calls). The successful proposal used 9,688 input, 1,313 answer, and 10,000 reasoning tokens; its recorded adaptation time was about 51 seconds. An earlier 8,192-token proposal exhausted its output allowance; its provider usage and elapsed proposal cost were not retained. Failure accounting now retains elapsed proposal cost, but billing for SDK failures and cross-attempt construction-cost aggregation remain incomplete. The adoption gate's 100 anticipated uses × 1 second saved is an assumption, not measured benefit.
-
-Frozen adaptive run `7c2784dbfb474be4957fba026c20d450` passed the different mobile-update task with eight environment calls and 63,629 total tokens. It invoked the **existing Salesforce retrieval recipe twice**, both verified; evidence includes artifact execution/step provenance. The new Gmail recipe was offered but not selected. This demonstrates runtime artifact reuse, not multi-call recipe selection or a net improvement over a matched baseline.
+Passing integration tasks establishes plumbing, not the hypothesis that learned graphs or adaptation improve task-stream value. New runs write summaries under `runs/<run-id>/`. That directory is local and is not a tracked source artifact.
 
 ## The argument
 
@@ -622,3 +555,16 @@ The mathematical hierarchy is [common framework](docs/formulations.md#part-i-sta
 - [Comparison with neighboring formulations](docs/literature-and-formulation.md#1-closest-conceptual-and-methodological-references)
 
 Figures use editable Mermaid diagrams embedded in Markdown.
+
+### Iterative evaluation
+
+The same tasks run once per iteration. `reset` starts every task from an empty graph. `learn` keeps one graph across every domain, task, and iteration, so a later run can reuse a contract found earlier. Both arms can still learn within a task. The grader runs afterward and its score is not written into the graph.
+
+```sh
+WORLDMODEL_MODEL_CONFIG=configs/model-qwen.toml .venv/bin/python scripts/iterative_eval.py runs/iterative-public
+.venv/bin/python scripts/analyze_iterations.py runs/iterative-public
+```
+
+Use a new output directory. The runner refuses to overwrite one. The default samples five tasks from each of the six public domains and repeats that list for five iterations: 30 tasks, two arms, 300 executions. Each task gets 50 turns and no added wall-clock or environment-call cap. Repeat `--task NAME` to fix the list, or pass `--domain simple --per-domain 5` for a smaller slice. `--semantic-learning` adds consolidation; it is off unless requested. The model must be the Qwen profile in [configs/model-qwen.toml](configs/model-qwen.toml).
+
+After each task the script appends `results.jsonl` and rewrites `summary.json`. Read accuracy first. If the learn arm's strict accuracy is below the reset arm on the latest iteration, fewer discovery calls are not a win. Flat accuracy with fewer discovery calls is an efficiency win. The target pattern is strict accuracy rising across iterations while discovery calls fall and task outcomes stay at least as accurate as the reset arm. One stream does not establish that a particular learned claim caused the change.

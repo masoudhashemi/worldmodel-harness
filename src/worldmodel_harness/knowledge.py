@@ -9,7 +9,7 @@ from enum import StrEnum
 from typing import Annotated, Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 def utc_now() -> datetime:
@@ -95,6 +95,21 @@ class OutputExpectation(Record):
     path: tuple[str | Annotated[int, Field(strict=True, ge=0)], ...] = ()
     predicate: Literal["equals", "present", "type", "format"] = "equals"
     expected: Any = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_expectation(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            data = dict(data)
+            if "path" in data and isinstance(data["path"], (str, int)):
+                data["path"] = (data["path"],)
+            if "type" in data:
+                type_val = data.pop("type")
+                if "predicate" not in data or data["predicate"] == "equals":
+                    data["predicate"] = "type"
+                if "expected" not in data or data["expected"] is None:
+                    data["expected"] = type_val
+        return data
 
 
 class Episode(Record):

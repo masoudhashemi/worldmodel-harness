@@ -13,23 +13,28 @@ class ModelSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     client: str = "litellm"
-    name: str = "openrouter/qwen/qwen3.8-27b"
+    name: str = "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
     api_base: str = "https://openrouter.ai/api/v1"
     api_key_env: str = "OPENROUTER_API_KEY"
     dotenv_path: str = ".env"
     max_tokens: int = Field(default=2048, gt=0)
-    context_window_tokens: int = Field(default=32768, gt=0)
+    context_window_tokens: int = Field(default=262144, gt=0)
     temperature: float = Field(default=0.0, ge=0, le=2)
-    timeout_seconds: float = Field(default=45.0, gt=0)
+    timeout_seconds: float = Field(default=60.0, gt=0)
     reasoning_effort: Literal["xhigh", "medium", "low", "none"] | None = None
     json_mode: bool = False
 
     @model_validator(mode="after")
     def validate_routing(self):
-        if self.client != "litellm" or not self.name.startswith("openrouter/"):
-            raise ValueError("This runtime requires LiteLLM OpenRouter routing")
-        if self.api_base != "https://openrouter.ai/api/v1":
-            raise ValueError("Credentials may only be sent to the configured OpenRouter endpoint")
+        if self.client != "litellm":
+            raise ValueError("This runtime requires LiteLLM routing")
+        if self.name.startswith("openrouter/"):
+            if self.api_base != "https://openrouter.ai/api/v1":
+                raise ValueError("OpenRouter models require https://openrouter.ai/api/v1")
+        elif "elementai.com" in self.api_base or self.name.startswith("openai/"):
+            pass
+        else:
+            raise ValueError("This runtime requires LiteLLM OpenRouter or Element AI routing")
         if self.max_tokens >= self.context_window_tokens:
             raise ValueError("Output budget must be smaller than context budget")
         return self

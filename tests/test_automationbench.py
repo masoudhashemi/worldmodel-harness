@@ -7,7 +7,13 @@ pytest.importorskip("automationbench")
 
 from worldmodel_harness.automationbench import AutomationBenchAdapter, dataset
 from worldmodel_harness.budget import BudgetExceeded, Ledger
+from worldmodel_harness.experiment import (
+    ExperimentSettings,
+    attach_validation_score,
+    learns_from_trajectories,
+)
 from worldmodel_harness.learning import Learner
+from worldmodel_harness.retrieval import retrieve
 from worldmodel_harness.store import KnowledgeStore
 
 
@@ -112,6 +118,54 @@ def test_actual_message_list_to_get_learns_structural_connection(tmp_path):
         assert flows[0].payload["input_path"] == "path.id"
         assert identifier not in flows[0].model_dump_json()
         assert adapter.ledger.environment_calls == 4
+        store.close()
+
+    asyncio.run(scenario())
+
+
+def test_train_and_test_learn_from_trajectories_without_validation_scores(tmp_path):
+    async def scenario():
+        from automationbench.tools.api import api_search
+
+        assert learns_from_trajectories("train")
+        assert learns_from_trajectories("test")
+        assert not learns_from_trajectories("frozen")
+        ExperimentSettings(phase="train")
+        ExperimentSettings(phase="test")
+        store = KnowledgeStore(tmp_path / "knowledge.sqlite")
+        training = json.loads(json.dumps(dataset("simple")[0]))
+        training_info = json.loads(training["info"])
+        training_info["assertions"] = []
+        training["info"] = json.dumps(training_info)
+        trained = AutomationBenchAdapter(
+            training, "simple", store, Ledger(), Learner(store), store
+        )
+        await trained.execute(api_search, {"query": "salesforce contacts", "top_k": 2})
+        train_report = {}
+        attach_validation_score(train_report, trained)
+        assert train_report == {
+            "validation_scores_used_for_learning": False,
+            "validation_available": False,
+        }
+        learned = store.claims()
+        assert learned
+        assert "partial_credit" not in store.db.execute(
+            "SELECT group_concat(body) FROM claims"
+        ).fetchone()[0]
+
+        later = AutomationBenchAdapter(
+            dataset("simple")[1], "simple", store, Ledger(), Learner(store), store
+        )
+        carried = store.claims(later.scope)
+        assert {c.claim_id for c in learned} <= {c.claim_id for c in carried}
+        retrieve(store, later.scope, later.task.prompt[0]["content"], live=later.live)
+        scored = {}
+        attach_validation_score(scored, later)
+        assert scored["validation_available"] is True
+        assert "partial_credit" in scored
+        assert "partial_credit" not in store.db.execute(
+            "SELECT group_concat(body) FROM claims"
+        ).fetchone()[0]
         store.close()
 
     asyncio.run(scenario())

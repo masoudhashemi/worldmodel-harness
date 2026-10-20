@@ -694,3 +694,67 @@ def test_real_stirrup_outer_schema_repairs_without_execution(tmp_path, bad_argum
 
     asyncio.run(run())
     assert len(invocations) == 1
+
+
+def test_terminal_brace_suggestion_requires_resubmission_before_execution(tmp_path):
+    from stirrup.core.models import AssistantMessage, ToolCall, ToolResult, UserMessage
+
+    from worldmodel_harness.decisions import CompactDecision
+    from worldmodel_harness.repairing_agent import RepairingAgent
+
+    original = {"tool": "api_fetch", "arguments": {"method": "POST", "url": "https://example.test/tasks",
+                "body": json.dumps({"data": {"name": "Quoted 'task'", "workspace": "workspace_7"}})}}
+    malformed = json.dumps({"action": json.dumps(original)[:-1], "goal": "Create requested task"})
+    invocations = []
+
+    async def execute(params):
+        invocations.append(params.action)
+        return ToolResult(content="created")
+
+    tool = Tool(name="execute_decision", description="guarded", parameters=CompactDecision, executor=execute)
+    finish = Tool(name="finish", description="done", parameters=Record, executor=lambda _: ToolResult(content="done"))
+
+    class Client:
+        model_slug = "scripted"
+        context_window_tokens = 32768
+        calls = 0
+
+        async def generate(self, messages, tools):
+            self.calls += 1
+            if self.calls == 1:
+                name, args = tool.name, malformed
+            elif self.calls == 2:
+                assert invocations == []
+                failure = next(m for m in reversed(messages) if m.role == "tool")
+                details = json.loads(failure.content)
+                assert details["environment_called"] is False
+                assert details["suggested_arguments"]["action"] == original
+                name, args = tool.name, json.dumps(details["suggested_arguments"])
+            else:
+                assert len(invocations) == 1
+                name, args = "finish", "{}"
+            return AssistantMessage(blocks=[ToolCall(name=name, arguments=args)])
+
+    async def run():
+        agent = RepairingAgent(client=Client(), name="brace-repair", tools=[tool], finish_tool=finish,
+                               max_turns=4, repair_schemas={tool.name: tool.parameters, finish.name: finish.parameters})
+        async with agent.session(output_dir=tmp_path/'session') as session:
+            result, _, _ = await session.run([UserMessage(content="Exercise syntax repair")])
+        assert result is not None
+        assert len(agent.outer_validation_audit) == 1
+
+    asyncio.run(run())
+    assert len(invocations) == 1
+    assert invocations[0].arguments == original["arguments"]
+
+
+@pytest.mark.parametrize("action", ['{"tool":"api_fetch","arguments":{"body":"unfinished',
+                                    '{"tool":"api_fetch" "arguments":{}}',
+                                    '{"tool":"api_fetch","arguments":{',
+                                    '{"tool":"api_fetch"',
+                                    '{"tool":"api_fetch","arguments":{}}'])
+def test_suggestion_does_not_guess_missing_values_or_interior_syntax(action):
+    from worldmodel_harness.decisions import CompactDecision
+    from worldmodel_harness.repairing_agent import suggested_arguments
+
+    assert suggested_arguments(CompactDecision, json.dumps({"action": action})) is None

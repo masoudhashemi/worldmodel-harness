@@ -113,11 +113,11 @@ def retain_hypotheses(proposal, episodes, store, scope):
             hypothesis.relation == "possible_identity_mapping"
             and len(hypothesis.participants) >= 2
         )
-        # Parameterized rules and symbolic workspace identity mappings can be surfaced/tested
-        # across tasks in the same environment; unparameterized rules remain tenant-scoped.
+        # Parameterized rules may transfer; concrete workspace identities stay tenant-scoped.
         if (
             hypothesis.response_rule is not None and is_parameterized_rule(hypothesis.response_rule)
-        ) or is_workspace_mapping:
+            and not is_workspace_mapping
+        ):
             claim_scope = env_scope
         else:
             claim_scope = scope if tenant_scope.tenant is None else tenant_scope
@@ -360,6 +360,7 @@ def hypothesis_context(store, scope, query, *, max_chars=2400):
         for c in store.claims(scope)
         if c.status == "hypothesis"
         and (not c.needs_review or c.payload.get("workspace_fact"))
+        and (not c.payload.get("workspace_fact") or c.payload.get("source_tenant") == scope.tenant)
         and c.payload.get("semantic_review", {}).get("verdict")
         not in {"counterevidence", "internally_inconsistent"}
         and c.relation.startswith("possible_")

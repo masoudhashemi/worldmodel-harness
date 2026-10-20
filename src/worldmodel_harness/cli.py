@@ -24,7 +24,9 @@ def main() -> None:
     parser.add_argument("--offset", type=int, default=0)
     parser.add_argument("--task", action="append", default=[])
     parser.add_argument(
-        "--phase", choices=["development", "frozen", "online", "checkpoint"], default="development"
+        "--phase",
+        choices=["development", "frozen", "online", "checkpoint", "train", "test"],
+        default="development",
     )
     parser.add_argument("--memory", choices=["none", "episodes", "flat", "graph"], default="graph")
     parser.add_argument("--knowledge", type=Path)

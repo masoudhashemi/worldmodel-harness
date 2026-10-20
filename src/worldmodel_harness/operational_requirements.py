@@ -15,7 +15,7 @@ def api_requirements(
     store: KnowledgeStore, scope: Scope, action: ProposedAction
 ) -> ActionRequirements:
     if action.tool != "api_fetch":
-        return ActionRequirements()
+        return ActionRequirements(operation_id=action.tool)
     method = action.arguments.get("method", "GET").upper()
     url = action.arguments.get("url", "")
     # Query/fragment text does not change endpoint identity. Preserve the actual
@@ -51,4 +51,7 @@ def api_requirements(
                 ),
             },
         )
-    return ActionRequirements(claims=(Dependency(claim_id=claim.claim_id, version=claim.version),))
+    return ActionRequirements(
+        claims=(Dependency(claim_id=claim.claim_id, version=claim.version),),
+        operation_id=claim.payload.get("id") or claim.claim_id,
+    )

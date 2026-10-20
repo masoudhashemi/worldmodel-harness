@@ -246,3 +246,55 @@ def test_compact_action_accepts_only_schema_valid_serialized_objects():
     for invalid in ("not json", "[]", "null", '{"tool":"x","arguments":{},"extra":true}'):
         with pytest.raises(ValidationError):
             CompactDecision(action=invalid)
+
+
+def test_compact_decision_hoists_nested_goal_and_allows_omitted_tool():
+    from worldmodel_harness.decisions import CompactDecision
+
+    payload = {
+        "action": {
+            "arguments": {
+                "method": "GET",
+                "url": "https://api.airtable.com/v0/meta/bases",
+            },
+            "goal": "List all Airtable bases to find the one containing Q1 P&L and Targets.",
+        },
+        "output_expectations": [
+            {
+                "path": "bases",
+                "type": "array",
+            }
+        ],
+    }
+
+    decision = CompactDecision.model_validate(payload)
+    assert decision.goal == "List all Airtable bases to find the one containing Q1 P&L and Targets."
+    assert decision.action.tool == ""
+    assert decision.action.arguments["method"] == "GET"
+    assert decision.action.arguments["url"] == "https://api.airtable.com/v0/meta/bases"
+    assert decision.output_expectations[0].path == ("bases",)
+    assert decision.output_expectations[0].predicate == "type"
+    assert decision.output_expectations[0].expected == "array"
+
+
+def test_compact_decision_absorbs_misplaced_parameter_siblings():
+    from worldmodel_harness.decisions import CompactDecision
+
+    payload = {
+        "action": {
+            "arguments": {
+                "method": "PUT",
+                "params": '{"valueInputOption": "USER_ENTERED"}',
+                "url": "https://sheets.googleapis.com/v4/spreadsheets/ss_candidates/values/F2:F6",
+            },
+            "body": '{"values": [["Duplicate"]]}',
+            "tool": "api_fetch",
+        },
+        "goal": "Flag duplicate candidates in the spreadsheet.",
+    }
+
+    decision = CompactDecision.model_validate(payload)
+    assert decision.action.tool == "api_fetch"
+    assert decision.action.arguments["method"] == "PUT"
+    assert decision.action.arguments["body"] == '{"values": [["Duplicate"]]}'
+    assert decision.action.arguments["url"].endswith("F2:F6")

@@ -172,3 +172,72 @@ def test_upstream_dispatch_keeps_evidence_and_shared_budget(tmp_path):
     assert adapter.ledger.environment_calls == 1
     assert audit[-1]["error_type"] == "BudgetExceeded"
     store.close()
+
+
+def test_dispatch_decision_dynamically_resolves_omitted_tool(tmp_path):
+    import asyncio
+    from worldmodel_harness.automationbench import AutomationBenchAdapter, dataset
+    from worldmodel_harness.budget import Ledger
+    from worldmodel_harness.decisions import ActionRequirements, Decision, ProposedAction
+    from worldmodel_harness.learning import Learner
+
+    store = KnowledgeStore(tmp_path / "knowledge.sqlite")
+    adapter = AutomationBenchAdapter(
+        dataset("simple")[0], "simple", store, Ledger(max_environment_calls=5), Learner(store)
+    )
+    audit = []
+    args = {
+        "tools": {t.name: t for t in adapter.tools()},
+        "requirements_for": lambda _: ActionRequirements(),
+        "store": store,
+        "scope": adapter.scope,
+        "live": adapter.live,
+        "audit": audit,
+    }
+    decision = Decision(
+        goal="Search contacts",
+        rationale="Need to find contacts",
+        action=ProposedAction(tool="", arguments={"query": "contacts", "top_k": 1}),
+    )
+    result = asyncio.run(dispatch_decision(decision, **args))
+    assert result.success
+    assert audit[-1]["decision"]["action"]["tool"] == "api_search"
+    store.close()
+
+
+def test_dispatch_decision_catches_unhandled_tool_exceptions(tmp_path):
+    import asyncio
+    from stirrup.core.models import Tool
+    from pydantic import BaseModel
+    from worldmodel_harness.decisions import ActionRequirements, Decision, ProposedAction
+
+    store = KnowledgeStore(tmp_path / "knowledge.sqlite")
+
+    class CrashParams(BaseModel):
+        val: str
+
+    def crashing_executor(p):
+        raise TypeError("got multiple values for keyword argument 'mock_kwarg'")
+
+    crash_tool = Tool(name="crash_tool", description="crashes", parameters=CrashParams, executor=crashing_executor)
+    audit = []
+    args = {
+        "tools": {"crash_tool": crash_tool},
+        "requirements_for": lambda _: ActionRequirements(),
+        "store": store,
+        "scope": Scope(environment="test", version="1", role="agent", task_id="test_task"),
+        "live": LiveState("test_task"),
+        "audit": audit,
+    }
+    decision = Decision(
+        goal="Call crash tool",
+        rationale="Testing exception safety",
+        action=ProposedAction(tool="crash_tool", arguments={"val": "test"}),
+    )
+    result = asyncio.run(dispatch_decision(decision, **args))
+    assert not result.success
+    content = json.loads(result.content)
+    assert content["error"]["type"] == "TypeError"
+    assert "mock_kwarg" in content["error"]["message"]
+    assert audit[-1]["error_type"] == "TypeError"
+    store.close()

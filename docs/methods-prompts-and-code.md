@@ -97,8 +97,6 @@ Implementation update: the original candidate table below records the audit-time
 
 Feedback clarification: grader-assisted learning is a valid configuration of the multi-source architecture. The transfer constraints below describe the current trajectory-only experiment, not a permanent ban on grader feedback. Scalar scores, diagnostic feedback and answer-conditioned demonstrations must be separately declared channels; task feedback does not itself establish an environment rule.
 
-The older completed curve scored **11/50 → 11/50 → 8/50**, with operational/semantic flags off ([report](../runs/1a0673db473d49e7951040f37ad174a9/learning_curve.json)). The new curve was incomplete at the previously inspected **34-task first-round snapshot**: 7 passes, 6 output-limit errors, no task timeouts, 4 semantic `ValueError` failures. This is a historical snapshot, not its final score ([live curve](../runs/5b58e529173542159fc34c465e7ea6da/learning_curve.json)).
-
 The following are **our engineering hypotheses**, not established improvements. They preserve the goal: learn operational relations from permitted interactions, retrieve useful evidence, and improve execution support—not encode benchmark solutions.
 
 | Priority and inspiration | Current code and gap | Proposed mechanism | Required evidence |

@@ -7,7 +7,7 @@ from typing import Any, Literal
 from pydantic import Field
 from stirrup.core.models import Tool, ToolResult
 
-from .behavior import SEMANTIC_KINDS, text_formats, value_format, value_kind
+from .behavior import SEMANTIC_KINDS, value_format, value_kind
 from .goal_checks import GoalCheck, GoalUpdate, OutcomeContract, SourceBinding, anchored
 from .knowledge import OutputExpectation, Record
 from .observable_predictions import inspect_path
@@ -395,17 +395,7 @@ def _quoted(task_quote: str, expected) -> bool:
         if isinstance(expected, str)
         else (json.dumps(expected) if type(expected) in (int, float, bool) else "")
     )
-    if bool(literal.strip()) and (
-        re.search(r"(?<!\w)" + re.escape(literal) + r"(?!\w)", task_quote) is not None
-    ):
-        return True
-    if isinstance(expected, str):
-        num_pat = r"(?<![A-Za-z0-9_])\d+(?:,\d{3})*(?:\.\d+)?"
-        quote_nums = [s.replace(",", "") for s in re.findall(num_pat, task_quote)]
-        expected_nums = [s.replace(",", "") for s in re.findall(num_pat, expected)]
-        if len(quote_nums) >= 2 and set(quote_nums) <= set(expected_nums):
-            return True
-    return False
+    return bool(literal.strip()) and re.search(r"(?<!\w)" + re.escape(literal) + r"(?!\w)", task_quote) is not None
 
 
 def _scalar_matches(actual, expected) -> bool:
@@ -428,13 +418,11 @@ def expected_format(expected, field_name: str | None = None) -> str | None:
 
 def resolve_effect(adapter, params: CheckEffect):
     """Resolve resource, record identity, and source read from structural value types and roles."""
-    target_field = params.path[-1] if isinstance(params.path[-1], str) else None
-    slot = expected_format(params.expected, target_field)
-    if isinstance(params.expected, dict) and set(params.expected) == {"$kind"} and slot is None:
+    if isinstance(params.expected, (dict, list)) or params.expected in SEMANTIC_KINDS or params.expected in {k.upper() for k in SEMANTIC_KINDS}:
         return None, {
-            "result": "unknown_format",
+            "result": "insufficient_outcome_predicate",
             "field": "expected",
-            "next": "Specify a recognized semantic format in $kind.",
+            "next": "Supply the exact intended scalar value from the task or source read, not a type/format.",
         }
     aliases = getattr(adapter, "evidence_aliases", {})
     episode_id = aliases.get(params.episode_id, params.episode_id)
@@ -451,7 +439,7 @@ def resolve_effect(adapter, params: CheckEffect):
         target.scope != adapter.scope
         or target.outcome != "success"
         or target.operation != "api_fetch"
-        or (method not in ("GET", "HEAD") and not (method == "POST" and bool(target.coverage)))
+        or method not in ("GET", "HEAD")
     ):
         return None, {
             "result": "outcome_verification_requires_read",
@@ -480,158 +468,61 @@ def resolve_effect(adapter, params: CheckEffect):
             "field": "path",
             "available_keys": list(parent) if isinstance(parent, dict) else None,
         }
-    field_formats = {}
-    for key, item in parent.items():
-        fmt = value_format(item, key)
-        if fmt:
-            field_formats[key] = fmt
-    identity_keys = [
-        key for key, fmt in field_formats.items() if fmt == "NAME" and key != effective_path[-1]
-    ]
-    if not identity_keys and field_formats.get(effective_path[-1]) == "NAME":
-        identity_keys = [effective_path[-1]]
-    if not identity_keys:
-        for candidate_fmt in ("IDENTIFIER", "EMAIL"):
-            identity_keys = [
-                key
-                for key, fmt in field_formats.items()
-                if fmt == candidate_fmt and key != effective_path[-1]
-            ]
-            if identity_keys:
-                break
-    if not identity_keys:
-        identity_keys = [
-            key
-            for key, item in parent.items()
-            if key != effective_path[-1]
-            and (
-                anchored(params.anchor_text, item)
-                or (isinstance(item, str) and len(item.strip()) >= 3 and anchored(item, params.anchor_text))
-            )
-        ]
-    target_val = parent.get(effective_path[-1])
-    if not identity_keys and (
-        field_formats.get(effective_path[-1]) in ("EMAIL", "IDENTIFIER")
-        or (
-            any(k != effective_path[-1] for k in parent)
-            and (
-                anchored(params.anchor_text, target_val)
-                or (isinstance(target_val, str) and len(target_val.strip()) >= 3 and anchored(target_val, params.anchor_text))
-            )
-        )
-    ):
-        identity_keys = [effective_path[-1]]
-    if not identity_keys:
+    task = " ".join(m["content"] for m in adapter.task.prompt if m.get("role") != "system")
+    if params.task_quote not in task or params.anchor_text not in task:
         return None, {
-            "result": "missing_target_identity",
-            "field": "anchor_text",
-            "available_keys": list(parent),
-            "field_formats": field_formats,
-            "next": "Cite a record object that contains an identity field alongside the target slot.",
+            "result": "invalid_task_quote", "field": "task_quote" if params.task_quote not in task else "anchor_text",
+            "public_task": task,
+            "next": "Copy task_quote and an identity anchor exactly from the public task. Reuse requirement_id.",
         }
+    # Identity must be an actual task-mentioned value on this same record, not a format.
+    identity_keys = [key for key, value in parent.items()
+                     if str(key).casefold() not in {"firstname", "lastname"}
+                     and isinstance(value, str) and value.strip()
+                     and (value == params.anchor_text or (
+                         _quoted(task, value) and anchored(value, params.anchor_text))) ]
+    if not identity_keys:
+        return None, {"result": "missing_target_identity", "field": "anchor_text",
+                      "available_keys": list(parent),
+                      "next": "Use a task-mentioned identity present on the same target record; obtain a read including it."}
     identity_key = representative_name(identity_keys)
-    identity_format = field_formats.get(identity_key) or params.anchor_text
-    identity_value = parent.get(identity_key)
-    identities = [(*effective_path[:-1], identity_key)]
-    task_obj = getattr(adapter, "task", None)
-    if task_obj:
-        user_msgs = [m["content"] for m in task_obj.prompt if m.get("role") != "system"]
-        public_task = " ".join(user_msgs or [m["content"] for m in task_obj.prompt])
-    else:
-        public_task = params.task_quote
-    grounding_text = public_task if params.task_quote in public_task else params.task_quote
-    expected_value = (
-        observed["value"]
-        if (
-            slot is None
-            and isinstance(params.expected, str)
-            and (
-                (
-                    type(observed["value"]) in (int, float, bool)
-                    and json.dumps(observed["value"]) == params.expected.strip()
-                )
-                or (
-                    isinstance(observed["value"], str)
-                    and _quoted(grounding_text, params.expected)
-                    and _quoted(observed["value"], params.expected)
-                    and _quoted(grounding_text, observed["value"])
-                )
-            )
-        )
-        else params.expected
-    )
+    identity_value = parent[identity_key]
+    expected = params.expected
+    # Only lossless scalar coercion, never replacing the expected value with an observed answer.
+    if (isinstance(expected, str) and type(observed["value"]) in (int, float, bool)
+        and json.dumps(observed["value"]) == expected.strip()):
+        expected = observed["value"]
     sources = []
-    for event in adapter.evidence.episodes(adapter.scope):
-        if (
-            event.episode_id == target.episode_id
-            or event.scope != adapter.scope
-            or event.outcome != "success"
-            or event.operation != "api_fetch"
-            or event.arguments.get("method", "GET").upper() not in ("GET", "HEAD")
-        ):
-            continue
-        groups: dict[tuple, list] = {}
-        for leaf_path, leaf in _leaves(event.response):
-            if leaf_path[0] not in event.coverage:
+    if not _quoted(task, expected):
+        for event in adapter.evidence.episodes(adapter.scope):
+            if (event.scope != adapter.scope or event.outcome != "success"
+                or event.operation != "api_fetch"
+                or event.arguments.get("method", "GET").upper() not in ("GET", "HEAD")
+                or event.arguments.get("url") == target.arguments.get("url")
+                or event.timestamp >= target.timestamp):
                 continue
-            groups.setdefault(leaf_path[:-1], []).append((leaf_path, leaf))
-        for group in groups.values():
-            exact_values = [
-                leaf_path
-                for leaf_path, leaf in group
-                if (
-                    value_format(leaf, leaf_path[-1] if leaf_path else None) == slot
-                    if slot
-                    else _scalar_matches(leaf, expected_value)
-                )
-            ]
-            text_values = [
-                leaf_path
-                for leaf_path, leaf in group
-                if isinstance(leaf, str)
-                and (slot in text_formats(leaf) if slot else _quoted(leaf, expected_value))
-            ]
-            values = exact_values or text_values
-            matched_identity = [
-                leaf
-                for leaf_path, leaf in group
-                if value_format(leaf, leaf_path[-1] if leaf_path else None) == identity_format
-                or (isinstance(leaf, str) and identity_format in text_formats(leaf))
-                or (isinstance(identity_value, str) and anchored(identity_value, leaf))
-            ]
-            if values and matched_identity:
-                sources.append((event, values[0]))
-    distinct_sources = [
-        item
-        for item in sources
-        if item[0].arguments.get("url") != target.arguments.get("url")
-    ]
-    pool = distinct_sources or sources
-    source_episode_id = None
-    source_path: tuple = ()
-    if pool:
-        source_episode_id = pool[-1][0].episode_id
-        source_path = pool[-1][1]
-    elif slot and value_format(parent.get(effective_path[-1]), target_field) == slot:
-        source_episode_id = None
-        source_path = ()
-    elif not _quoted(grounding_text, expected_value):
-        return None, {
-            "result": "ungrounded_outcome_value",
-            "field": "expected",
-            "next": "Ground the expected field in a recognized value format, a prior source read, "
-            "or a literal quote from the public task.",
-        }
+            groups = {}
+            for path, value in _leaves(event.response):
+                if path[0] in event.coverage:
+                    groups.setdefault(path[:-1], []).append((path, value))
+            for group in groups.values():
+                if not any(anchored(identity_value, value) for _, value in group):
+                    continue
+                matches = [path for path, value in group
+                           if (type(value) is type(expected) and value == expected)
+                           or (isinstance(value, str) and _quoted(value, expected))]
+                if matches:
+                    sources.append((event.episode_id, matches[0]))
+        if len(sources) != 1:
+            return None, {"result": "ambiguous_source" if sources else "ungrounded_outcome_value",
+                          "field": "expected", "next": "Supply the exact value from one identity-matched source read or the public task. Do not infer it from the target read."}
     return {
-        "episode_id": episode_id,
-        "path": effective_path,
+        "episode_id": episode_id, "path": effective_path,
         "resource_url": target.arguments.get("url"),
-        "identity_path": identities[0],
-        "identity_format": identity_format,
-        "value_format": slot,
-        "expected_value": expected_value,
-        "source_episode_id": source_episode_id,
-        "source_path": source_path,
+        "identity_path": (*effective_path[:-1], identity_key),
+        "identity_format": identity_value, "value_format": None, "expected_value": expected,
+        "source_episode_id": sources[0][0] if sources else None,
+        "source_path": sources[0][1] if sources else (),
     }, None
 
 
@@ -674,10 +565,7 @@ def simple_check_tool(adapter):
                 observation=target,
                 outcome=contract,
             )
-            prior = tracker.checks.pop(params.requirement_id, None)
             result = await tracker.tool().executor(GoalUpdate(checks=(goal,)))
-            if not result.success and prior is not None:
-                tracker.checks[params.requirement_id] = prior
             if result.success:
                 diagnosis = tracker.diagnose(tracker.checks[params.requirement_id])
                 result = ToolResult(
@@ -707,10 +595,10 @@ def simple_check_tool(adapter):
         parameters=CheckEffect,
         executor=check,
         description="Check one current effect on a target record. Cite the latest GET or HEAD "
-        "read of the target record, the modified field path, the expected value or semantic format, "
+        "read of the target record, the modified field path, the exact expected scalar value, "
         "and the task mention as anchor_text. "
         "The resource URL, record identity field, and source grounding are resolved structurally "
-        "by value type and record shape rather than literal value memorization. "
+        "using exact values and task-mentioned identity on the same record. "
         "Reuse requirement_id to repair a path. Quote task_quote from the public task. "
         "Call finish after all modified fields match.",
     )

@@ -66,10 +66,6 @@ def attribute_adaptation(
         if passed < baseline_passed:
             return "hurt"
         return "no_observed_effect"
-    if passed == len(cases):
-        return "helped"
-    if passed == 0:
-        return "hurt"
     return "no_observed_effect"
 
 

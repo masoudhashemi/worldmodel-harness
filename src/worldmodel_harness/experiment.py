@@ -21,9 +21,18 @@ from .learning import Learner
 from .procedures import artifact_tool
 from .repairing_agent import RepairingAgent
 from .retrieval import retrieve
-from .runtime import build_client
+from .runtime import MeteredClient, build_client
 from .shift import ResponseShift
 from .store import KnowledgeStore
+
+
+def learns_from_trajectories(phase: str) -> bool:
+    """Train and test both update the environment graph from tool observations.
+
+    A validation score is not an input. Frozen evaluation is the one phase that
+    keeps a store read-only.
+    """
+    return phase != "frozen"
 
 
 class ExperimentSettings(BaseModel):
@@ -32,7 +41,7 @@ class ExperimentSettings(BaseModel):
     task_names: tuple[str, ...] = ()
     limit: int = Field(default=1, ge=1)
     offset: int = Field(default=0, ge=0)
-    phase: Literal["development", "frozen", "online", "checkpoint"] = "development"
+    phase: Literal["development", "frozen", "online", "checkpoint", "train", "test"] = "development"
     memory: Literal["none", "episodes", "flat", "graph"] = "graph"
     adaptive: bool = False
     operational: bool = False
@@ -45,9 +54,9 @@ class ExperimentSettings(BaseModel):
     information_policy: Literal["off", "task", "future"] = "off"
     max_information_calls: int = Field(default=4, ge=0)
     max_turns: int = Field(default=20, ge=1)
-    max_environment_calls: int = Field(default=40, ge=1)
+    max_environment_calls: int | None = Field(default=40, ge=1)
     retrieval_chars: int = Field(default=12000, ge=1)
-    timeout_seconds: int = Field(default=300, ge=1)
+    timeout_seconds: int | None = Field(default=300, ge=1)
     shift: ResponseShift | None = None
 
     @model_validator(mode="after")
@@ -82,8 +91,36 @@ class ExperimentSettings(BaseModel):
         return self
 
 
+def attach_validation_score(result: dict, adapter) -> None:
+    """Record the environment rubric on the run report when the task supplies assertions.
+
+    The returned numbers stay in this result dict. They are not written to the
+    knowledge store and are not passed to the learner.
+    """
+    result["validation_scores_used_for_learning"] = False
+    assertions = adapter._state.get("info", {}).get("assertions") or []
+    if not assertions:
+        result["validation_available"] = False
+        return
+    result.update(adapter.score())
+    result["grading_details"] = adapter.grading_details()
+    result["validation_available"] = True
+
+
 class Finish(BaseModel):
     summary: str
+
+
+def _inject_operational_context(messages: list, content: str, title: str) -> list:
+    if not content:
+        return list(messages)
+    updated = list(messages)
+    header = f"\n\n### {title}\n"
+    if updated and updated[0].role == "system":
+        updated[0] = SystemMessage(content=updated[0].content + header + content)
+    else:
+        updated.insert(0, SystemMessage(content=f"### {title}\n" + content))
+    return updated
 
 
 class KnowledgeClient:
@@ -94,14 +131,17 @@ class KnowledgeClient:
         self.knowledge, self.settings = knowledge, settings
         self.retrievals = []
         self.model_call_costs = []
+        self.last_messages = []
 
     async def _generate(self, messages, tools):
+        self.last_messages = list(messages)
         started = perf_counter()
         cost = {"usage_available": False}
         try:
             response = await self.client.generate(messages, tools)
             cost["token_usage"] = response.token_usage.model_dump()
             cost["usage_available"] = True
+            self.last_messages.append(response)
             return response
         except BaseException as exc:
             # Include cancellation and failed calls without retaining SDK messages.
@@ -136,7 +176,9 @@ class KnowledgeClient:
                 self.adapter.ledger.compute_seconds += perf_counter() - started
                 self.retrievals.append(selection)
                 if content:
-                    selected_messages.append(UserMessage(content=content))
+                    selected_messages = _inject_operational_context(
+                        selected_messages, content, "Operational Episodes"
+                    )
                 return await self._generate(selected_messages, tools)
             from .retrieval import decision_focus
 
@@ -218,6 +260,7 @@ class KnowledgeClient:
                 procedures,
                 max_chars=self.settings.retrieval_chars - reserved,
                 store=self.knowledge,
+                query=retrieval_query,
             )
             if hints:
                 content += "\n" + hints
@@ -241,7 +284,9 @@ class KnowledgeClient:
                 }
             )
             if content:
-                selected_messages.append(UserMessage(content=content))
+                selected_messages = _inject_operational_context(
+                    selected_messages, content, "Operational Memory & Learned Invariants"
+                )
         return await self._generate(selected_messages, tools)
 
 
@@ -251,7 +296,7 @@ async def run_automationbench(
     model_settings = load_settings(root)
     client = build_client(model_settings, load_api_key(root, model_settings))
     semantic_client = None
-    if settings.semantic_learning and settings.phase != "frozen":
+    if settings.semantic_learning and learns_from_trajectories(settings.phase):
         semantic_settings = type(model_settings).model_validate(
             {
                 **model_settings.model_dump(),
@@ -260,7 +305,7 @@ async def run_automationbench(
                 "json_mode": settings.semantic_json_mode,
             }
         )
-        semantic_client = build_client(semantic_settings, load_api_key(root, semantic_settings))
+        semantic_client = MeteredClient(build_client(semantic_settings, load_api_key(root, semantic_settings)))
     run_id = uuid4().hex
     output = root / "runs" / run_id
     output.mkdir(parents=True, exist_ok=False)
@@ -282,14 +327,17 @@ async def run_automationbench(
         }
     if settings.phase == "frozen" and knowledge_path is None:
         raise ValueError("Frozen evaluation requires an explicit development knowledge store")
+    knowledge_start = "continued" if knowledge_path is not None else "cold"
     knowledge_path = knowledge_path or output / "knowledge.sqlite"
-    knowledge = KnowledgeStore(knowledge_path, frozen=settings.phase == "frozen")
+    knowledge = KnowledgeStore(knowledge_path, frozen=not learns_from_trajectories(settings.phase))
     evidence = KnowledgeStore(output / "evidence.sqlite")
     results = []
     report = {
         "run_id": run_id,
         "harness_revision": "operational-learning-v3.4",
         "feedback_protocol": "trajectory-only",
+        "validation_scores_used_for_learning": False,
+        "knowledge_start": knowledge_start,
         "benchmark": "automationbench",
         "upstream_commit": UPSTREAM_COMMIT,
         "protocol": "custom-response-shift-stirrup-stream"
@@ -318,7 +366,7 @@ async def run_automationbench(
             ledger = Ledger(max_environment_calls=settings.max_environment_calls)
             learner = (
                 Learner(knowledge)
-                if settings.phase != "frozen" and settings.memory in ("flat", "graph")
+                if learns_from_trajectories(settings.phase) and settings.memory in ("flat", "graph")
                 else None
             )
             adapter = AutomationBenchAdapter(
@@ -328,7 +376,8 @@ async def run_automationbench(
                 ledger,
                 learner,
                 knowledge,
-                retain_interactions=settings.phase != "frozen" and settings.memory == "episodes",
+                retain_interactions=learns_from_trajectories(settings.phase)
+                and settings.memory == "episodes",
                 shift=settings.shift
                 if settings.shift and task_index >= settings.shift.start_task_index
                 else None,
@@ -337,7 +386,7 @@ async def run_automationbench(
                 raise ValueError(
                     "Frozen evaluation task overlaps development/online learning tasks"
                 )
-            if settings.phase != "frozen" and settings.memory != "none":
+            if learns_from_trajectories(settings.phase) and settings.memory != "none":
                 knowledge.register_learning_task(adapter.task.task_id, settings.phase)
             wrapper = KnowledgeClient(client, adapter, knowledge, settings)
             tools = adapter.tools()
@@ -429,11 +478,14 @@ async def run_automationbench(
             task_output.mkdir()
             result = {"task_name": adapter.task.task_id, "scope": adapter.scope.model_dump()}
             try:
-                async with asyncio.timeout(settings.timeout_seconds):
-                    async with agent.session(
-                        output_dir=task_output, cache_on_interrupt=False
-                    ) as session:
+                async with agent.session(
+                    output_dir=task_output, cache_on_interrupt=False
+                ) as session:
+                    if settings.timeout_seconds is None:
                         finish, history, metadata = await session.run(messages)
+                    else:
+                        async with asyncio.timeout(settings.timeout_seconds):
+                            finish, history, metadata = await session.run(messages)
                 result.update(
                     {
                         "finished": finish is not None,
@@ -458,12 +510,16 @@ async def run_automationbench(
                 )
             except Exception as exc:  # noqa: BLE001 -- keep SDK error details out of artifacts
                 result.update({"finished": False, "error_type": type(exc).__name__})
+                (task_output / "partial_history.json").write_text(json.dumps(
+                    [m.model_dump(mode="json") for m in wrapper.last_messages], indent=2
+                ) + "\n")
             result["model_call_costs"] = wrapper.model_call_costs
             result["outer_validation_audit"] = agent.outer_validation_audit
             if settings.semantic_learning and learner is not None:
                 from .semantic_learning import learn_semantics
                 from .semantic_review import review_semantics
 
+                semantic_call_start = len(semantic_client.calls)
                 semantic = {}
                 try:
                     async with asyncio.timeout(settings.semantic_timeout_seconds):
@@ -489,10 +545,24 @@ async def run_automationbench(
                     review_accounting["error_type"] = type(exc).__name__
                 ledger.adaptation_seconds += semantic.get("semantic_learning_seconds", 0)
                 ledger.adaptation_seconds += semantic.get("review", {}).get("review_seconds", 0)
+                semantic["model_call_costs"] = semantic_client.calls[semantic_call_start:]
+                semantic["model_settings"] = semantic_settings.model_dump()
                 result["semantic_learning"] = semantic
-            # Score only after interaction; never pass this result back to the learner/client.
-            result.update(adapter.score())
-            result["grading_details"] = adapter.grading_details()
+            if learner is not None:
+                from .contrastive import learn_contrastive_preconditions
+
+                try:
+                    contrastive_ids = learn_contrastive_preconditions(
+                        knowledge,
+                        adapter.scope,
+                        client=semantic_client if settings.semantic_learning else None,
+                    )
+                    if contrastive_ids:
+                        result["contrastive_precondition_ids"] = contrastive_ids
+                except Exception as exc:  # noqa: BLE001
+                    result["contrastive_learning_error"] = type(exc).__name__
+            # Score only after interaction. A missing rubric leaves the learned graph intact.
+            attach_validation_score(result, adapter)
             result["ledger"] = asdict(ledger)
             result["retrievals"] = wrapper.retrievals
             result["prediction_assessments"] = adapter.prediction_assessments
@@ -521,9 +591,8 @@ async def run_automationbench(
                 result["controlled_shift"] = adapter.shift.report()
             results.append(result)
             (output / "summary.json").write_text(json.dumps(report, indent=2) + "\n")
-        report["mean_strict_success"] = sum(r["task_completed_correctly"] for r in results) / len(
-            results
-        )
+        scored = [r["task_completed_correctly"] for r in results if "task_completed_correctly" in r]
+        report["mean_strict_success"] = sum(scored) / len(scored) if scored else None
         report["knowledge_claims"] = len(knowledge.claims())
         (output / "summary.json").write_text(json.dumps(report, indent=2) + "\n")
         return report

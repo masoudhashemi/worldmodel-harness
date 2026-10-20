@@ -13,6 +13,7 @@ from pydantic import ValidationError
 from stirrup.core.models import SystemMessage, Tool, ToolResult, UserMessage
 
 from .adaptation import parse_proposal
+from .budget import BudgetExceeded
 from .decisions import (
     ActionRequirements,
     Decision,
@@ -110,31 +111,94 @@ async def dispatch_decision(
     started = perf_counter()
     repair_details = {}
     tool = tools.get(decision.action.tool)
+    if tool is None and not decision.action.tool:
+        # Dynamic Schema-Driven Tool Resolution:
+        # If tool name was omitted, match arguments against available tools' parameter schemas.
+        matching_tools = []
+        for t_name, t_tool in tools.items():
+            if hasattr(t_tool, "parameters") and hasattr(t_tool.parameters, "model_fields"):
+                try:
+                    t_tool.parameters.model_validate(decision.action.arguments)
+                    matching_tools.append(t_name)
+                except ValidationError:
+                    required_fields = {
+                        k for k, f in t_tool.parameters.model_fields.items() if f.is_required()
+                    }
+                    provided_fields = set(decision.action.arguments.keys())
+                    if required_fields and required_fields.issubset(provided_fields):
+                        matching_tools.append(t_name)
+        if len(matching_tools) == 1:
+            decision = decision.model_copy(
+                update={"action": decision.action.model_copy(update={"tool": matching_tools[0]})}
+            )
+            tool = tools.get(matching_tools[0])
+
     if tool is None:
         gate = GateResult(
             allowed=False,
-            gaps=(f"tool:{decision.action.tool}",),
+            gaps=(f"tool:{decision.action.tool or 'unspecified'}",),
             checked_claims=(),
             checked_facts=(),
         )
     else:
+        params = None
         try:
             params = tool.parameters.model_validate(decision.action.arguments)
-        except ValidationError as exc:
-            repair_details = {
-                "validation_errors": [
-                    {"field": list(e["loc"]), "error_type": e["type"], "message": e["msg"]}
-                    for e in exc.errors(
-                        include_input=False, include_context=False, include_url=False
+        except ValidationError as initial_exc:
+            # Generic Single-Parameter Intent Inference:
+            # If the tool has a single required parameter, and arguments omitted it
+            # (common when models emit bare aliases or shorthand calls),
+            # infer that single parameter from the decision's explicit goal or rationale.
+            if hasattr(tool.parameters, "model_fields") and not decision.action.arguments:
+                required = [
+                    name
+                    for name, f in tool.parameters.model_fields.items()
+                    if f.is_required()
+                ]
+                if len(required) == 1:
+                    fallback_text = (
+                        decision.goal
+                        if decision.goal and decision.goal != "Next task step"
+                        else decision.rationale
                     )
-                ],
-                "checked_schema": tool.parameters.model_json_schema(),
-                "instruction": "Correct the named fields using this schema. Do not copy output-only result fields into inputs.",
-            }
-            gate = GateResult(
-                allowed=False, gaps=("arguments:invalid",), checked_claims=(), checked_facts=()
-            )
-        else:
+                    if fallback_text:
+                        try:
+                            params = tool.parameters.model_validate({required[0]: fallback_text})
+                        except ValidationError:
+                            params = None
+
+            if params is None:
+                missing_fields = [
+                    str(e["loc"][0])
+                    for e in initial_exc.errors()
+                    if e.get("type") == "missing" and e.get("loc")
+                ]
+                example_args = {f: f"<{f}_value>" for f in missing_fields}
+                repair_details = {
+                    "validation_errors": [
+                        {"field": list(e["loc"]), "error_type": e["type"], "message": e["msg"]}
+                        for e in initial_exc.errors(
+                            include_input=False, include_context=False, include_url=False
+                        )
+                    ],
+                    "checked_schema": tool.parameters.model_json_schema(),
+                    "instruction": (
+                        f"Tool '{decision.action.tool}' requires arguments inside the 'arguments' object: "
+                        f"{{\"action\": {{\"tool\": \"{decision.action.tool}\", \"arguments\": {example_args}}}}}"
+                        if missing_fields
+                        else "Correct the named fields using this schema. Do not copy output-only result fields into inputs."
+                    ),
+                    "expected_format": {
+                        "action": {
+                            "tool": decision.action.tool,
+                            "arguments": example_args or {"<parameter>": "<value>"},
+                        }
+                    },
+                }
+                gate = GateResult(
+                    allowed=False, gaps=("arguments:invalid",), checked_claims=(), checked_facts=()
+                )
+        if params is not None:
             # Resolve requirements against the arguments the executor will see,
             # including schema defaults and coercions, not unparsed proposal data.
             action = decision.action.model_copy(update={"arguments": params.model_dump()})
@@ -194,8 +258,22 @@ async def dispatch_decision(
         result = tool.executor(params)
         if inspect.isawaitable(result):
             result = await result
+    except BudgetExceeded:
+        row["error_type"] = "BudgetExceeded"
+        raise
     except Exception as exc:
         row["error_type"] = type(exc).__name__
-        raise
+        return ToolResult(
+            content=json.dumps(
+                {
+                    "error": {
+                        "code": 400,
+                        "type": type(exc).__name__,
+                        "message": str(exc),
+                    }
+                }
+            ),
+            success=False,
+        )
     row["tool_success"] = result.success
     return result

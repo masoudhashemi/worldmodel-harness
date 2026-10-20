@@ -813,7 +813,7 @@ def test_retrieval_prioritizes_supported_and_compact_context_strips_prose_noise(
     assert "distinguishing_observation" not in by_id["generic-note"]["payload"]
 
 
-def test_workspace_identity_mapping_generalizes_as_dom_workspace_fact(world):
+def test_workspace_identity_mapping_remains_tenant_scoped(world):
     from worldmodel_harness.semantic_learning import hypothesis_context
 
     store, base_scope = world
@@ -843,17 +843,25 @@ def test_workspace_identity_mapping_generalizes_as_dom_workspace_fact(world):
     )
     claim_id = retain_hypotheses(proposal, [ep1], store, scope_1)[0]
     claim = store.claim(claim_id)
-    assert claim.scope.tenant is None
+    assert claim.scope.tenant == "task_1"
     assert claim.payload["dimension"] == "DOM"
     assert claim.payload["workspace_fact"] is True
     assert claim.payload["source_tenant"] == "task_1"
 
     scope_2 = base_scope.model_copy(update={"tenant": "task_2", "task_id": "task_2"})
-    assert any(c.claim_id == claim_id for c in store.claims(scope_2))
+    assert not any(c.claim_id == claim_id for c in store.claims(scope_2))
     hint = hypothesis_context(store, scope_2, "post summary to #metrics channel")
+    assert hint == ""
+    hint = hypothesis_context(store, scope_1, "post summary to #metrics channel")
     assert "CMETRICS" in hint
     assert '"dimension": "DOM"' in hint
     assert '"workspace_fact": true' in hint
+    # Old global mappings must not leak through retrieval after upgrading.
+    legacy = claim.model_copy(update={"claim_id": "legacy-mapping", "scope": claim.scope.model_copy(update={"tenant": None})})
+    store.put_claim(legacy)
+    assert any(c.claim_id == "legacy-mapping" for c in store.claims(scope_1))
+    assert not any(c.claim_id == "legacy-mapping" for c in store.claims(scope_2))
+
 
 
 def test_adaptation_attribution_verdict_and_static_trigger_gate(world):
@@ -867,10 +875,13 @@ def test_adaptation_attribution_verdict_and_static_trigger_gate(world):
     c_fail = ValidationCase(
         task_id="t2", task_name="t2", passed=False, isolated_execution=True, evidence_ids=("e2",)
     )
-    assert attribute_adaptation((c_pass, c_pass)) == "helped"
-    assert attribute_adaptation((c_fail, c_fail)) == "hurt"
+    assert attribute_adaptation((c_pass, c_pass)) == "no_observed_effect"
+    assert attribute_adaptation((c_fail, c_fail)) == "no_observed_effect"
     assert attribute_adaptation((c_pass, c_fail)) == "no_observed_effect"
     assert attribute_adaptation((c_pass, c_pass), concurrent_changes=2) == "confounded"
+    assert attribute_adaptation((c_pass, c_pass), baseline_passed=0) == "helped"
+    assert attribute_adaptation((c_fail, c_fail), baseline_passed=2) == "hurt"
+    assert attribute_adaptation((c_pass, c_pass), baseline_passed=2) == "no_observed_effect"
 
     empty_surface = Procedure(
         procedure_id="empty-surface",

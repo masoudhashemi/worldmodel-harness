@@ -83,9 +83,8 @@ across its replicates. Learning continues between checkpoints, not between sibli
 measurement trials. The same tasks may still be used for learning and measurement;
 this is explicitly in-sample reliability, not unseen-task evaluation. Never pool changing
 online graph states as independent trials of one checkpoint. Neither metric is guaranteed
-to improve with learning; report regressions and cost. See the
-[metric definitions and implementation gap](small-sample-experiment-plan.md#user-clarification-during-execution-sharing-and-reliability)
-and [τ-bench's original definitions](https://arxiv.org/html/2406.12045v1).
+to improve with learning; report regressions and cost. See
+[τ-bench's original definitions](https://arxiv.org/html/2406.12045v1).
 
 Use matched task streams, environment initializations, and randomized run assignments where feasible. Repeat stochastic runs and task orders; use paired contrasts when pairing is valid. Treat correlated tasks within a continually learned stream as dependent: estimate uncertainty at the independent stream/world/run level, with the unit and resampling or estimation method stated. Do not present repeated decisions from one learned trajectory as independent replications.
 

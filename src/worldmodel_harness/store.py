@@ -167,7 +167,12 @@ class KnowledgeStore:
             ON c.id=latest.id AND c.version=latest.version ORDER BY c.id
         """)
         records = [Claim.model_validate_json(row[0]) for row in rows]
-        return records if scope is None else [c for c in records if c.scope.applies_to(scope)]
+        return records if scope is None else [
+            c for c in records if c.scope.applies_to(scope)
+            and (not c.payload.get("workspace_fact")
+                 or (c.payload.get("source_tenant") is not None
+                     and c.payload["source_tenant"] == scope.tenant))
+        ]
 
     def put_claim(self, claim: Claim) -> None:
         self._writable()

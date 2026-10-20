@@ -113,7 +113,7 @@ class GoalTracker:
                 if anchored(binding.anchor_text, anchor["value"])
                 else "source_anchor_mismatch"
             )
-        if check.observation.predicate not in ("equals", "format") or not check.observation.path:
+        if check.observation.predicate != "equals" or not check.observation.path:
             return "insufficient_outcome_predicate"
         if check.outcome is None:
             return "missing_outcome_contract"
@@ -125,7 +125,7 @@ class GoalTracker:
             if event.arguments.get("url") != check.outcome.resource_url:
                 return "outcome_resource_mismatch"
             method = event.arguments.get("method", "GET").upper()
-            if method not in ("GET", "HEAD") and not (method == "POST" and bool(event.coverage)):
+            if method not in ("GET", "HEAD"):
                 return "outcome_verification_requires_read"
         grounding = self.grounding(check)
         if grounding != "grounded":
@@ -142,23 +142,7 @@ class GoalTracker:
                     "result": "invalid_target_identity_path",
                     "field": "identity_path",
                 }
-            field_name = check.outcome.identity_path[-1] if check.outcome.identity_path else None
-            from .behavior import value_format
-
-            same_format = (
-                isinstance(anchor_text, str)
-                and anchor_text == value_format(identity["value"], field_name)
-            )
-            id_val = identity["value"]
-            if (
-                not same_format
-                and not anchored(anchor_text, id_val)
-                and not (
-                    isinstance(id_val, str)
-                    and len(id_val.strip()) >= 3
-                    and anchored(id_val, anchor_text)
-                )
-            ):
+            if not anchored(anchor_text, identity["value"]):
                 return "target_identity_mismatch"
         if check.evidence_mode == "historical_observation":
             # Past reads can establish what was observed, never a present-state effect.
@@ -211,22 +195,8 @@ class GoalTracker:
 
         if contains_kind(expected):
             return "insufficient_outcome_predicate"
-        if contract.target.predicate not in ("equals", "format") or not contract.target.path:
+        if contract.target.predicate != "equals" or not contract.target.path:
             return "insufficient_outcome_predicate"
-        if contract.target.predicate == "format" and not contract.source_episode_id:
-            from .behavior import value_format
-
-            field = check.observation.path[-1] if check.observation.path else None
-            try:
-                current = self.adapter.evidence.episode(check.episode_id)
-            except KeyError:
-                return "missing_evidence"
-            inspected = inspect_path(current, check.observation.path)
-            if inspected["result"] != "observed":
-                return "invalid_outcome_source_path"
-            if value_format(inspected["value"], field) == expected:
-                return "grounded"
-            return "ungrounded_outcome_value"
         if contract.source_episode_id:
             if contract.source_requirement_id:
                 source_check = self.checks.get(contract.source_requirement_id)
@@ -260,15 +230,6 @@ class GoalTracker:
             if inspected["result"] != "observed":
                 return "invalid_outcome_source_path"
             value = inspected["value"]
-            if contract.target.predicate == "format":
-                from .behavior import text_formats, value_format
-
-                field = contract.source_path[-1] if contract.source_path else None
-                if value_format(value, field) == expected or (
-                    isinstance(value, str) and expected in text_formats(value)
-                ):
-                    return "grounded"
-                return "ungrounded_outcome_value"
             if type(value) is type(expected) and value == expected:
                 return "grounded"
             text = value if isinstance(value, str) else ""
@@ -288,12 +249,6 @@ class GoalTracker:
         )
         if literal.strip() and re.search(r"(?<!\w)" + re.escape(literal) + r"(?!\w)", text):
             return "grounded"
-        if isinstance(expected, str):
-            num_pat = r"(?<![A-Za-z0-9_])\d+(?:,\d{3})*(?:\.\d+)?"
-            quote_nums = [s.replace(",", "") for s in re.findall(num_pat, text)]
-            expected_nums = [s.replace(",", "") for s in re.findall(num_pat, expected)]
-            if len(quote_nums) >= 2 and set(quote_nums) <= set(expected_nums):
-                return "grounded"
         return "ungrounded_outcome_value"
 
     def report(self):
@@ -312,7 +267,9 @@ class GoalTracker:
             for check in params.checks:
                 if check.task_quote not in task:
                     return ToolResult(
-                        content="Requirement must quote the public task exactly.", success=False
+                        content=json.dumps({"result": "invalid_task_quote", "field": "task_quote",
+                            "public_task": task, "requirement_id": check.requirement_id,
+                            "next": "Copy an exact substring of public_task; reuse requirement_id."}), success=False
                     )
                 old = self.checks.get(check.requirement_id)
                 if old and old.kind != check.kind:
@@ -493,6 +450,8 @@ class GoalTracker:
                         "status": "needs_verification",
                         **slots,
                         "checks": rows,
+                        "verification_tool": "check_effect",
+                        "public_task": " ".join(m["content"] for m in getattr(getattr(self.adapter, "task", None), "prompt", []) if m.get("role") != "system"),
                         "next": (
                             "The task changes a "
                             + " and ".join(missing or unverified_written)
@@ -500,7 +459,7 @@ class GoalTracker:
                             "Check the field holding that value on the current record, "
                             "or finish with unresolved=true."
                             if all_matched and (missing or unverified_written)
-                            else "Record requirements and obtain missing evidence, or finish with unresolved=true."
+                            else "Call check_effect directly before finish: supply requirement_id, exact task_quote, latest GET/HEAD episode_id, modified field path, exact expected value from task/source, and task-quoted identity anchor_text. A read alone does not register verification. Do not repeat a successful write. Use unresolved=true if evidence is unavailable."
                         ),
                     }
                 ),

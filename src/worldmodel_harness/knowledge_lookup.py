@@ -51,7 +51,11 @@ def knowledge_lookup_tool(
                     linked_claim_ids={c.claim_id for c in working.claims},
                 )
             content, selection = render_context(
-                working, procedures, max_chars=budget, store=adapter.knowledge
+                working,
+                procedures,
+                max_chars=budget,
+                store=adapter.knowledge,
+                query=params.query,
             )
             audit.append(
                 {

@@ -7,10 +7,11 @@ or completeness of the world's known constraints.
 """
 
 import json
+import re
 from datetime import datetime
 from typing import Any
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from .knowledge import Dependency, LiveState, OutputExpectation, Record, Scope, utc_now
 from .store import KnowledgeStore
@@ -32,10 +33,11 @@ class LiveRequirement(Record):
 class ActionRequirements(Record):
     claims: tuple[Dependency, ...] = ()
     facts: tuple[LiveRequirement, ...] = ()
+    operation_id: str | None = None
 
 
 class ProposedAction(Record):
-    tool: str = Field(min_length=1)
+    tool: str = Field(default="", min_length=0)
     arguments: dict[str, Any]
     requirements: ActionRequirements = Field(default_factory=ActionRequirements)
 
@@ -70,17 +72,79 @@ class CompactDecision(Record):
     evidence_ids: tuple[str, ...] = Field(default=(), max_length=8)
     output_expectations: tuple[OutputExpectation, ...] = Field(default=(), max_length=4)
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_compact_decision(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+        action_val = data.get("action")
+        # Only normalize dictionary action payloads emitted by tool calls;
+        # leave serialized strings to decode_serialized_action for strict validation.
+        if isinstance(action_val, dict):
+            action_dict = dict(action_val)
+            # 1. Hoist goal if nested inside action and not provided at root
+            if "goal" in action_dict:
+                nested_goal = action_dict.pop("goal")
+                if ("goal" not in data or data["goal"] == "Next task step") and nested_goal:
+                    data["goal"] = str(nested_goal)
+
+            # 2. Hoist rationale if nested inside action and not provided at root
+            if "rationale" in action_dict:
+                nested_rationale = action_dict.pop("rationale")
+                if ("rationale" not in data or not data["rationale"]) and nested_rationale:
+                    data["rationale"] = str(nested_rationale)
+
+            # 3. Consolidate parameter fields into arguments
+            known_action_fields = {"tool", "requirements"}
+            extra_keys = set(action_dict.keys()) - known_action_fields - {"arguments"}
+            if extra_keys:
+                if "arguments" not in action_dict or not isinstance(action_dict["arguments"], dict):
+                    action_dict["arguments"] = {}
+                else:
+                    action_dict["arguments"] = dict(action_dict["arguments"])
+                for k in extra_keys:
+                    action_dict["arguments"][k] = action_dict.pop(k)
+
+            data["action"] = action_dict
+
+        return data
+
     @field_validator("action", mode="before")
     @classmethod
     def decode_serialized_action(cls, value):
-        # Some tool-call providers serialize a nested object a second time.
+        # Some tool-call providers serialize a nested object a second time,
+        # or emit bare tool aliases/names (e.g. "a1" or "api_search").
         # Decode this one boundary only; ProposedAction and dispatch still check
         # the full schema, arguments, permissions and prerequisites afterward.
         if isinstance(value, str):
-            value = json.loads(value)
-            if not isinstance(value, dict):
-                # Pydantic converts ValueError (not TypeError) into a validation error.
-                raise ValueError("Serialized action must be a JSON object")  # noqa: TRY004
+            value_str = value.strip()
+            # Coerce short tool aliases (e.g. "a1", "api_search", "a1:api_search")
+            if value_str.lower() not in ("null", "true", "false", "none") and re.fullmatch(
+                r"(?:a\d+:)?(?:a\d+|[a-zA-Z_][a-zA-Z0-9_.]*)", value_str
+            ):
+                tool_name = value_str
+                m = re.match(r"^(?:a\d+:)?([a-zA-Z_][a-zA-Z0-9_.]*)$", value_str)
+                if m:
+                    tool_name = m.group(1)
+                return {"tool": tool_name, "arguments": {}}
+            try:
+                parsed = json.loads(value_str)
+            except (json.JSONDecodeError, ValueError) as exc:
+                raise ValueError("Serialized action must be a JSON object") from exc
+            if isinstance(parsed, dict):
+                return parsed
+            if (
+                isinstance(parsed, str)
+                and parsed.strip().lower() not in ("null", "true", "false", "none")
+                and re.fullmatch(r"(?:a\d+:)?(?:a\d+|[a-zA-Z_][a-zA-Z0-9_.]*)", parsed.strip())
+            ):
+                tool_name = parsed.strip()
+                m = re.match(r"^(?:a\d+:)?([a-zA-Z_][a-zA-Z0-9_.]*)$", tool_name)
+                if m:
+                    tool_name = m.group(1)
+                return {"tool": tool_name, "arguments": {}}
+            raise ValueError("Serialized action must be a JSON object")
         return value
 
 
@@ -191,6 +255,55 @@ def check_decision(
             or episode.timestamp > now
         ):
             gaps.add(f"evidence_scope:{evidence_id}")
+
+    active_operation = mandatory.operation_id or decision.action.tool
+
+    # Check contrastive preconditions learned across episodes
+    for claim in store.claims(scope):
+        if (
+            claim.relation == "contrastive_precondition"
+            and claim.status == "supported"
+            and not claim.needs_review
+            and (claim.valid_until is None or claim.valid_until > now)
+        ):
+            target_op = (
+                claim.payload.get("target_operation")
+                or claim.payload.get("target_contract_id")
+                or claim.payload.get("target_route")
+                or claim.payload.get("target_tool")
+            )
+            matches_target = False
+            if target_op:
+                if target_op == active_operation or target_op == decision.action.tool:
+                    matches_target = True
+                elif any(dep.claim_id == target_op for dep in mandatory.claims):
+                    matches_target = True
+
+            if matches_target:
+                checked_claims.add(claim.claim_id)
+                prereq_arg = claim.payload.get("required_argument")
+                if prereq_arg and prereq_arg not in decision.action.arguments:
+                    gaps.add(f"contrastive_precondition:missing_argument:{prereq_arg}")
+                prereq_key = claim.payload.get("required_fact_key")
+                if prereq_key:
+                    check_fact(prereq_key, claim.payload.get("expected_fact_value", True))
+                prereq_action = claim.payload.get("required_preceding_action")
+                # Never allow self-referential prerequisites or prerequisites blocking discovery
+                if (
+                    prereq_action
+                    and prereq_action != decision.action.tool
+                    and prereq_action != active_operation
+                    and decision.action.tool not in ("api_search", "lookup_knowledge")
+                ):
+                    task_episodes = evidence_store.episodes(scope)
+                    done_ops = {
+                        e.operation
+                        for e in task_episodes
+                        if e.task_id == live.task_id and e.outcome == "success"
+                    }
+                    if prereq_action not in done_ops:
+                        gaps.add(f"contrastive_precondition:{claim.statement}")
+
     return GateResult(
         allowed=not gaps,
         gaps=tuple(sorted(gaps)),

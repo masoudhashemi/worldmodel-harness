@@ -240,3 +240,42 @@ def test_frozen_operational_followup_can_cite_current_task_episode(tmp_path):
     knowledge.close()
     evidence.close()
     assert hashlib.sha256(path.read_bytes()).hexdigest() == before
+
+
+def test_compact_decision_bare_alias_uses_goal_query(tmp_path):
+    from worldmodel_harness.decisions import CompactDecision
+
+    store = KnowledgeStore(tmp_path / "knowledge.sqlite")
+    adapter = AutomationBenchAdapter(
+        dataset("simple")[0], "simple", store, Ledger(), Learner(store)
+    )
+    tools = operational_tools(
+        adapter,
+        adapter.tools(),
+        adaptive=False,
+        allow_experimental=False,
+        audit=[],
+        refresh_audit=[],
+    )
+    actor = tools[0]
+    
+    # 1. Single-parameter generic inference for api_search
+    cd_search = CompactDecision(action="a1:api_search", goal="Find spreadsheets endpoints")
+    res_search = asyncio.run(actor.executor(cd_search))
+    assert res_search.success
+    assert "results" in res_search.content
+
+    # 2. Single-parameter generic inference for lookup_knowledge
+    cd_lookup = CompactDecision(action="lookup_knowledge", goal="spreadsheet permissions")
+    res_lookup = asyncio.run(actor.executor(cd_lookup))
+    assert res_lookup.success
+
+    # 3. Multi-parameter tool (api_fetch) without arguments produces actionable format guidance
+    cd_fetch = CompactDecision(action="api_fetch", goal="fetch data")
+    res_fetch = asyncio.run(actor.executor(cd_fetch))
+    assert not res_fetch.success
+    assert "expected_format" in res_fetch.content
+    assert "arguments" in res_fetch.content
+
+    store.close()
+

@@ -61,8 +61,7 @@ in the losslessly compressed ledger; no silent prefix truncation is introduced.
 In the post-probe v3.3.1 correction, source anchors are repairable until matched,
 then fixed. Anchor membership uses the whole public task, not only the requirement's
 short quote; errors identify the field and explain how to repair without new IDs.
-The [v3.3 probe plan](verification-v33-probe-plan.md) separates offline replay from
-live model usability; [results](verification-v33-probe-results.md) are reported separately.
+Offline replay and a later live run are separate measurements. A live timeout is not evidence that the offline check is wrong.
 
 ### Value abstraction and binding safeguards (v3.4)
 
@@ -109,9 +108,7 @@ Diagnostics show candidate schemas and scopes. Same-ID documentation updates sti
 the existing version history; full schema reconciliation and evidence-based precedence
 between variants are not implemented.
 
-See the [safeguards test plan](value-binding-safeguards-test-plan.md). Kind learning
-does not authorize weakening goal verification or treating test feedback as a
-causal rule.
+Kind learning does not authorize weakening goal verification or treating test feedback as a causal rule.
 
 ### Implemented outcome verification (v3.2)
 

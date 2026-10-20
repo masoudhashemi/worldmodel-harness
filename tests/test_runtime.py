@@ -9,6 +9,19 @@ from worldmodel_harness import runtime, smoke
 from worldmodel_harness.config import ModelSettings
 
 
+def test_response_wait_returns_an_empty_message():
+    class Slow:
+        async def generate(self, messages, tools):
+            await asyncio.sleep(5)
+
+    async def scenario():
+        message = await runtime.BoundedClient(Slow(), 0.05).generate([], {})
+        assert message.blocks[0].text == ""
+        assert message.token_usage.answer == 0
+
+    asyncio.run(scenario())
+
+
 def test_client_routing_and_explicit_limits(monkeypatch):
     captured = {}
 
@@ -17,7 +30,7 @@ def test_client_routing_and_explicit_limits(monkeypatch):
 
     monkeypatch.setattr(runtime, "LiteLLMClient", capture)
     runtime.build_client(ModelSettings(), SecretStr("offline-secret"))
-    assert captured["model"] == "openrouter/qwen/qwen3.8-27b"
+    assert captured["model"] == "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
     assert captured["api_key"] == "offline-secret"
     assert captured["kwargs"]["api_base"] == "https://openrouter.ai/api/v1"
     assert captured["kwargs"]["num_retries"] == 0
@@ -70,3 +83,47 @@ def test_real_stirrup_loop_with_scripted_client(tmp_path, monkeypatch):
     events = [json.loads(line) for line in (output / "observations.jsonl").read_text().splitlines()]
     assert [event["outcome"] for event in events] == ["unknown", "success"]
     assert "offline-secret" not in (output / "summary.json").read_text()
+
+
+def test_metered_learning_calls_keep_success_and_failure_costs():
+    from stirrup.core.models import TextBlock, TokenUsage
+
+    class Client:
+        calls = 0
+
+        async def generate(self, messages, tools):
+            self.calls += 1
+            if self.calls == 2:
+                raise TimeoutError("must not retain provider details")
+            return AssistantMessage(blocks=[TextBlock(text="{}")], token_usage=TokenUsage(input=12, answer=2))
+
+    client = runtime.MeteredClient(Client())
+    asyncio.run(client.generate([], {}))
+    try:
+        asyncio.run(client.generate([], {}))
+    except TimeoutError:
+        pass
+    assert len(client.calls) == 2
+    assert client.calls[0]["token_usage"]["input"] == 12
+    assert client.calls[1]["usage_available"] is False
+    assert client.calls[1]["error_type"] == "TimeoutError"
+    assert all(call["elapsed_seconds"] >= 0 for call in client.calls)
+    assert "provider details" not in str(client.calls)
+
+
+def test_parse_gemma_calls_handles_unquoted_tags_and_nested_structures():
+    text = (
+        'Leading thought\n'
+        '<|tool_call>call:execute_decision{"action": "a1", "goal": "test goal"}<tool_call|>\n'
+        '<|tool_call>call:execute_decision{action: <tool_call|>, goal: <|"|>hello<|"|>}<tool_call|>\n'
+        'Trailing response text'
+    )
+    clean, calls = runtime.parse_gemma_calls(text)
+    assert "Leading thought" in clean
+    assert "Trailing response text" in clean
+    assert "<|tool_call>" not in clean
+    assert len(calls) == 2
+    assert calls[0] == ("execute_decision", {"action": "a1", "goal": "test goal"})
+    assert calls[1][0] == "execute_decision"
+    assert calls[1][1]["goal"] == "hello"
+

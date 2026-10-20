@@ -424,9 +424,8 @@ def test_simple_check_accepts_exact_value_and_rejects_another_number(world):
             )
         ).content
     )
-    assert rejected["result"] == "matched"
-    assert adapter.goal_tracker.checks["other"].outcome.target.expected == "PHONE"
-    assert phone not in str(adapter.goal_tracker.checks["other"].outcome.target.expected)
+    assert rejected["result"] == "ungrounded_outcome_value"
+    assert "other" not in adapter.goal_tracker.checks
     plain = json.loads(
         asyncio.run(
             tool.executor(
@@ -456,8 +455,7 @@ def test_simple_check_accepts_exact_value_and_rejects_another_number(world):
             )
         ).content
     )
-    assert kind["result"] == "matched"
-    assert adapter.goal_tracker.checks["kind"].outcome.target.expected == "PHONE"
+    assert kind["result"] == "insufficient_outcome_predicate"
 
 
 @pytest.mark.parametrize(
@@ -469,7 +467,7 @@ def test_simple_check_accepts_exact_value_and_rejects_another_number(world):
         ("003xx0000000001AAA", "003xx0000000001AAB", "IDENTIFIER"),
     ],
 )
-def test_format_clue_ignores_the_literal_for_every_slot(world, value, other, fmt):
+def test_wrong_same_format_literal_is_rejected_for_every_slot(world, value, other, fmt):
     adapter, store, _ = world
     observe(adapter, store, name="Avery Chen", value=value, url="https://source.test/message")
     target_alias, _ = observe(adapter, store, name="Avery Chen", value=value)
@@ -485,9 +483,8 @@ def test_format_clue_ignores_the_literal_for_every_slot(world, value, other, fmt
             )
         )
     )
-    assert result.success, result.content
-    assert adapter.goal_tracker.checks["slot"].outcome.target.expected == fmt
-    assert other not in str(adapter.goal_tracker.checks["slot"].outcome.target.expected)
+    assert not result.success
+    assert json.loads(result.content)["result"] == "ungrounded_outcome_value"
 
 
 def test_split_name_is_one_identity_without_a_name_in_the_anchor(world):
@@ -522,11 +519,8 @@ def test_split_name_is_one_identity_without_a_name_in_the_anchor(world):
             )
         )
     )
-    assert result.success, result.content
-    outcome = adapter.goal_tracker.checks["email"].outcome
-    assert outcome.identity_path == ("Name",)
-    assert outcome.identity_anchor == "NAME"
-    assert outcome.target.expected == "EMAIL"
+    assert not result.success
+    assert json.loads(result.content)["field"] == "anchor_text"
 
 
 def test_sentence_anchor_matches_name_format_not_the_literal(world):
@@ -572,11 +566,13 @@ def test_sentence_anchor_matches_name_format_not_the_literal(world):
             )
         )
     )
-    assert result.success, result.content
-    outcome = adapter.goal_tracker.checks["contact"].outcome
-    assert outcome.identity_path == ("Name",)
-    assert outcome.identity_anchor == "NAME"
-    assert "Avery Chen" not in outcome.identity_anchor
+    assert not result.success
+    assert json.loads(result.content)["field"] == "anchor_text"
+    repaired = asyncio.run(simple_check_tool(adapter).executor(CheckEffect(
+        requirement_id="contact", task_quote="Avery Chen", episode_id=alias,
+        path=("Value",), expected=phone, anchor_text="Avery Chen")))
+    assert repaired.success
+    assert adapter.goal_tracker.checks["contact"].outcome.identity_anchor == "Avery Chen"
     assert source_alias
 
 
@@ -646,3 +642,55 @@ def test_captured_incomplete_request_names_one_field_and_ids_to_copy(world):
     assert repaired["copy"]["source_requirement_id"] == "message"
     assert repaired["copy"]["episode_id"] == target
     assert adapter.goal_tracker.checks["update"].outcome is None
+
+
+@pytest.mark.parametrize("failure", ["wrong_person", "ambiguous_source", "wrong_value", "wrong_tenant"])
+def test_exact_effect_binding_rejects_unsafe_sources(world, failure):
+    adapter, store, _ = world
+    phone = "+1-415-555-0100"
+    _, source_event = observe(adapter, store, name="Other Person" if failure == "wrong_person" else "Avery Chen",
+                             value=phone, url="https://source.test/message")
+    if failure == "wrong_tenant":
+        # Replace the fixture's source with evidence from another tenant.
+        store.db.execute("DELETE FROM episodes WHERE id=?", (source_event.episode_id,))
+        store.append_episode(source_event.model_copy(update={"scope": adapter.scope.model_copy(update={"tenant": "other"})}))
+    if failure == "ambiguous_source":
+        observe(adapter, store, name="Avery Chen", value=phone, url="https://source.test/second")
+    alias, _ = observe(adapter, store, name="Avery Chen", value=phone)
+    result = asyncio.run(simple_check_tool(adapter).executor(CheckEffect(
+        requirement_id="phone", task_quote="Avery Chen", episode_id=alias,
+        path=("Value",), expected="+1-415-555-9999" if failure == "wrong_value" else phone,
+        anchor_text="Avery Chen")))
+    assert not result.success
+    assert "phone" not in adapter.goal_tracker.checks
+
+
+def test_exact_quote_repair_keeps_original_request_and_accepts_corrected_quote(world):
+    adapter, store, task = world
+    phone = "+1-415-555-0100"
+    observe(adapter, store, name="Avery Chen", value=phone, url="https://source.test/message")
+    alias, _ = observe(adapter, store, name="Avery Chen", value=phone)
+    tool = simple_check_tool(adapter)
+    request = CheckEffect(requirement_id="phone", task_quote="Find Avery's message", episode_id=alias,
+                          path=("Value",), expected=phone, anchor_text="Avery Chen")
+    rejected = asyncio.run(tool.executor(request))
+    feedback = json.loads(rejected.content)
+    assert not rejected.success
+    assert feedback["public_task"] == task
+    assert feedback["field"] == "task_quote"
+    assert asyncio.run(tool.executor(request.model_copy(update={"task_quote": "Avery Chen"}))).success
+    original = adapter.goal_tracker.checks["phone"]
+    changed = request.model_copy(update={"task_quote": "Avery Chen", "expected": "Avery Chen", "path": ("Name",)})
+    assert not asyncio.run(tool.executor(changed)).success
+    assert adapter.goal_tracker.checks["phone"] == original
+
+
+def test_finish_repair_names_direct_tool_and_preserves_empty_ledger(world):
+    adapter, _, task = world
+    result = adapter.goal_tracker.finish(CheckedFinish(summary="done"))
+    assert not result.success
+    feedback = json.loads(result.content)
+    assert feedback["verification_tool"] == "check_effect"
+    assert feedback["public_task"] == task
+    assert "exact expected value" in feedback["next"]
+    assert adapter.goal_tracker.checks == {}

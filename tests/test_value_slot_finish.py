@@ -85,6 +85,7 @@ def test_task_names_the_changed_slot_not_the_message_medium():
 
 def test_matched_name_check_alone_cannot_finish_a_phone_update(make_adapter):
     adapter = make_adapter(PHONE_TASK)
+    read(adapter, "https://mail.test/source", {"Name": "Jordan Lee", "body": "Use +1-415-555-0101"})
     contact = read(
         adapter,
         "https://crm.test/Contact/003001",
@@ -148,7 +149,7 @@ def test_email_check_walks_lists_in_other_reads(make_adapter):
     assert adapter.goal_tracker.completion_status == "checked"
 
 
-def test_prose_source_body_grounds_format_without_standalone_name_field(make_adapter):
+def test_prose_source_body_grounds_exact_value_with_identity(make_adapter):
     adapter = make_adapter(PHONE_TASK)
     source = read(
         adapter,
@@ -179,8 +180,7 @@ def test_prose_source_body_grounds_format_without_standalone_name_field(make_ada
     outcome = adapter.goal_tracker.checks["phone_update"].outcome
     assert outcome.source_episode_id == adapter.evidence_aliases[source]
     assert outcome.source_path == ("body_plain",)
-    assert outcome.target.expected == "PHONE"
-    assert "+1-555-0101" not in outcome.model_dump_json()
+    assert outcome.target.expected == "+1-555-0101"
 
 
 def test_write_episode_gates_finish_for_non_phone_non_email_fields(make_adapter):
@@ -250,8 +250,8 @@ def test_non_person_record_uses_identifier_identity_without_name_field(make_adap
     assert result.success, result.content
     outcome = adapter.goal_tracker.checks["website_update"].outcome
     assert outcome.identity_path == ("Id",)
-    assert outcome.identity_anchor == "IDENTIFIER"
-    assert outcome.target.expected == "URL"
+    assert outcome.identity_anchor == "001xx000003DGbYAAW"
+    assert outcome.target.expected == "https://acme.example.com/portal"
     assert outcome.source_episode_id == adapter.evidence_aliases[source]
     assert adapter.goal_tracker.finish(CheckedFinish(summary="done")).success
 
@@ -278,8 +278,10 @@ def test_single_record_query_wrapper_and_requirement_reuse(make_adapter):
     # First check on Name with requirement_id="req_1", then reuse "req_1" to check Phone without records[0] prefix.
     assert check(adapter, "req_1", queried, ("Name",), "Jordan Lee", PHONE_TASK).success
     repaired = check(adapter, "req_1", queried, ("Phone",), "+1-555-0101", PHONE_TASK)
-    assert repaired.success, repaired.content
-    outcome = adapter.goal_tracker.checks["req_1"].outcome
+    assert not repaired.success
+    assert adapter.goal_tracker.checks["req_1"].outcome.target.expected == "Jordan Lee"
+    assert check(adapter, "phone", queried, ("Phone",), "+1-555-0101", PHONE_TASK).success
+    outcome = adapter.goal_tracker.checks["phone"].outcome
     assert outcome.target.path == ("records", 0, "Phone")
     assert outcome.identity_path == ("records", 0, "Name")
     assert adapter.goal_tracker.finish(CheckedFinish(summary="done")).success
@@ -366,7 +368,7 @@ def test_created_subscriber_email_slot_acts_as_self_identity_when_needed(make_ad
     assert adapter.goal_tracker.completion_status == "checked"
 
 
-def test_post_creation_response_with_coverage_verifies_when_no_get_endpoint_exists(make_adapter):
+def test_post_creation_response_cannot_replace_current_read(make_adapter):
     task = "Look for an email about dark mode and create an Asana task in workspace ws_prod."
     adapter = make_adapter(task)
     read(
@@ -405,14 +407,14 @@ def test_post_creation_response_with_coverage_verifies_when_no_get_endpoint_exis
     res_name = check(
         adapter, "task_name", ep_alias, ("data", "name"), "Add dark mode feature", task
     )
-    assert res_name.success, res_name.content
+    assert not res_name.success
+    assert json.loads(res_name.content)["result"] == "outcome_verification_requires_read"
     res_ws = check(adapter, "task_ws", ep_alias, ("data", "workspace"), "ws_prod", task)
-    assert res_ws.success, res_ws.content
-    assert adapter.goal_tracker.finish(CheckedFinish(summary="done")).success
-    assert adapter.goal_tracker.completion_status == "checked"
+    assert not res_ws.success
+    assert not adapter.goal_tracker.finish(CheckedFinish(summary="done")).success
 
 
-def test_multi_number_formatted_summary_grounds_against_task_metrics(make_adapter):
+def test_shared_numbers_do_not_ground_arbitrary_summary(make_adapter):
     task = (
         "Post a formatted weekly metrics summary to #weekly-metrics (C02metrics). "
         "Data: signups 1,420 (+12% WoW), active users 18,350 (+4% WoW), revenue $48,200 (+8% WoW)."
@@ -467,9 +469,8 @@ def test_multi_number_formatted_summary_grounds_against_task_metrics(make_adapte
             )
         )
     )
-    assert res.success, res.content
-    assert adapter.goal_tracker.finish(CheckedFinish(summary="done")).success
-    assert adapter.goal_tracker.completion_status == "checked"
+    assert not res.success
+    assert not adapter.goal_tracker.finish(CheckedFinish(summary="done")).success
 
 
 

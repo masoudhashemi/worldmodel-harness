@@ -140,6 +140,9 @@ def operational_tools(
     check_tool = simple_check_tool(adapter)
     available[check_tool.name] = check_tool
     aliases = {f"a{i + 1}": name for i, name in enumerate(available)}
+    for i, name in enumerate(available):
+        aliases[f"a{i + 1}:{name}"] = name
+        aliases[f"{name}:{name}"] = name
 
     async def decide(decision):
         data = decision.model_dump()
@@ -179,7 +182,7 @@ def operational_tools(
                     and (
                         event.operation != "api_fetch"
                         or method in ("GET", "HEAD")
-                        or (method == "POST" and any(k != "status" for k in event.coverage))
+
                     )
                 ):
                     new_verifiable = (alias, event)
@@ -191,6 +194,7 @@ def operational_tools(
                 paths = _checkable_paths(event)
                 if paths:
                     suffix += f"\nCheckable paths on {alias}: {json.dumps(paths)}"
+                    suffix += "\nFor task effects call check_effect directly with this episode reference, modified field path, exact intended value from task/source, and an exact task quote and identity anchor. Reading a record alone does not register verification."
             result = ToolResult(
                 content=result.content + suffix,
                 success=result.success,
@@ -217,10 +221,12 @@ def operational_tools(
             name="execute_decision",
             parameters=CompactDecision,
             executor=decide,
-            description="Execute only the next action using its short ID or name. Keep rationale "
+            description="Execute the next action step. Format 'action' as an object: {'tool': '<tool_name>', 'arguments': {<parameters>}}, e.g. for api_search: {'tool': 'api_search', 'arguments': {'query': '...'}}. Do not omit arguments for tools that require them. Keep rationale "
             "empty unless needed. Use the separate check_effect tool for task verification. Include known "
             "dependencies, bindings, and evidence. Missing prerequisites block execution. "
-            "Use discovery to learn unknown contracts. "
+            "Use discovery to learn unknown contracts. api_search searches endpoint documentation, not records or messages. "
+            "Use explicit workspace/project/record IDs supplied in the task as inputs; do not assume they need translation into other IDs. "
+            "After discovery yields an applicable contract, execute it. Repeating an unproductive discovery query does not resolve an already supplied ID. "
             "Where useful, supply output_expectations for observable response fields before "
             "the call; missing fields remain inconclusive, and a matched response is not proof "
             "of hidden effects or task completion. "
