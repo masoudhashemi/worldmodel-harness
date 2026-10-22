@@ -439,60 +439,7 @@ async def dispatch_decision(
                                         "active_entity": active_name,
                                     }
                                     break
-                # Mutation Failure Repair Guard:
-                # If the immediate prior environment action was an attempted mutation that failed
-                # with a client / payload syntax error (e.g. HTTP 400), prompt the agent to repair
-                # the payload rather than silently abandoning the required step.
-                if gate.allowed and evidence_store is not None:
-                    last_episodes = evidence_store.episodes(scope) if hasattr(evidence_store, "episodes") else []
-                    if last_episodes:
-                        last_env_ep = None
-                        for ep in reversed(last_episodes):
-                            if ep.origin == "environment":
-                                last_env_ep = ep
-                                break
-                        if (
-                            last_env_ep
-                            and last_env_ep.outcome == "error"
-                            and is_mutation_action(last_env_ep.operation, last_env_ep.arguments)
-                        ):
-                            is_repairing = False
-                            if is_mutation_action(decision.action.tool, decision.action.arguments):
-                                cur_url = decision.action.arguments.get("url") if isinstance(decision.action.arguments, dict) else ""
-                                last_url = last_env_ep.arguments.get("url") if isinstance(last_env_ep.arguments, dict) else ""
-                                if cur_url and cur_url == last_url:
-                                    is_repairing = True
-                            elif decision.action.tool in ("api_search", "inspect_contract", "lookup_knowledge"):
-                                is_repairing = True
 
-                            if not is_repairing:
-                                err_msg = "Client error"
-                                resp = last_env_ep.response
-                                if isinstance(resp, dict):
-                                    if "error" in resp:
-                                        err_obj = resp["error"]
-                                        err_msg = err_obj.get("message") if isinstance(err_obj, dict) else str(err_obj)
-                                    elif "message" in resp:
-                                        err_msg = str(resp["message"])
-                                else:
-                                    err_msg = str(resp)[:120]
-
-                                failed_target = (last_env_ep.arguments.get("url") if isinstance(last_env_ep.arguments, dict) else "") or last_env_ep.operation
-                                gate = GateResult(
-                                    allowed=False,
-                                    gaps=("action:repair_failed_mutation",),
-                                    checked_claims=gate.checked_claims,
-                                    checked_facts=gate.checked_facts,
-                                )
-                                repair_details = {
-                                    "instruction": (
-                                        f"The prior mutation call to '{failed_target}' failed with error: '{err_msg}'. "
-                                        "Do not abandon this required action. Inspect the parameter/body syntax against the "
-                                        "endpoint schema, correct the malformed JSON or arguments, and retry the request."
-                                    ),
-                                    "failed_operation": failed_target,
-                                    "error_message": err_msg,
-                                }
     considered = []
     for identity in decision.considered_claim_ids:
         try:
@@ -544,7 +491,7 @@ async def dispatch_decision(
                             if "requirements:unresolved" in gate.gaps
                             else (
                                 repair_details.get("instruction")
-                                if ("action:stagnant_query" in gate.gaps or "action:repair_failed_mutation" in gate.gaps or any(g.startswith("entity:excluded") for g in gate.gaps))
+                                if ("action:stagnant_query" in gate.gaps or any(g.startswith("entity:excluded") for g in gate.gaps))
                                 else "Resolve the listed argument, scope, evidence, or freshness gaps before retrying."
                             )
                         )
