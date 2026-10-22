@@ -82,3 +82,21 @@ def test_rounds_reuse_same_tasks_and_memory_without_holdout_or_validation(
     assert report["observed_success_change"] == 1
     assert not report["improvement_demonstrated"]  # Not a statistical conclusion.
     assert report["complete"]
+
+
+def test_summary_counts_learning_and_failed_calls_once():
+    from worldmodel_harness.learning_curve import summarize_round
+    calls = [
+        {"elapsed_seconds": 1, "usage_available": True, "token_usage": {"input": 10}},
+        {"elapsed_seconds": 2, "usage_available": True, "token_usage": {"input": 20}},
+        {"elapsed_seconds": 3, "usage_available": False, "error_type": "TimeoutError"},
+    ]
+    report = {"results": [{"task_name": "t", "task_completed_correctly": 0,
+        "ledger": {"environment_calls": 0, "compute_seconds": 0},
+        "token_usage": {"input": 10}, "model_call_costs": calls[:1],
+        "all_model_call_costs": calls,
+        "online_learning": [{"model_call_costs": calls[1:]}]}]}
+    summary = summarize_round(report)
+    assert summary["reported_tokens"] == 30
+    assert summary["reported_model_seconds"] == 6
+    assert not summary["token_usage_complete"]

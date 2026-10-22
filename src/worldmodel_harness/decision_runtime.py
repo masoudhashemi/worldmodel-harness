@@ -132,14 +132,68 @@ async def dispatch_decision(
                 update={"action": decision.action.model_copy(update={"tool": matching_tools[0]})}
             )
             tool = tools.get(matching_tools[0])
+        elif "api_search" in matching_tools and "query" in decision.action.arguments:
+            decision = decision.model_copy(
+                update={"action": decision.action.model_copy(update={"tool": "api_search"})}
+            )
+            tool = tools.get("api_search")
+
+    if (
+        decision.action.tool == "api_fetch"
+        and "url" in decision.action.arguments
+        and "?" in str(decision.action.arguments["url"])
+    ):
+        import urllib.parse
+
+        parsed = urllib.parse.urlsplit(str(decision.action.arguments["url"]))
+        clean_url = urllib.parse.urlunsplit(
+            (parsed.scheme, parsed.netloc, parsed.path, "", "")
+        )
+        new_args = dict(decision.action.arguments)
+        new_args["url"] = clean_url
+        if parsed.query:
+            qs_dict = {
+                k: v[0] if len(v) == 1 else v
+                for k, v in urllib.parse.parse_qs(parsed.query).items()
+            }
+            existing_params = new_args.get("params")
+            if not existing_params:
+                new_args["params"] = json.dumps(qs_dict)
+            elif isinstance(existing_params, str):
+                try:
+                    p_dict = json.loads(existing_params)
+                    if isinstance(p_dict, dict):
+                        new_args["params"] = json.dumps({**qs_dict, **p_dict})
+                except Exception:
+                    pass
+            elif isinstance(existing_params, dict):
+                new_args["params"] = json.dumps({**qs_dict, **existing_params})
+        decision = decision.model_copy(
+            update={"action": decision.action.model_copy(update={"arguments": new_args})}
+        )
 
     if tool is None:
-        gate = GateResult(
-            allowed=False,
-            gaps=(f"tool:{decision.action.tool or 'unspecified'}",),
-            checked_claims=(),
-            checked_facts=(),
-        )
+        if decision.action.tool in ("finish", "finish_task"):
+            gate = GateResult(
+                allowed=False,
+                gaps=("tool:finish",),
+                checked_claims=(),
+                checked_facts=(),
+            )
+            repair_details = {
+                "instruction": (
+                    "The finish tool is a top-level agent tool, NOT an action inside execute_decision. "
+                    "Call the finish tool directly as a separate tool call: finish(summary=...)."
+                ),
+                "expected_format": {"name": "finish", "arguments": {"summary": "<completion summary>"}},
+            }
+        else:
+            gate = GateResult(
+                allowed=False,
+                gaps=(f"tool:{decision.action.tool or 'unspecified'}",),
+                checked_claims=(),
+                checked_facts=(),
+            )
     else:
         params = None
         try:
@@ -223,7 +277,26 @@ async def dispatch_decision(
                     allowed_tools=set(tools),
                     evidence_store=evidence_store,
                 )
+    considered = []
+    for identity in decision.considered_claim_ids:
+        try:
+            claim = store.claim(identity)
+        except KeyError:
+            considered.append({"claim_id": identity, "result": "unknown"})
+            continue
+        if not claim.scope.applies_to(scope):
+            considered.append({"claim_id": identity, "result": "out_of_scope"})
+            continue
+        considered.append({"claim_id": identity, "version": claim.version,
+            "status": claim.status, "needs_review": claim.needs_review,
+            "supporting_episodes": claim.supporting_episodes,
+            "prospective_tests": claim.payload.get("prospective_tests", []),
+            "result": "model_declared_consideration_not_causal_attribution"})
+    from .interactions import CURRENT_INTERACTION
+
     row = {
+        "interaction_id": CURRENT_INTERACTION.get(),
+        "considered_claims": considered,
         "decision": decision.model_dump(mode="json"),
         "gate": gate.model_dump(),
         "gate_seconds": perf_counter() - started,
@@ -243,11 +316,15 @@ async def dispatch_decision(
                     "interpretation": "No tool request was sent. This is not an API response "
                     "and establishes nothing about service availability or the action's effects.",
                     "next_step": (
-                        "Retrieve or discover the matching operation contract, or disambiguate "
-                        "multiple matches. If the prerequisite cannot be resolved, report it as "
-                        "unresolved; do not treat this local block as an environment error."
-                        if "requirements:unresolved" in gate.gaps
-                        else "Resolve the listed argument, scope, evidence, or freshness gaps before retrying."
+                        "Call the top-level finish tool directly (finish(summary=...)), NOT as an action inside execute_decision."
+                        if "tool:finish" in gate.gaps
+                        else (
+                            "Retrieve or discover the matching operation contract, or disambiguate "
+                            "multiple matches. If the prerequisite cannot be resolved, report it as "
+                            "unresolved; do not treat this local block as an environment error."
+                            if "requirements:unresolved" in gate.gaps
+                            else "Resolve the listed argument, scope, evidence, or freshness gaps before retrying."
+                        )
                     ),
                 }
             ),

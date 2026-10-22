@@ -60,6 +60,7 @@ class Decision(Record):
     alternatives: tuple[Explanation, ...] = ()
     # A proposal's evidence references are checked, not treated as live facts.
     evidence_ids: tuple[str, ...] = ()
+    considered_claim_ids: tuple[str, ...] = Field(default=(), max_length=8)
     output_expectations: tuple[OutputExpectation, ...] = Field(default=(), max_length=8)
 
 
@@ -70,6 +71,10 @@ class CompactDecision(Record):
     goal: str = Field(default="Next task step", min_length=1, max_length=240)
     rationale: str = Field(default="", max_length=320)
     evidence_ids: tuple[str, ...] = Field(default=(), max_length=8)
+    considered_claim_ids: tuple[str, ...] = Field(
+        default=(), max_length=8,
+        description="Retrieved claims or hypotheses considered for this decision; not prerequisites or proof.",
+    )
     output_expectations: tuple[OutputExpectation, ...] = Field(default=(), max_length=4)
 
     @model_validator(mode="before")
@@ -78,11 +83,23 @@ class CompactDecision(Record):
         if not isinstance(data, dict):
             return data
         data = dict(data)
+        if "arguments" in data and isinstance(data["arguments"], dict) and "tool" in data["arguments"] and not data.get("tool"):
+            data["tool"] = data["arguments"].pop("tool")
+
+        if "tool" in data and "action" not in data:
+            tool_val = data.pop("tool")
+            args_val = data.pop("arguments", {})
+            data["action"] = {"tool": tool_val, "arguments": args_val}
+
         action_val = data.get("action")
         # Only normalize dictionary action payloads emitted by tool calls;
         # leave serialized strings to decode_serialized_action for strict validation.
         if isinstance(action_val, dict):
             action_dict = dict(action_val)
+            # If tool is nested inside action.arguments, hoist it to action.tool
+            if (not action_dict.get("tool")) and isinstance(action_dict.get("arguments"), dict) and "tool" in action_dict["arguments"]:
+                action_dict["tool"] = action_dict["arguments"].pop("tool")
+
             # 1. Hoist goal if nested inside action and not provided at root
             if "goal" in action_dict:
                 nested_goal = action_dict.pop("goal")
@@ -94,6 +111,22 @@ class CompactDecision(Record):
                 nested_rationale = action_dict.pop("rationale")
                 if ("rationale" not in data or not data["rationale"]) and nested_rationale:
                     data["rationale"] = str(nested_rationale)
+
+            # Hoist decision-level annotations if nested inside action
+            if "output_expectations" in action_dict:
+                nested_oe = action_dict.pop("output_expectations")
+                if ("output_expectations" not in data or not data["output_expectations"]) and nested_oe:
+                    data["output_expectations"] = nested_oe
+
+            if "evidence_ids" in action_dict:
+                nested_ev = action_dict.pop("evidence_ids")
+                if ("evidence_ids" not in data or not data["evidence_ids"]) and nested_ev:
+                    data["evidence_ids"] = nested_ev
+
+            if "considered_claim_ids" in action_dict:
+                nested_cc = action_dict.pop("considered_claim_ids")
+                if ("considered_claim_ids" not in data or not data["considered_claim_ids"]) and nested_cc:
+                    data["considered_claim_ids"] = nested_cc
 
             # 3. Consolidate parameter fields into arguments
             known_action_fields = {"tool", "requirements"}
@@ -256,53 +289,8 @@ def check_decision(
         ):
             gaps.add(f"evidence_scope:{evidence_id}")
 
-    active_operation = mandatory.operation_id or decision.action.tool
-
-    # Check contrastive preconditions learned across episodes
-    for claim in store.claims(scope):
-        if (
-            claim.relation == "contrastive_precondition"
-            and claim.status == "supported"
-            and not claim.needs_review
-            and (claim.valid_until is None or claim.valid_until > now)
-        ):
-            target_op = (
-                claim.payload.get("target_operation")
-                or claim.payload.get("target_contract_id")
-                or claim.payload.get("target_route")
-                or claim.payload.get("target_tool")
-            )
-            matches_target = False
-            if target_op:
-                if target_op == active_operation or target_op == decision.action.tool:
-                    matches_target = True
-                elif any(dep.claim_id == target_op for dep in mandatory.claims):
-                    matches_target = True
-
-            if matches_target:
-                checked_claims.add(claim.claim_id)
-                prereq_arg = claim.payload.get("required_argument")
-                if prereq_arg and prereq_arg not in decision.action.arguments:
-                    gaps.add(f"contrastive_precondition:missing_argument:{prereq_arg}")
-                prereq_key = claim.payload.get("required_fact_key")
-                if prereq_key:
-                    check_fact(prereq_key, claim.payload.get("expected_fact_value", True))
-                prereq_action = claim.payload.get("required_preceding_action")
-                # Never allow self-referential prerequisites or prerequisites blocking discovery
-                if (
-                    prereq_action
-                    and prereq_action != decision.action.tool
-                    and prereq_action != active_operation
-                    and decision.action.tool not in ("api_search", "lookup_knowledge")
-                ):
-                    task_episodes = evidence_store.episodes(scope)
-                    done_ops = {
-                        e.operation
-                        for e in task_episodes
-                        if e.task_id == live.task_id and e.outcome == "success"
-                    }
-                    if prereq_action not in done_ops:
-                        gaps.add(f"contrastive_precondition:{claim.statement}")
+    # Observational contrasts, including legacy "supported" records, do not
+    # establish necessity. Only explicit contracts and pinned requirements gate.
 
     return GateResult(
         allowed=not gaps,

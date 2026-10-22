@@ -19,7 +19,8 @@ from .behavior import BehaviorLearner, predict
 from .budget import Ledger
 from .composition import CompositionLearner
 from .information import CURRENT_INFORMATION
-from .knowledge import Episode, LiveState, Scope
+from .interactions import CURRENT_INTERACTION
+from .knowledge import Episode, LiveState, Scope, response_coverage
 from .learning import Learner
 from .observable_predictions import CURRENT_EXPECTATIONS, compare_expectations
 from .procedures import CURRENT_ARTIFACT
@@ -138,10 +139,12 @@ class AutomationBenchAdapter:
         proposed = CURRENT_EXPECTATIONS.get()
         expectations = proposed[1] if proposed is not None and proposed[0] == operation else ()
         pre_evidence = tuple(dict.fromkeys(f.episode_id for f in self.live.facts()))
-        if operation == "api_fetch" and arguments.get("method", "GET").upper() not in (
-            "GET",
-            "HEAD",
-        ):
+        effect, effect_claim = "unknown", None
+        if operation == "api_fetch":
+            from .operation_semantics import interpret_effect
+
+            effect, effect_claim = await interpret_effect(self, arguments)
+        if operation == "api_fetch" and effect != "read":
             from .resource_invalidation import invalidation_keys
 
             # Include queries/collections and known cross-service dependents;
@@ -151,6 +154,31 @@ class AutomationBenchAdapter:
                 "pending-write",
             )
         kwargs = dict(arguments)
+        if operation == "api_fetch" and "url" in kwargs and "?" in str(kwargs["url"]):
+            import urllib.parse
+
+            parsed = urllib.parse.urlsplit(str(kwargs["url"]))
+            clean_url = urllib.parse.urlunsplit(
+                (parsed.scheme, parsed.netloc, parsed.path, "", "")
+            )
+            kwargs["url"] = clean_url
+            if parsed.query:
+                qs_dict = {
+                    k: v[0] if len(v) == 1 else v
+                    for k, v in urllib.parse.parse_qs(parsed.query).items()
+                }
+                existing_params = kwargs.get("params")
+                if not existing_params:
+                    kwargs["params"] = json.dumps(qs_dict)
+                elif isinstance(existing_params, str):
+                    try:
+                        p_dict = json.loads(existing_params)
+                        if isinstance(p_dict, dict):
+                            kwargs["params"] = json.dumps({**qs_dict, **p_dict})
+                    except Exception:
+                        pass
+                elif isinstance(existing_params, dict):
+                    kwargs["params"] = json.dumps({**qs_dict, **existing_params})
         if "world" in inspect.signature(function).parameters:
             kwargs["world"] = self._state["world"]
         self.ledger.compute_seconds += perf_counter() - started
@@ -178,13 +206,17 @@ class AutomationBenchAdapter:
             if shifted:
                 raw = json.dumps(response)
         episode = Episode(
+            effect_kind=effect,
+            effect_source_claim_id=effect_claim,
+            interaction_id=CURRENT_INTERACTION.get(),
+            environment_called=True,
             task_id=self.live.task_id,
             scope=self.scope,
             operation=operation,
             arguments=arguments,
             response=response,
             outcome=outcome,
-            coverage=tuple(response) if isinstance(response, dict) else (),
+            coverage=response_coverage(response),
             purpose=purpose,
             elapsed_seconds=tool_elapsed,
             predictions=predictions,
@@ -236,11 +268,14 @@ class AutomationBenchAdapter:
                     "assessments": assessments,
                 }
             )
-        if self.learner and operation == "api_search" and outcome == "success":
+        documenter = self.learner or getattr(self, "documentation_learner", None)
+        if documenter and operation == "api_search" and outcome == "success":
             learning_started = perf_counter()
+            if self.learner is None and documenter.store is not self.evidence:
+                documenter.store.append_episode(episode)
             reusable = Scope(environment=self.scope.environment, version=self.scope.version)
             for endpoint in response.get("results", []):
-                self.learner.document(
+                documenter.document(
                     episode,
                     relation="endpoint_contract",
                     participants=(endpoint["id"], endpoint["url"], endpoint["method"]),

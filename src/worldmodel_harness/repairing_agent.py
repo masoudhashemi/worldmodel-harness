@@ -60,17 +60,97 @@ def suggested_arguments(schema, arguments):
         return None
 
 
+def normalize_assistant_tool_calls(msg):
+    """Ensure tool calls from raw text syntax or misrouted execute_decision finish calls are parsed cleanly."""
+    from stirrup.core.models import AssistantMessage, TextBlock, ToolCall, joined_text, tool_call_blocks
+
+    if not isinstance(msg, AssistantMessage):
+        return msg
+
+    blocks = list(msg.blocks)
+    existing_calls = tool_call_blocks(blocks)
+
+    if not existing_calls:
+        text = joined_text(blocks) or ""
+        if "<|tool_call|>call:" in text:
+            from .runtime import parse_gemma_calls
+
+            _, extracted = parse_gemma_calls(text)
+            for idx, (fn_name, fn_args) in enumerate(extracted):
+                blocks.append(
+                    ToolCall(
+                        tool_call_id=f"text_call_{idx}",
+                        name=fn_name,
+                        arguments=json.dumps(fn_args),
+                    )
+                )
+
+    new_blocks = []
+    for b in blocks:
+        if isinstance(b, ToolCall) and b.name == "execute_decision":
+            try:
+                args = json.loads(b.arguments) if isinstance(b.arguments, str) else (b.arguments or {})
+                action = args.get("action")
+                if isinstance(action, str):
+                    try:
+                        action = json.loads(action)
+                    except Exception:
+                        pass
+                if isinstance(action, dict) and action.get("tool") in ("finish", "finish_task"):
+                    finish_args = action.get("arguments") or {}
+                    new_blocks.append(
+                        ToolCall(
+                            tool_call_id=b.tool_call_id,
+                            name="finish",
+                            arguments=json.dumps(finish_args),
+                        )
+                    )
+                    continue
+            except Exception:
+                pass
+        new_blocks.append(b)
+
+    return msg.model_copy(update={"blocks": new_blocks})
+
+
+class InterceptingClient:
+    def __init__(self, client):
+        self._inner = client
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    async def generate(self, messages, tools):
+        msg = await self._inner.generate(messages, tools)
+        return normalize_assistant_tool_calls(msg)
+
+
 class RepairingAgent(Agent):
-    def __init__(self, *, repair_schemas, **kwargs):
+    def __init__(self, *, repair_schemas, interaction_recorder=None, **kwargs):
         super().__init__(**kwargs)
         self.repair_schemas = repair_schemas
         self.outer_validation_audit = []
+        self.interaction_recorder = interaction_recorder
+        self._client = InterceptingClient(self._client)
         # Stirrup sessions share the instance dictionary but use SessionAgent's
         # class, not the subclass. Bind the public execution hook on this instance
         # so the same hook is present in the session; no global SDK monkeypatch.
         self.run_tool = self._run_tool_with_repairs
 
     async def _run_tool_with_repairs(self, tool_call, run_metadata):
+        recorder = self.interaction_recorder
+        if recorder is None:
+            return await self._run_tool_with_schema_feedback(tool_call, run_metadata)
+        interaction_id, token = recorder.begin()
+        try:
+            result = await self._run_tool_with_schema_feedback(tool_call, run_metadata)
+        except BaseException as exc:
+            recorder.end(interaction_id, token, tool_call, error_type=type(exc).__name__)
+            raise
+        recorder.end(interaction_id, token, tool_call, result=result)
+        return result
+
+    async def _run_tool_with_schema_feedback(self, tool_call, run_metadata):
         result = await super().run_tool(tool_call, run_metadata)
         schema = self.repair_schemas.get(tool_call.name)
         if result.args_was_valid or schema is None:

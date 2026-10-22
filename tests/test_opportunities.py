@@ -76,3 +76,42 @@ def test_opportunities_require_runs_and_generate_no_benchmark_workflow(tmp_path)
     )
     assert not plan.propose_artifact
     store.close()
+
+
+def test_linked_local_recoveries_become_candidates_without_becoming_rules(tmp_path):
+    store = KnowledgeStore(tmp_path / "knowledge.sqlite")
+    scope = Scope(environment="novel", version="1")
+    for task in ("first", "second"):
+        task_scope = scope.model_copy(update={"task_id": task})
+        failure = Episode(task_id=task, scope=task_scope, origin="harness",
+            operation="tool_call:unknown_tool", arguments={}, response={"rejected": True},
+            outcome="error", interaction_id=task + "-failure", environment_called=False)
+        success = Episode(task_id=task, scope=task_scope, origin="harness",
+            operation="tool_call:discovered_tool", arguments={}, response={"accepted": True},
+            outcome="success", interaction_id=task + "-success",
+            previous_interaction_id=failure.interaction_id, environment_called=False)
+        store.append_episode(failure)
+        store.append_episode(success)
+        if task == "first":
+            assert opportunities(store, scope) == []
+    candidates = opportunities(store, scope)
+    assert len(candidates) == 1
+    assert candidates[0].kind == "interaction_recovery_candidate"
+    assert candidates[0].independent_tasks == 2
+    assert len(candidates[0].evidence_ids) == 4
+    assert not store.claims() and not store.procedures()
+    store.close()
+
+
+def test_repeated_attempts_of_one_tenant_task_are_not_independent(tmp_path):
+    store = KnowledgeStore(tmp_path / "knowledge.sqlite")
+    scope = Scope(environment="novel", version="1")
+    for attempt in ("attempt1", "attempt2"):
+        current = scope.model_copy(update={"task_id": attempt, "tenant": "same-task"})
+        for index, outcome in enumerate(("error", "success")):
+            store.append_episode(Episode(task_id=attempt, scope=current, origin="harness",
+                operation="tool_call:action", arguments={}, response={}, outcome=outcome,
+                interaction_id=f"{attempt}-{index}",
+                previous_interaction_id=f"{attempt}-0" if index else None))
+    assert opportunities(store, scope) == []
+    store.close()

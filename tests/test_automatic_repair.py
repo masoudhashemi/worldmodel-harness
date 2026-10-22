@@ -81,7 +81,10 @@ class Client:
     async def generate(self, messages, tools):
         self.calls += 1
         prompt = json.loads(messages[1].content)
-        if self.calls == 1:
+        if "requested_goal" in prompt:
+            data = {"supported": True, "step_names": [self.candidate.steps[0].name],
+                    "missing_requirements": [], "reason": "The lookup steps cover the goal."}
+        elif self.calls == 1:
             assert "candidates" in prompt
             data = {
                 "procedure_id": "learned",

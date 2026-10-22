@@ -21,7 +21,7 @@ from .curve_report import runtime_diagnostics
 from .experiment import ExperimentSettings, run_automationbench
 from .knowledge import Record, Scope
 from .opportunities import execution_costs, plan_from_runs
-from .runtime import build_client
+from .runtime import MeteredClient, build_client
 from .store import KnowledgeStore
 
 
@@ -71,8 +71,8 @@ def summarize_round(report: dict) -> dict:
         "task_count": len(results),
         "strict_success": sum(r["task_completed_correctly"] for r in results) / len(results),
         "environment_calls": sum(r["ledger"]["environment_calls"] for r in results),
-        "reported_tokens": sum(sum(r.get("token_usage", {}).values()) for r in results),
-        "token_usage_complete": all("token_usage" in r for r in results),
+        "reported_tokens": sum(c.reported_tokens or 0 for c in execution_costs(report)),
+        "token_usage_complete": all(c.model_usage_complete for c in execution_costs(report)),
         "execution_errors": sum("error_type" in r for r in results),
         "runtime_diagnostics": runtime_diagnostics(results),
         "artifact_invocations": sum(r.get("artifact_invocations", 0) for r in results),
@@ -85,7 +85,8 @@ def summarize_round(report: dict) -> dict:
         "artifact_measured_savings": None,
         "compute_seconds": sum(r["ledger"]["compute_seconds"] for r in results),
         "reported_model_seconds": sum(
-            c["elapsed_seconds"] for r in results for c in r.get("model_call_costs", [])
+            c["elapsed_seconds"] for r in results
+            for c in r.get("all_model_call_costs", r.get("model_call_costs", []))
         ),
         "model_timing_complete": all("model_call_costs" in r for r in results),
         "semantic_learning_tokens": sum(
@@ -105,7 +106,7 @@ async def learn_from_round(root, knowledge_path, prototype_row, settings, horizo
     result = {"deployment": "none", "independent_validation": False}
     try:
         model = load_settings(root).model_copy(update={"max_tokens": settings.proposal_max_tokens})
-        client = build_client(model, load_api_key(root, model))
+        client = MeteredClient(build_client(model, load_api_key(root, model)))
         scope = Scope(environment="automationbench", version=UPSTREAM_COMMIT)
         if settings.operational:
             from .automatic_repair import repair_candidates, repair_from_runs
@@ -189,6 +190,8 @@ async def learn_from_round(root, knowledge_path, prototype_row, settings, horizo
         result["error_type"] = type(exc).__name__
         return result
     finally:
+        if "client" in locals():
+            result["model_call_costs"] = client.calls
         result["accounting"] = accounting
         result["adaptation_seconds"] = perf_counter() - started
         store.close()
@@ -203,7 +206,7 @@ async def run_learning_curve(root: Path, settings: LearningCurveSettings) -> dic
     KnowledgeStore(knowledge_path).close()  # Start empty; no hand-written artifacts or prior runs.
     report = {
         "run_id": output.name,
-        "harness_revision": "operational-learning-v3.4",
+        "harness_revision": "interaction-learning-v4",
         "feedback_protocol": "trajectory-only",
         "protocol": "repeated-in-sample-online-learning",
         "settings": settings.model_dump(),

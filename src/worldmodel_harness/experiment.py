@@ -46,6 +46,8 @@ class ExperimentSettings(BaseModel):
     adaptive: bool = False
     operational: bool = False
     semantic_learning: bool = False
+    max_online_reflections: int = Field(default=2, ge=0, le=8)
+    max_operation_interpretations: int = Field(default=2, ge=0, le=8)
     semantic_max_tokens: int = Field(default=16384, ge=1)
     semantic_timeout_seconds: int = Field(default=180, ge=1)
     semantic_reasoning_effort: Literal["xhigh", "medium", "low", "none"] = "low"
@@ -132,6 +134,9 @@ class KnowledgeClient:
         self.retrievals = []
         self.model_call_costs = []
         self.last_messages = []
+        self.online_learner = None
+        self._last_working_claims = set()
+        self._completed_operations = set()
 
     async def _generate(self, messages, tools):
         self.last_messages = list(messages)
@@ -160,6 +165,8 @@ class KnowledgeClient:
         return self.client.context_window_tokens
 
     async def generate(self, messages, tools):
+        if self.online_learner is not None:
+            await self.online_learner.before_decision()
         selected_messages = list(messages)
         if self.settings.memory != "none":
             started = perf_counter()
@@ -183,6 +190,28 @@ class KnowledgeClient:
                 return await self._generate(selected_messages, tools)
             from .retrieval import decision_focus
 
+            current_node = None
+            last_interaction = getattr(self.adapter, "last_interaction", None)
+            if last_interaction is not None:
+                if last_interaction.operation == "api_fetch":
+                    from .behavior import endpoint_contract
+
+                    contract = endpoint_contract(
+                        self.knowledge,
+                        self.adapter.scope,
+                        last_interaction.arguments.get("method", "GET"),
+                        last_interaction.arguments.get("url", ""),
+                    )
+                    if contract is not None:
+                        current_node = contract.payload.get("id") or contract.claim_id
+                    else:
+                        current_node = last_interaction.operation
+                else:
+                    current_node = last_interaction.operation
+
+                if last_interaction.outcome == "success" and current_node:
+                    self._completed_operations.add(current_node)
+
             focus, subgoal = decision_focus(self.adapter)
             # Response bodies can contain unrelated words and instructions. In the
             # operational arm use explicit action bindings and its current subgoal.
@@ -196,6 +225,8 @@ class KnowledgeClient:
                 expand=self.settings.memory == "graph",
                 focus_entities=focus,
                 subgoal=subgoal,
+                current_node=current_node,
+                completed_nodes=set(self._completed_operations),
             )
             procedures, rejected = [], {}
             if self.settings.adaptive:
@@ -230,6 +261,22 @@ class KnowledgeClient:
                 )
                 if pending:
                     hints = (hints + "\n" if hints else "") + pending
+                if self.online_learner is not None:
+                    online_budget = max(400, hint_budget // 2) if hints else hint_budget
+                    online_hints = self.online_learner.context(max_chars=online_budget)
+                    if online_hints:
+                        if hints:
+                            combined = hints + "\n\n" + online_hints
+                            if len(combined) <= hint_budget:
+                                hints = combined
+                            else:
+                                rem = max(0, hint_budget - len(hints) - 2)
+                                if rem > 200:
+                                    trimmed = self.online_learner.context(max_chars=rem)
+                                    if trimmed:
+                                        hints = hints + "\n\n" + trimmed
+                        else:
+                            hints = online_hints
             feedback = ""
             if self.settings.operational:
                 from .observable_predictions import prediction_feedback
@@ -262,7 +309,18 @@ class KnowledgeClient:
                 max_chars=self.settings.retrieval_chars - reserved,
                 store=self.knowledge,
                 query=retrieval_query,
+                current_node=current_node,
+                completed_nodes=set(self._completed_operations),
             )
+            current_claim_ids = {c.claim_id for c in working.claims}
+            newly_injected = current_claim_ids - self._last_working_claims
+            retired = self._last_working_claims - current_claim_ids
+            self._last_working_claims = current_claim_ids
+
+            selection["current_node"] = current_node
+            selection["completed_nodes"] = list(self._completed_operations)
+            selection["newly_injected_claim_count"] = len(newly_injected)
+            selection["retired_claim_count"] = len(retired)
             if hints:
                 content += "\n" + hints
                 selection["hypothesis_chars"] = len(hints)
@@ -272,6 +330,10 @@ class KnowledgeClient:
             if goals:
                 content += "\n" + goals
                 selection["goal_check_chars"] = len(goals)
+            if selection.get("workflow_plan_active_step") and newly_injected and current_node:
+                active_st = selection["workflow_plan_active_step"]
+                frontier_note = f"\n[State Frontier: Active step {active_st}. Dynamic frontier updated with {len(newly_injected)} contracts.]"
+                content += frontier_note
             selection["injected_chars"] = len(content)
             self.adapter.ledger.compute_seconds += perf_counter() - started
             self.retrievals.append(
@@ -331,11 +393,12 @@ async def run_automationbench(
     knowledge_start = "continued" if knowledge_path is not None else "cold"
     knowledge_path = knowledge_path or output / "knowledge.sqlite"
     knowledge = KnowledgeStore(knowledge_path, frozen=not learns_from_trajectories(settings.phase))
+    frozen_source = knowledge if settings.phase == "frozen" else None
     evidence = KnowledgeStore(output / "evidence.sqlite")
     results = []
     report = {
         "run_id": run_id,
-        "harness_revision": "operational-learning-v3.4",
+        "harness_revision": "interaction-learning-v4",
         "feedback_protocol": "trajectory-only",
         "validation_scores_used_for_learning": False,
         "knowledge_start": knowledge_start,
@@ -364,6 +427,16 @@ async def run_automationbench(
         if not rows:
             raise ValueError("Empty task selection")
         for task_index, row in enumerate(rows):
+            if frozen_source is not None:
+                from .checkpoint import copy_checkpoint
+
+                # Current documentation is usable locally, never carried to siblings.
+                if knowledge is not frozen_source:
+                    knowledge.close()
+                local_path = output / f"task-contracts-{task_index}.sqlite"
+                copy_checkpoint(knowledge_path, local_path)
+                knowledge = KnowledgeStore(local_path)
+            learning_call_start = len(semantic_client.calls) if semantic_client else 0
             ledger = Ledger(max_environment_calls=settings.max_environment_calls)
             learner = (
                 Learner(knowledge)
@@ -387,9 +460,20 @@ async def run_automationbench(
                 raise ValueError(
                     "Frozen evaluation task overlaps development/online learning tasks"
                 )
+            if frozen_source is not None:
+                adapter.documentation_learner = Learner(knowledge)
+            adapter.semantics_client = semantic_client
+            adapter.max_operation_interpretations = settings.max_operation_interpretations
             if learns_from_trajectories(settings.phase) and settings.memory != "none":
                 knowledge.register_learning_task(adapter.task.task_id, settings.phase)
             wrapper = KnowledgeClient(client, adapter, knowledge, settings)
+            if semantic_client is not None and settings.max_online_reflections:
+                from .online_learning import OnlineLearner
+
+                wrapper.online_learner = OnlineLearner(
+                    adapter, semantic_client, max_reflections=settings.max_online_reflections,
+                    timeout_seconds=settings.semantic_timeout_seconds,
+                )
             tools = adapter.tools()
             information_audit = []
             if settings.information_policy != "off":
@@ -441,7 +525,12 @@ async def run_automationbench(
             )
             if settings.operational:
                 finish_tool = adapter.goal_tracker.finish_tool()
+            from .interactions import InteractionRecorder
+
+            interaction_recorder = InteractionRecorder(adapter)
+            interaction_recorder.register_tools([*tools, finish_tool])
             agent = RepairingAgent(
+                interaction_recorder=interaction_recorder,
                 repair_schemas={t.name: t.parameters for t in [*tools, finish_tool]},
                 client=wrapper,
                 name="automationbench",
@@ -516,6 +605,10 @@ async def run_automationbench(
                 ) + "\n")
             result["model_call_costs"] = wrapper.model_call_costs
             result["outer_validation_audit"] = agent.outer_validation_audit
+            result["online_learning"] = (
+                wrapper.online_learner.audit if wrapper.online_learner is not None else []
+            )
+            result["operation_semantics"] = getattr(adapter, "operation_semantics_audit", [])
             if settings.semantic_learning and learner is not None:
                 from .semantic_learning import learn_semantics
                 from .semantic_review import review_semantics
@@ -556,12 +649,17 @@ async def run_automationbench(
                     contrastive_ids = learn_contrastive_preconditions(
                         knowledge,
                         adapter.scope,
-                        client=semantic_client if settings.semantic_learning else None,
                     )
                     if contrastive_ids:
                         result["contrastive_precondition_ids"] = contrastive_ids
                 except Exception as exc:  # noqa: BLE001
                     result["contrastive_learning_error"] = type(exc).__name__
+            # One non-overlapping call list includes failed calls and every learning stage.
+            result["all_model_call_costs"] = [
+                *({**call, "stage": "acting"} for call in wrapper.model_call_costs),
+                *({**call, "stage": "learning"} for call in
+                  (semantic_client.calls[learning_call_start:] if semantic_client else [])),
+            ]
             # Score only after interaction. A missing rubric leaves the learned graph intact.
             attach_validation_score(result, adapter)
             result["ledger"] = asdict(ledger)
@@ -599,6 +697,8 @@ async def run_automationbench(
         return report
     finally:
         knowledge.close()
+        if frozen_source is not None and frozen_source is not knowledge:
+            frozen_source.close()
         evidence.close()
         if checkpoint_source is not None:
             from .checkpoint import checkpoint_hash

@@ -4,7 +4,9 @@ reset starts every task from an empty graph. learn keeps one graph across tasks
 and iterations. Both arms may learn within a task. Validation scores are recorded
 after the task and are not written into the graph.
 
-The Qwen profile is required. There is no model fallback.
+The model profile is selected through WORLDMODEL_MODEL_CONFIG.
+Use --full-learning for semantic learning, active procedures, independent artifact
+validation and complete cost accounting; --reset-passes defaults to one in that mode.
 """
 
 import argparse
@@ -362,7 +364,25 @@ def main():
     parser.add_argument("--task", action="append", default=[])
     parser.add_argument("--max-turns", type=int, default=DEFAULT_TURNS)
     parser.add_argument("--semantic-learning", action="store_true")
+    parser.add_argument("--full-learning", action="store_true", help="Enable semantics, procedure use and independently validated procedure updates")
+    parser.add_argument("--validate", action="append", default=[], help="Disjoint procedure-validation task (at least two)")
+    parser.add_argument("--reset-passes", type=int, default=1)
+    parser.add_argument("--timeout-seconds", type=int, default=900)
+    parser.add_argument("--max-environment-calls", type=int, default=40)
     args = parser.parse_args()
+    if args.full_learning:
+        from worldmodel_harness.experiment import ExperimentSettings
+        from worldmodel_harness.full_iterative import run_full_iterative
+
+        names = tuple(args.task) or tuple(select_per_domain(task_pools(args.domain), count=args.per_domain, seed=args.seed))
+        summary = asyncio.run(run_full_iterative(args.root, args.output,
+            tasks=names, validation_names=tuple(args.validate), iterations=args.iterations,
+            reset_passes=args.reset_passes, base=ExperimentSettings(domain=args.domain,
+                max_turns=args.max_turns, max_environment_calls=args.max_environment_calls,
+                timeout_seconds=args.timeout_seconds, semantic_max_tokens=8192,
+                semantic_timeout_seconds=180)))
+        print(json.dumps({"complete": summary["complete"], "output": str(args.output)}))
+        return
     summary = asyncio.run(
         run_experiment(
             args.root,

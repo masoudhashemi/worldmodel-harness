@@ -70,6 +70,8 @@ def render_context(
     max_chars: int,
     store=None,
     query: str = "",
+    current_node: str | None = None,
+    completed_nodes: set[str] | None = None,
 ) -> tuple[str, dict]:
     """Count the entire injected message, including metadata and artifact menus.
 
@@ -84,7 +86,13 @@ def render_context(
     plan = None
     if store is not None and query:
         try:
-            plan = extract_workflow_plan(store, working.scope, query)
+            plan = extract_workflow_plan(
+                store,
+                working.scope,
+                query,
+                current_node=current_node,
+                completed_nodes=completed_nodes,
+            )
         except Exception:
             plan = None
 
@@ -128,8 +136,10 @@ def render_context(
                     record.pop(empty_key, None)
             claims.append(record)
         actionable_gaps = [g for g in working.gaps if not g.startswith("budget:")]
-        invariants = [
-            c["statement"] for c in claims if c.get("relation") == "contrastive_precondition"
+        contrasts = [
+            {"claim_id": c["claim_id"], "statement": c["statement"],
+             "interpretation": "Unverified observational contrast, not a mandatory precondition"}
+            for c in claims if c.get("relation") in ("contrastive_precondition", "contrastive_observation")
         ]
         payload = {
             "claims": claims,
@@ -141,10 +151,13 @@ def render_context(
             payload["workflow_process"] = {
                 "goal": plan.goal,
                 "confidence": plan.confidence,
+                "active_step_index": plan.active_step_index,
+                "path_updated": plan.path_updated,
                 "steps": [
                     {
                         "step": s.step,
                         "operation": s.operation,
+                        "status": s.status,
                         "description": s.description,
                         **({"method": s.method} if s.method else {}),
                         **({"url": s.url} if s.url else {}),
@@ -153,8 +166,12 @@ def render_context(
                     for s in plan.steps
                 ],
             }
-        if invariants:
-            payload["learned_invariants"] = invariants
+        if contrasts:
+            payload["unverified_contrasts"] = contrasts
+        if working.stages:
+            payload["workflow_stages"] = list(working.stages)
+        if working.reasons:
+            payload["retrieval_reasons"] = {cid: list(r) for cid, r in working.reasons.items()}
         return PREFIX + json.dumps(payload, separators=(",", ":"))
 
     for procedure in procedures:
@@ -222,6 +239,8 @@ def render_context(
         "artifact_candidates": [p["procedure_id"] for p in menu] if content else [],
         "omitted_claim_count": len(source) - (len(selected) if content else 0),
         "workflow_plan_steps": len(plan.steps) if plan and content else 0,
+        "workflow_plan_active_step": plan.active_step_index if plan and content else 0,
+        "workflow_plan_updated": plan.path_updated if plan and content else False,
         "workflow_plan_goal": plan.goal if plan and content else None,
     }
 

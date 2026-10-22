@@ -3,7 +3,7 @@
 import json
 from contextvars import ContextVar
 
-from .knowledge import OutputExpectation
+from .knowledge import OutputExpectation, covered_path
 
 CURRENT_EXPECTATIONS: ContextVar[tuple[str, tuple[OutputExpectation, ...]] | None] = ContextVar(
     "current_output_expectations", default=None
@@ -32,7 +32,7 @@ def inspect_path(episode, path):
                 "array_length": len(value) if isinstance(value, list) else None,
                 "next": "Correct the path using the cited response shape; a path error is not evidence that a write failed.",
             }
-    if path and path[0] not in episode.coverage:
+    if not covered_path(episode, path):
         return {"result": "uncovered_evidence_path", "path": list(path)}
     return {"result": "observed", "value": value}
 
@@ -56,7 +56,7 @@ def compare_expectations(episode):
         }
         observed = episode.outcome not in {"unknown", "blocked"}
         value = episode.response
-        if prediction.path and prediction.path[0] not in episode.coverage:
+        if not covered_path(episode, prediction.path):
             observed = False
         for key in prediction.path:
             if isinstance(value, dict) and isinstance(key, str) and key in value:

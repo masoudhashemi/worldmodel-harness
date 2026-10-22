@@ -9,8 +9,10 @@ from stirrup.core.models import Tool, ToolResult
 
 from .behavior import SEMANTIC_KINDS, value_format, value_kind
 from .goal_checks import GoalCheck, GoalUpdate, OutcomeContract, SourceBinding, anchored
-from .knowledge import OutputExpectation, Record
+from .grounding import GroundedDerivation, verify_derivation
+from .knowledge import OutputExpectation, Record, covered_path
 from .observable_predictions import inspect_path
+from .operation_semantics import is_observation_read
 
 
 class VerifyGoal(Record):
@@ -36,8 +38,7 @@ def matched_source_for(tracker, expected, target, identity_path, value_path):
         or identity_path[:-1] != value_path[:-1]
         or target.scope != tracker.adapter.scope
         or target.outcome != "success"
-        or target.operation != "api_fetch"
-        or target.arguments.get("method", "GET").upper() not in ("GET", "HEAD")
+        or not is_observation_read(tracker.adapter, target)
     ):
         return None
     identity = inspect_path(target, identity_path)
@@ -311,7 +312,7 @@ def verification_tool(adapter):
         "path is useful source content, anchor_text is a task-quoted identity, anchor_path finds that identity "
         "in the read (case/punctuation normalized). Use an identity already named in the public task, "
         "not a newly discovered answer/value. No expected source-body value or second source read. "
-        "kind=effect: supply current GET/HEAD episode_id, resource_url, path and expected desired value. "
+        "kind=effect: supply current known non-mutating read episode_id, resource_url, path and expected desired value. "
         "If value comes from source content, cite its verified source_requirement_id and identity_path "
         "on the target record; identity and value paths must share their parent. Otherwise expected must "
         "be literal in task_quote and supply task-quoted anchor_text plus identity_path. "
@@ -328,6 +329,7 @@ class CheckEffect(Record):
     path: tuple[str | int, ...] = Field(min_length=1)
     expected: Any
     anchor_text: str = Field(min_length=1, max_length=200)
+    derivation: GroundedDerivation | None = None
 
 
 def _container(value, path):
@@ -434,16 +436,14 @@ def resolve_effect(adapter, params: CheckEffect):
             "field": "episode_id",
             "next": "Cite a task-local episode from a successful current read.",
         }
-    method = target.arguments.get("method", "GET").upper()
     if (
         target.scope != adapter.scope
         or target.outcome != "success"
-        or target.operation != "api_fetch"
-        or method not in ("GET", "HEAD")
+        or not is_observation_read(adapter, target)
     ):
         return None, {
             "result": "outcome_verification_requires_read",
-            "next": "Cite a successful GET or HEAD of the target record, not a write.",
+            "next": "Cite a successful known non-mutating read of the target record, not a write.",
         }
     effective_path = _normalize_list_indices(target.response, params.path)
     observed = inspect_path(target, effective_path)
@@ -461,6 +461,19 @@ def resolve_effect(adapter, params: CheckEffect):
             observed = inspect_path(target, effective_path)
     if observed["result"] != "observed":
         return None, observed
+    if params.derivation is not None:
+        result = verify_derivation(adapter, target, effective_path, params.expected,
+                                   params.task_quote, params.anchor_text, params.derivation)
+        if result != "grounded":
+            return None, {"result": result}
+        return {
+            "episode_id": episode_id, "path": effective_path,
+            "resource_url": target.arguments.get("url"),
+            "identity_path": params.derivation.task_anchor_path,
+            "identity_format": params.anchor_text if params.derivation.task_anchor_path else None,
+            "value_format": None, "expected_value": params.expected,
+            "source_episode_id": None, "source_path": (),
+        }, None
     parent = _container(target.response, effective_path)
     if parent is None or effective_path[-1] not in parent:
         return None, {
@@ -496,14 +509,13 @@ def resolve_effect(adapter, params: CheckEffect):
     if not _quoted(task, expected):
         for event in adapter.evidence.episodes(adapter.scope):
             if (event.scope != adapter.scope or event.outcome != "success"
-                or event.operation != "api_fetch"
-                or event.arguments.get("method", "GET").upper() not in ("GET", "HEAD")
+                or not is_observation_read(adapter, event)
                 or event.arguments.get("url") == target.arguments.get("url")
                 or event.timestamp >= target.timestamp):
                 continue
             groups = {}
             for path, value in _leaves(event.response):
-                if path[0] in event.coverage:
+                if covered_path(event, path):
                     groups.setdefault(path[:-1], []).append((path, value))
             for group in groups.values():
                 if not any(anchored(identity_value, value) for _, value in group):
@@ -552,6 +564,7 @@ def simple_check_tool(adapter):
             )
             contract = OutcomeContract(
                 target=target,
+                derivation=params.derivation,
                 resource_url=resolved["resource_url"],
                 source_episode_id=resolved["source_episode_id"],
                 source_path=resolved["source_path"],
@@ -594,11 +607,19 @@ def simple_check_tool(adapter):
         name="check_effect",
         parameters=CheckEffect,
         executor=check,
-        description="Check one current effect on a target record. Cite the latest GET or HEAD "
+        description="Check one current effect on a target record. Cite the latest known non-mutating "
         "read of the target record, the modified field path, the exact expected scalar value, "
         "and the task mention as anchor_text. "
         "The resource URL, record identity field, and source grounding are resolved structurally "
         "using exact values and task-mentioned identity on the same record. "
+        "For discovered identities, joins or calculated values, optionally supply derivation: "
+        "inputs bind names to scalar source episode_id/path before write_episode_id; expression uses "
+        "those names with arithmetic, lists, sum/min/max, round, format or concat; "
+        "joins match source_name to target_path or other_source_name. Every input used in "
+        "the expression or selection must connect its source record to the target through joins. "
+        "Optional task_anchor_path additionally locates anchor_text on the target record. "
+        "Optional selection is a boolean expression over source inputs. This checks provenance "
+        "and computation, not whether your formula fully captures the task. "
         "Reuse requirement_id to repair a path. Quote task_quote from the public task. "
         "Call finish after all modified fields match.",
     )

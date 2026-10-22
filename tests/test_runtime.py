@@ -127,3 +127,9 @@ def test_parse_gemma_calls_handles_unquoted_tags_and_nested_structures():
     assert calls[1][0] == "execute_decision"
     assert calls[1][1]["goal"] == "hello"
 
+
+
+def test_gemma_json_arguments_preserve_escaped_values():
+    text = '<|tool_call>call:api_search{"query":"line one\\nline two"}<tool_call|>'
+    _, calls = runtime.parse_gemma_calls(text)
+    assert calls == [("api_search", {"query": "line one\nline two"})]

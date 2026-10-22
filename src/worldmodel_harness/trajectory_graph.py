@@ -136,6 +136,24 @@ class TrajectoryGraph:
         self.nodes: dict[str, OperationNode] = {}
         self.edges: dict[str, dict[str, TransitionEdge]] = defaultdict(dict)
         self.reverse_edges: dict[str, dict[str, TransitionEdge]] = defaultdict(dict)
+        self.forward_value_flows: dict[str, list[ValueFlowInfo]] = defaultdict(list)
+        self.reverse_value_flows: dict[str, list[ValueFlowInfo]] = defaultdict(list)
+        self.compiled_matchers: list[tuple[str, re.Pattern, Claim]] = []
+
+    def match_episode_to_node_id(self, episode: Episode | None) -> str | None:
+        """Resolve an execution episode to a canonical node_id in this graph."""
+        if not episode:
+            return None
+        if episode.operation == "api_fetch":
+            m = episode.arguments.get("method", "GET").upper()
+            target = request_target(episode.arguments.get("url", ""))
+            for meth, pat, c in self.compiled_matchers:
+                if meth == m and pat.fullmatch(target):
+                    return c.payload.get("id") or c.claim_id
+            return f"{m} {target}"
+        if episode.operation in self.nodes:
+            return episode.operation
+        return None
 
     def add_node(self, node: OperationNode) -> None:
         self.nodes[node.node_id] = node
@@ -325,6 +343,8 @@ def compile_trajectory_graph(store: KnowledgeStore, scope: Scope) -> TrajectoryG
     )
     graph.add_node(base64_node)
 
+    graph.compiled_matchers = compiled_matchers
+
     # 3. Collect value flows
     value_flows_by_endpoints: dict[tuple[str, str], list[ValueFlowInfo]] = defaultdict(list)
     for c in claims:
@@ -340,17 +360,12 @@ def compile_trajectory_graph(store: KnowledgeStore, scope: Scope) -> TrajectoryG
                     statement=c.statement,
                 )
                 value_flows_by_endpoints[(src, tgt)].append(flow)
+                graph.forward_value_flows[src].append(flow)
+                graph.reverse_value_flows[tgt].append(flow)
 
     # 4. Map episodes to node IDs and count empirical transitions
     def match_episode_to_node_id(e: Episode) -> str:
-        if e.operation == "api_fetch":
-            m = e.arguments.get("method", "GET").upper()
-            target = request_target(e.arguments.get("url", ""))
-            for meth, pat, c in compiled_matchers:
-                if meth == m and pat.fullmatch(target):
-                    return c.payload.get("id") or c.claim_id
-            return f"{m} {target}"
-        return e.operation
+        return graph.match_episode_to_node_id(e) or e.operation
 
     if scope is not None:
         episodes = store.historical_episodes(scope)

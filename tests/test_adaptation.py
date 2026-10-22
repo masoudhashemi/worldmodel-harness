@@ -183,6 +183,10 @@ def test_model_cannot_self_activate_or_invent_validation(tmp_path):
     class Client:
         async def generate(self, messages, tools):
             assert tools == {}
+            if "requested_goal" in json.loads(messages[1].content):
+                return AssistantMessage(blocks=[TextBlock(text=json.dumps({
+                    "supported": True, "step_names": [candidate.steps[0].name],
+                    "missing_requirements": [], "reason": "The lookup goal is implemented."}))])
             assert "schema" in messages[1].content
             data = candidate.model_dump(mode="json")
             data.update(status="active", estimated_reuses=9999, validation=[{"forged": True}])
@@ -218,6 +222,10 @@ def test_composition_hints_are_visible_but_cannot_become_supported_requirements(
     class Client:
         async def generate(self, messages, tools):
             prompt = json.loads(messages[1].content)
+            if "requested_goal" in prompt:
+                return AssistantMessage(blocks=[TextBlock(text=json.dumps({
+                    "supported": True, "step_names": [candidate.steps[0].name],
+                    "missing_requirements": [], "reason": "The lookup goal is implemented."}))])
             assert prompt["observational_hints"]["claims"][0]["claim_id"] == "flow-hint"
             assert "flow-hint" not in {c["claim_id"] for c in prompt["claims"]}
             data = candidate.model_dump(mode="json")
@@ -422,4 +430,24 @@ def test_shifted_output_requires_actual_program_repair(tmp_path):
         for case in result.cases
         for eid in case.evidence_ids
     )
+    store.close()
+
+
+def test_incomplete_goal_review_rejects_candidate_before_execution(tmp_path):
+    store, scope, candidate, factory = setup(tmp_path)
+    environment = factory(ValidationTrial(task_name="v1", inputs={}), Ledger(), store)
+
+    class Client:
+        async def generate(self, messages, tools):
+            prompt = json.loads(messages[1].content)
+            data = ({"supported": False, "step_names": [candidate.steps[0].name],
+                     "missing_requirements": ["Requested second operation is absent"],
+                     "reason": "The candidate implements only part of the requested goal."}
+                    if "requested_goal" in prompt else candidate.model_dump(mode="json"))
+            return AssistantMessage(blocks=[TextBlock(text=json.dumps(data))])
+
+    with pytest.raises(ValueError, match="coverage"):
+        asyncio.run(propose(Client(), store, scope, environment.tools, ("training",),
+                            goal="lookup and perform a second operation"))
+    assert not store.procedures()
     store.close()

@@ -9,6 +9,7 @@ from .decision_runtime import dispatch_decision
 from .decisions import CompactDecision, Decision, ProposedAction
 from .live_refresh import RefreshEstimate, refresh_live_fact
 from .observable_predictions import CURRENT_EXPECTATIONS
+from .operation_semantics import is_observation_read
 from .operational_requirements import api_requirements
 from .procedures import artifact_tool
 
@@ -173,7 +174,6 @@ def operational_tools(
                 alias = f"e{len(adapter.evidence_aliases) + 1}"
                 adapter.evidence_aliases[alias] = event.episode_id
                 known.add(event.episode_id)
-                method = str(event.arguments.get("method", "GET")).upper()
                 if (
                     event.outcome == "success"
                     and event.purpose not in ("discovery", "validation")
@@ -181,7 +181,7 @@ def operational_tools(
                     and isinstance(event.response, dict)
                     and (
                         event.operation != "api_fetch"
-                        or method in ("GET", "HEAD")
+                        or is_observation_read(adapter, event)
 
                     )
                 ):

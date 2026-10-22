@@ -9,7 +9,7 @@ import json
 from time import perf_counter
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from stirrup.core.models import SystemMessage, UserMessage
 
 from .knowledge import Claim, Record, Scope
@@ -51,7 +51,27 @@ def evidence_catalog(episodes):
     return result
 
 
+class BlockerConditions(Record):
+    origin: Literal["environment", "harness", "unknown"]
+    applies_when: str = Field(min_length=1, max_length=600)
+    stop_when: str = Field(min_length=1, max_length=600,
+        description="Condition under which the agent should PAUSE RETRYING the blocked action now. Not when the error ends.")
+    reopen_when: str = Field(min_length=1, max_length=600,
+        description="New evidence or changed conditions that justify RESUMING the paused action. Not recurrence of the blocker.")
+
+
+def blocker_schema_contract(schema):
+    schema["allOf"] = [{
+        "if": {"properties": {"relation": {"const": "possible_blocker"}}, "required": ["relation"]},
+        "then": {"required": ["blocker"], "properties": {
+            "blocker": {"not": {"type": "null"}}, "response_rule": {"type": "null"}}},
+        "else": {"properties": {"blocker": {"type": "null"}}},
+    }]
+
+
 class SemanticHypothesis(Record):
+    model_config = {"json_schema_extra": blocker_schema_contract}
+
     layer: Literal["configuration", "behavior"]
     dimension: Literal["INV", "DOM"] | None = None
     relation: Literal[
@@ -59,6 +79,7 @@ class SemanticHypothesis(Record):
         "possible_effect",
         "possible_error_cause",
         "possible_recovery",
+        "possible_blocker",
         "possible_identity_mapping",
         "possible_routing",
     ]
@@ -68,6 +89,19 @@ class SemanticHypothesis(Record):
     alternatives: tuple[str, ...] = Field(min_length=1, max_length=6)
     distinguishing_observation: str = Field(min_length=1, max_length=1200)
     response_rule: ResponseRule | None = None
+    blocker: BlockerConditions | None = None
+
+    @model_validator(mode="after")
+    def scoped_blocker(self):
+        if self.relation == "possible_blocker":
+            if self.blocker is None or self.response_rule is not None:
+                from .structured_output import ContractError
+
+                raise ContractError("For possible_blocker, supply blocker conditions and set response_rule=null. "
+                                    "stop_when means pause retries; reopen_when means resume after a change.")
+        elif self.blocker is not None:
+            raise ValueError("Blocker conditions belong to possible_blocker hypotheses")
+        return self
 
 
 def hypothesis_dimension(hypothesis: SemanticHypothesis) -> Literal["INV", "DOM"]:
@@ -98,6 +132,17 @@ def retain_hypotheses(proposal, episodes, store, scope):
             episode = supplied[citation.episode_id]
             if episode.scope != scope or store.episode(episode.episode_id) != episode:
                 raise ValueError("Semantic evidence must match the retained task observation")
+        if hypothesis.blocker and hypothesis.blocker.origin == "environment":
+            cited = [supplied[catalog[r].episode_id] for r in hypothesis.citations]
+            from .contrastive import is_unproductive_episode
+
+            if not any(e.origin == "environment" and (
+                e.outcome in {"error", "blocked"}
+                or e.purpose == "discovery"
+                or e.operation == "api_search"
+                or is_unproductive_episode(e)[0]
+            ) and e.environment_called is not False for e in cited):
+                raise ValueError("An environment blocker requires a cited environment failure or uninformative discovery")
         if hypothesis.response_rule is not None:
             rule = normalize_rule(hypothesis.response_rule)
             cited = {catalog[r].episode_id for r in hypothesis.citations}
@@ -189,7 +234,8 @@ def retain_hypotheses(proposal, episodes, store, scope):
     return retained
 
 
-async def learn_semantics(client, store, scope, *, accounting, max_chars=18000):
+async def learn_semantics(client, store, scope, *, accounting, max_chars=18000,
+                         preferred_episode_ids=(), task_context=None):
     if store.frozen:
         raise PermissionError("Cannot consolidate frozen evaluation evidence")
     started = perf_counter()
@@ -200,12 +246,21 @@ async def learn_semantics(client, store, scope, *, accounting, max_chars=18000):
             "episodes": [],
             "evidence_catalog": {},
         }
+        if task_context is not None:
+            prompt["public_task"] = task_context
         task_episodes = [
             e for e in store.episodes(scope) if e.scope == scope and e.purpose != "validation"
         ]
         non_discovery = [e for e in task_episodes if e.purpose != "discovery"]
         candidates = non_discovery if non_discovery else task_episodes
-        for episode in reversed(candidates):
+        if preferred_episode_ids:
+            preferred = set(preferred_episode_ids)
+            # Retain schemas and failed/corrected calls when explicitly selected;
+            # prefer the newest observation within each priority class.
+            candidates = sorted(reversed(task_episodes), key=lambda e: e.episode_id not in preferred)
+        else:
+            candidates = list(reversed(candidates))
+        for episode in candidates:
             candidate = [episode.model_dump(mode="json"), *prompt["episodes"]]
             catalog = {
                 ref: c.model_dump(mode="json", exclude={"excerpt"})
@@ -238,6 +293,7 @@ async def learn_semantics(client, store, scope, *, accounting, max_chars=18000):
                 break
         if not selected:
             return []
+        accounting["selected_evidence_ids"] = [e.episode_id for e in selected]
         from .structured_output import generate_checked
 
         full_catalog = evidence_catalog(selected)
@@ -339,6 +395,13 @@ async def learn_semantics(client, store, scope, *, accounting, max_chars=18000):
                     "(possible_identity_mapping, possible_routing), and dimension='INV' for behavioral "
                     "execution/verification invariants (possible_precondition, possible_effect, "
                     "possible_error_cause, possible_recovery). "
+                    "You may propose possible_blocker when evidence suggests retries cannot help under current "
+                    "conditions. For possible_blocker, response_rule MUST be null. Supply blocker origin and "
+                    "applies_when; stop_when means PAUSE RETRYING now; reopen_when means RESUME RETRYING "
+                    "after new evidence or changed conditions. Do not reverse these meanings. Retain alternatives "
+                    "and a distinguishing observation. Repetition alone does not establish impossibility. "
+                    "Separate harness rejection from environment failure. Learn conditions from observations, "
+                    "never assume a permanent inability. A blocker remains an advisory hypothesis. "
                     "Leave response_rule null for multi-episode narratives or untestable ideas. Keep explanations concise."
                 ),
                 UserMessage(content=json.dumps(prompt, sort_keys=True)),
@@ -385,6 +448,8 @@ def hypothesis_context(store, scope, query, *, max_chars=2400):
             "distinguishing_observation": claim.payload["distinguishing_observation"],
             "evidence_ids": list(claim.supporting_episodes[-3:]),
         }
+        if claim.payload.get("blocker"):
+            record["blocker"] = claim.payload["blocker"]
         if claim.payload.get("workspace_fact"):
             record["workspace_fact"] = True
         review = claim.payload.get("semantic_review")

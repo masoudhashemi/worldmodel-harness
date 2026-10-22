@@ -1,8 +1,10 @@
 import json
 from datetime import timedelta
+
 import pytest
 from stirrup.core.models import SystemMessage, ToolMessage, UserMessage
 
+from worldmodel_harness.context import render_context
 from worldmodel_harness.contrastive import (
     ContrastivePair,
     induce_contrastive_precondition,
@@ -11,7 +13,6 @@ from worldmodel_harness.contrastive import (
     learn_contrastive_preconditions,
     mine_contrastive_pairs,
 )
-from worldmodel_harness.context import render_context
 from worldmodel_harness.decisions import (
     ActionRequirements,
     CompactDecision,
@@ -162,19 +163,22 @@ def test_contrastive_mining_and_precondition_induction(store):
 
     # Induce contrastive precondition claim
     claim = induce_contrastive_precondition(pair, store, scope)
-    assert claim.relation == "contrastive_precondition"
-    assert claim.payload["required_preceding_action"] == "create_subscription"
-    assert claim.payload["required_argument"] == "subscription_id"
-    assert "create_subscription" in claim.statement
+    assert claim.relation == "contrastive_observation"
+    assert claim.status == "hypothesis"
+    assert "required_preceding_action" not in claim.payload
+    assert "required_argument" not in claim.payload
+    assert claim.scope == scope
+    assert set(claim.supporting_episodes) == {e1_fail.episode_id, e2_succ.episode_id}
 
     # Ingest into store
     created = learn_contrastive_preconditions(store, scope)
     assert len(created) >= 1
     stored_claim = store.claim(created[0])
-    assert stored_claim.relation == "contrastive_precondition"
+    assert stored_claim.relation == "contrastive_observation"
+    assert learn_contrastive_preconditions(store, scope) == []
 
 
-def test_contrastive_precondition_gating_in_check_decision(store):
+def test_observational_contrast_cannot_gate_execution(store):
     scope = Scope(environment="test", version="1", task_id="task_c")
     live = LiveState("task_c")
 
@@ -223,7 +227,7 @@ def test_contrastive_precondition_gating_in_check_decision(store):
     )
     store.put_claim(claim)
 
-    # 1. Propose action without subscription_id argument -> gate blocks with missing argument gap
+    # No observational contrast may introduce a mandatory argument.
     decision1 = Decision(
         goal="activate user",
         rationale="call activate",
@@ -237,10 +241,10 @@ def test_contrastive_precondition_gating_in_check_decision(store):
         live=live,
         allowed_tools={"activate_user", "create_subscription"},
     )
-    assert not res1.allowed
-    assert any("missing_argument:subscription_id" in g for g in res1.gaps)
+    assert res1.allowed
+    assert not res1.gaps
 
-    # 2. Propose action with subscription_id argument, but create_subscription has not run -> blocks with action gap
+    # Adding an argument does not establish a prerequisite action either.
     decision2 = Decision(
         goal="activate user",
         rationale="call activate",
@@ -254,8 +258,8 @@ def test_contrastive_precondition_gating_in_check_decision(store):
         live=live,
         allowed_tools={"activate_user", "create_subscription"},
     )
-    assert not res2.allowed
-    assert any("contrastive_precondition:" in g for g in res2.gaps)
+    assert res2.allowed
+    assert not res2.gaps
 
     # 3. Now simulate that create_subscription successfully ran in the task
     ep_sub = Episode(
@@ -294,16 +298,21 @@ def test_contrastive_precondition_rendered_in_context():
         status="supported",
     )
     working = WorkingGraph(scope=scope, claims=(claim,), gaps=())
-    rendered, sel = render_context(working, [], max_chars=5000)
+    rendered, _sel = render_context(working, [], max_chars=5000)
 
     # Verify that the rendered JSON contains learned_invariants
     data = json.loads(rendered.split("\n", 1)[1])
-    assert "learned_invariants" in data
-    assert claim.statement in data["learned_invariants"]
+    assert "learned_invariants" not in data
+    assert data["unverified_contrasts"][0]["statement"] == claim.statement
 
 
-def test_contrastive_precondition_route_specific_matching(store):
-    from worldmodel_harness.decisions import ActionRequirements, Decision, ProposedAction, check_decision
+def test_legacy_supported_contrast_is_not_a_mandatory_rule(store):
+    from worldmodel_harness.decisions import (
+        ActionRequirements,
+        Decision,
+        ProposedAction,
+        check_decision,
+    )
     from worldmodel_harness.knowledge import Claim, Layer, LiveState, Scope
 
     scope = Scope(environment="test", version="1", task_id="task_route")
@@ -375,7 +384,7 @@ def test_contrastive_precondition_route_specific_matching(store):
     )
     assert res_gmail_get.allowed
 
-    # 3. POST request to Gmail send -> MUST BE BLOCKED
+    # A legacy inferred claim marked supported still cannot block the request.
     dec_gmail_send = Decision(
         goal="send email",
         rationale="post email",
@@ -392,6 +401,6 @@ def test_contrastive_precondition_route_specific_matching(store):
         live=live,
         allowed_tools={"api_fetch", "base64_encode"},
     )
-    assert not res_gmail_send.allowed
-    assert any("Calling POST gmail send requires base64_encode" in g for g in res_gmail_send.gaps)
+    assert res_gmail_send.allowed
+    assert not res_gmail_send.gaps
 

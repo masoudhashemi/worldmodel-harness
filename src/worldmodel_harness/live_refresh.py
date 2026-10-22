@@ -3,7 +3,8 @@
 from pydantic import Field
 
 from .decisions import Decision, ProposedAction, check_decision
-from .knowledge import Record, utc_now
+from .knowledge import Record, response_coverage, utc_now
+from .operation_semantics import is_observation_read
 from .operational_requirements import api_requirements
 
 
@@ -25,7 +26,7 @@ class RefreshResult(Record):
 async def refresh_live_fact(adapter, key: str, estimate: RefreshEstimate) -> RefreshResult:
     """Refresh is not permission to retry a write or to resolve an unknown effect.
 
-    Replays only a previously successful GET/HEAD in this exact task/scope.
+    Replays only a previously successful known non-mutating read in this exact task/scope.
     Missing read provenance remains unresolved. Mandatory checks bypass the
     optional value heuristic, never the shared call budget or dependency gate.
     """
@@ -42,13 +43,14 @@ async def refresh_live_fact(adapter, key: str, estimate: RefreshEstimate) -> Ref
             or episode.task_id != adapter.live.task_id
             or episode.operation != "api_fetch"
             or episode.outcome != "success"
-            or episode.arguments.get("method", "GET").upper() not in ("GET", "HEAD")
+            or not is_observation_read(adapter, episode)
             or episode.timestamp > utc_now()
         ):
             continue
         namespace = "api_fetch:" + str(episode.arguments.get("url", "")) + ":"
-        if isinstance(episode.response, dict) and any(
-            key == namespace + field and field in episode.response for field in episode.coverage
+        if isinstance(episode.response, (dict, list)) and any(
+            key == namespace + field and field in response_coverage(episode.response)
+            for field in episode.coverage
         ):
             candidates.append(episode)
     if not candidates:

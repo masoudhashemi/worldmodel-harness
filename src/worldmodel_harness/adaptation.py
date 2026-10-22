@@ -31,6 +31,13 @@ class ValidationTrial(Record):
     inputs: dict
 
 
+class GoalCoverage(Record):
+    supported: bool
+    step_names: tuple[str, ...]
+    missing_requirements: tuple[str, ...]
+    reason: str = Field(min_length=1, max_length=1600)
+
+
 class RepairRequest(Record):
     procedure_id: str
     suspended_version: int = Field(ge=1)
@@ -168,7 +175,7 @@ async def propose(
         "Return only a JSON object matching the schema. Do not invent validation results.",
         "binding_language": {
             "input_reference": {"$ref": "inputs.query"},
-            "tool_result_reference": {"$ref": "steps.fetch.data.records"},
+            "tool_result_reference": "Use steps.<step_name>.<observed_response_path>; derive the path from evidence, not this placeholder.",
             "json_encoding_example": {
                 "name": "encode",
                 "kind": "transform",
@@ -180,7 +187,7 @@ async def propose(
             "verify_example": {
                 "name": "verify",
                 "kind": "verify",
-                "value": {"$ref": "steps.fetch.data.records"},
+                "value": {"$ref": "steps.<step_name>.<observed_response_path>"},
                 "predicate": "type",
                 "expected": "array",
                 "next_step": "stop",
@@ -242,6 +249,26 @@ async def propose(
         (d.claim_id, d.version) not in permitted for d in candidate.required_claims
     ):
         raise ValueError("Proposal dependencies must reference supplied knowledge")
+    from .structured_output import generate_checked
+
+    review_accounting = {}
+    if accounting is not None:
+        accounting["goal_coverage"] = review_accounting
+    review = await generate_checked(client, [SystemMessage(content=
+        "Review the candidate against the requested goal, not its own description. Check every "
+        "required effect, output, binding and termination condition against the actual executable "
+        "steps and supplied contracts. A list of IDs is not full records; a type check alone does "
+        "not establish requested work. Unsupported assumptions or omitted operations mean "
+        "supported=false. Cite step names. This review is screening, not execution validation. "
+        "Return JSON matching the schema."), UserMessage(content=json.dumps({
+            "schema": GoalCoverage.model_json_schema(), "requested_goal": goal,
+            "candidate": candidate.model_dump(mode="json"),
+            "contracts": [c.model_dump(mode="json") for c in claims]}))],
+        GoalCoverage.model_validate, review_accounting)
+    review_accounting["review"] = review.model_dump(mode="json")
+    if (not review.supported or review.missing_requirements or not review.step_names
+        or not set(review.step_names) <= {s.name for s in candidate.steps}):
+        raise ValueError("Candidate does not demonstrate coverage of the requested goal")
     return candidate
 
 

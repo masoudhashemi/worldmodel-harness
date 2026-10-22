@@ -2,9 +2,25 @@
 
 import json
 
+from pydantic import ValidationError
 from stirrup.core.models import UserMessage
 
 from .adaptation import parse_proposal
+
+
+class ContractError(ValueError):
+    """Controller-authored feedback safe to expose; never include external data."""
+
+
+def validation_feedback(exc):
+    if isinstance(exc, ContractError):
+        return [str(exc)[:600]]
+    if isinstance(exc, ValidationError):
+        return [str(error["ctx"]["error"])[:600]
+                if isinstance(error.get("ctx", {}).get("error"), ContractError)
+                else f"Schema validation failed: {error['type']}"
+                for error in exc.errors(include_input=False, include_url=False)[:8]]
+    return ["Output failed validation; follow the supplied schema and constraints."]
 
 
 async def generate_checked(client, messages, validate, accounting):
@@ -32,7 +48,8 @@ async def generate_checked(client, messages, validate, accounting):
                         {
                             "repair": "One repair attempt. Return schema-valid JSON only. Use exact supplied "
                             "catalog keys for citations. No actions have executed. An empty batch is allowed.",
-                            "rejected_output": text,
+                            "validation_feedback": validation_feedback(exc),
+                            "rejected_output": text[:18000],
                         }
                     )
                 ),

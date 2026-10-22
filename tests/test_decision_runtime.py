@@ -241,3 +241,26 @@ def test_dispatch_decision_catches_unhandled_tool_exceptions(tmp_path):
     assert "mock_kwarg" in content["error"]["message"]
     assert audit[-1]["error_type"] == "TypeError"
     store.close()
+
+
+def test_considered_hypothesis_is_audited_without_becoming_a_prerequisite(tmp_path):
+    from worldmodel_harness.knowledge import Claim, Layer
+
+    store = KnowledgeStore(tmp_path / "knowledge.sqlite")
+    scope = Scope(environment="new", version="1", task_id="task")
+    store.put_claim(Claim(claim_id="h", scope=scope, layer=Layer.BEHAVIOR,
+        relation="possible_routing", participants=("unfamiliar_tool",),
+        statement="A model hypothesis", status="hypothesis"))
+    decision = proposal().model_copy(update={"considered_claim_ids": ("h", "missing")})
+    tool = Tool(name="unfamiliar_tool", description="inspect", parameters=Inputs,
+                executor=lambda _: ToolResult(content="observed"))
+    audit = []
+    result = asyncio.run(dispatch_decision(decision, tools={tool.name: tool},
+        requirements_for=lambda _: ActionRequirements(), store=store, scope=scope,
+        live=LiveState("task"), audit=audit))
+    assert result.success
+    assert audit[0]["considered_claims"][0]["status"] == "hypothesis"
+    assert audit[0]["considered_claims"][0]["version"] == 1
+    assert audit[0]["considered_claims"][1]["result"] == "unknown"
+    assert store.claim("h").status == "hypothesis"
+    store.close()

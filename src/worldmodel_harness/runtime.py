@@ -1,6 +1,7 @@
 """Thin model-client adapter. Stirrup owns the agent loop."""
 
 import asyncio
+import json
 from time import perf_counter
 
 from pydantic import SecretStr
@@ -35,6 +36,7 @@ class BoundedClient:
 
 def parse_gemma_calls(text: str) -> tuple[str, list[tuple[str, dict]]]:
     prefix = "<|tool_call>call:"
+    text = text.replace("<|tool_call|>call:", prefix).replace("<tool_call>call:", prefix)
     calls = []
     clean_text_parts = []
     last_end = 0

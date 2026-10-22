@@ -22,6 +22,58 @@ class Opportunity(Record):
     dependent_artifacts: tuple[str, ...]
 
 
+def interaction_recoveries(store, scope):
+    """Rank linked failure-to-success traces, without asserting a causal remedy.
+
+    Matching operation sequences across tasks only nominate a model investigation.
+    Tool success is not task success; independent artifact validation is unchanged.
+    """
+    groups, pending = {}, {}
+    for event in store.historical_episodes(scope):
+        if (event.origin != "harness" or not event.operation.startswith("tool_call:")
+            or event.purpose == "validation"
+            or scope.tenant is not None and event.scope.tenant != scope.tenant):
+            continue
+        key = (event.scope.tenant, event.task_id)
+        sequence = pending.get(key, [])
+        if sequence and event.previous_interaction_id != sequence[-1].interaction_id:
+            sequence = []
+        if not sequence and event.outcome in ("error", "blocked"):
+            sequence = [event]
+        elif sequence:
+            sequence.append(event)
+        if len(sequence) > 8:
+            sequence = []  # Bounded candidates; never truncate away the triggering failure.
+        if sequence and len(sequence) > 1 and event.outcome == "success":
+            signature = tuple((e.operation, e.outcome) for e in sequence)
+            groups.setdefault(signature, []).append(sequence)
+            sequence = []
+        pending[key] = sequence
+    result = []
+    for signature, sequences in groups.items():
+        # AutomationBench uses a fresh run ID per attempt and a stable tenant/task
+        # name. Repeating one benchmark task is not an independent task.
+        tasks = {s[0].scope.tenant or s[0].task_id for s in sequences}
+        if len(tasks) < 2:
+            continue
+        events = {e.episode_id: e for sequence in sequences for e in sequence}
+        for event in list(events.values()):
+            for identity in event.related_episode_ids:
+                related = store.episode(identity)
+                if related.scope == event.scope and related.purpose != "validation":
+                    events[identity] = related
+        identity = hashlib.sha256(json.dumps(
+            ["interaction_recovery", scope.model_dump(), signature], sort_keys=True
+        ).encode()).hexdigest()[:24]
+        result.append(Opportunity(
+            opportunity_id=identity, kind="interaction_recovery_candidate", claim_ids=(),
+            evidence_ids=tuple(events), independent_tasks=len(tasks), observed_calls=len(events),
+            observed_tool_seconds=sum(e.elapsed_seconds for e in events.values()),
+            dependent_artifacts=(),
+        ))
+    return result
+
+
 def opportunities(store: KnowledgeStore, scope: Scope) -> list[Opportunity]:
     """Counts rank candidates; they are not improvement or causal-effect scores."""
     groups = {}
@@ -70,7 +122,7 @@ def opportunities(store: KnowledgeStore, scope: Scope) -> list[Opportunity]:
             )
         )
     return sorted(
-        result,
+        result + interaction_recoveries(store, scope),
         key=lambda o: (
             bool(o.dependent_artifacts),
             o.independent_tasks,
@@ -135,7 +187,7 @@ def execution_costs(report: dict) -> list[ExecutionCost]:
     """Explicit allowlist: benchmark grades and verifier output never enter planning."""
     costs = []
     for row in report["results"]:
-        calls = row.get("model_call_costs")
+        calls = row.get("all_model_call_costs", row.get("model_call_costs"))
         costs.append(
             ExecutionCost(
                 task_name=row["task_name"],

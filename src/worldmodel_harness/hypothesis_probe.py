@@ -6,6 +6,7 @@ from stirrup.core.models import Tool, ToolResult
 from .decisions import Decision, ProposedAction
 from .information import CURRENT_INFORMATION
 from .knowledge import InformationRequest
+from .operation_semantics import known_effect
 
 
 class HypothesisProbe(InformationRequest):
@@ -43,9 +44,8 @@ def hypothesis_probe_tool(adapter, dispatch, *, policy, max_calls):
         action = params.action
         if action.tool not in {"api_search", "api_fetch"}:
             return ToolResult(content="Probe supports discovery or API reads only.", success=False)
-        method = action.arguments.get("method", "GET")
         if action.tool == "api_fetch" and (
-            not isinstance(method, str) or method.upper() not in {"GET", "HEAD"}
+            known_effect(adapter, action.arguments)[0] != "read"
         ):
             return ToolResult(
                 content="Mutating probes are not permitted by this tool.", success=False

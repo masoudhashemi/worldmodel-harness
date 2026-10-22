@@ -219,3 +219,34 @@ def test_render_context_injects_workflow_process(plan_store):
 
     # Verify terminal step is finish
     assert parsed["workflow_process"]["steps"][-1]["operation"] == "finish"
+
+
+def test_state_local_path_recalibration_with_current_node(plan_store):
+    store, scope = plan_store
+    query = "Check the spreadsheet for bounces, remove subscribers from Mailchimp, and email ops."
+
+    # Initial state (t=0)
+    plan_t0 = extract_workflow_plan(store, scope, query)
+    assert plan_t0 is not None
+    assert plan_t0.active_step_index == 1
+    assert plan_t0.steps[0].status == "active"
+    assert plan_t0.steps[1].status == "pending"
+
+    # State transition: step 1 completed
+    step1_op = plan_t0.steps[0].operation
+    plan_t1 = extract_workflow_plan(store, scope, query, current_node=step1_op)
+    assert plan_t1 is not None
+    assert plan_t1.steps[0].status == "completed"
+    assert plan_t1.steps[1].status == "active"
+    assert plan_t1.active_step_index == 2
+
+    # State transition: step 2 completed
+    step2_op = plan_t1.steps[1].operation
+    plan_t2 = extract_workflow_plan(
+        store, scope, query, current_node=step2_op, completed_nodes={step1_op}
+    )
+    assert plan_t2 is not None
+    assert plan_t2.steps[0].status == "completed"
+    assert plan_t2.steps[1].status == "active"
+    assert plan_t2.active_step_index == 2
+

@@ -44,6 +44,7 @@ class WorkflowStep(BaseModel):
     claim_id: str | None = None
     input_flow: str | None = None
     expected_data: str | None = None
+    status: str = "pending"  # "completed", "active", "pending"
 
 
 class WorkflowProcess(BaseModel):
@@ -53,6 +54,8 @@ class WorkflowProcess(BaseModel):
     estimated_steps: int
     confidence: float = 1.0
     required_claim_ids: list[str] = Field(default_factory=list)
+    active_step_index: int = 1
+    path_updated: bool = False
 
 
 def _generate_step_description(node: OperationNode, next_node: OperationNode | None = None) -> str:
@@ -89,6 +92,8 @@ def extract_workflow_plan(
     scope: Scope,
     query: str,
     trajectory_graph: TrajectoryGraph | None = None,
+    current_node: str | None = None,
+    completed_nodes: set[str] | None = None,
 ) -> WorkflowProcess | None:
     """Extract an operational workflow process plan covering task intent from the trajectory graph."""
     if not query or not query.strip():
@@ -97,6 +102,10 @@ def extract_workflow_plan(
     graph = trajectory_graph or compile_trajectory_graph(store, scope)
     if not graph.nodes or not graph.edges:
         return None
+
+    completed = set(completed_nodes or ())
+    if current_node and current_node in graph.nodes:
+        completed.add(current_node)
 
     # 1. Parse and expand query terms
     raw_terms = terms(query)
@@ -177,9 +186,24 @@ def extract_workflow_plan(
         top_starts = [best_targets[0]]
 
     # 3. Find optimal path covering the start and target nodes
-    covering_result = graph.find_path_covering(
-        top_starts, best_targets, allowed_services=active_services or None
-    )
+    path_updated = False
+    covering_result = None
+
+    if current_node and current_node in graph.nodes:
+        remaining_targets = [t for t in best_targets if t not in completed and t != current_node]
+        if remaining_targets:
+            covering_result = graph.find_path_covering(
+                [current_node], remaining_targets, allowed_services=active_services or None
+            )
+            path_updated = True
+        else:
+            covering_result = ([current_node], 0.0)
+
+    if not covering_result:
+        covering_result = graph.find_path_covering(
+            top_starts, best_targets, allowed_services=active_services or None
+        )
+
     if not covering_result:
         # Fallback: check if the top start node can reach any target within allowed services
         for s in top_starts:
@@ -241,6 +265,24 @@ def extract_workflow_plan(
     )
     steps.append(finish_step)
 
+    # 6. Resolve step execution status: completed, active, pending
+    active_step_index = 1
+    found_active = False
+    for s in steps:
+        op = s.operation
+        if op in completed or (current_node and op == current_node):
+            s.status = "completed"
+        elif not found_active:
+            s.status = "active"
+            active_step_index = s.step
+            found_active = True
+        else:
+            s.status = "pending"
+
+    if not found_active and steps:
+        steps[-1].status = "active"
+        active_step_index = steps[-1].step
+
     # Compute confidence based on path transition cost
     confidence = max(0.2, min(1.0, 1.0 / (1.0 + cost * 0.2)))
 
@@ -253,4 +295,6 @@ def extract_workflow_plan(
         estimated_steps=len(steps),
         confidence=round(confidence, 2),
         required_claim_ids=required_claims,
+        active_step_index=active_step_index,
+        path_updated=path_updated,
     )

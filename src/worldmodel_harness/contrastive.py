@@ -1,21 +1,11 @@
-"""Cross-task contrastive semantic analysis and precondition induction.
-
-Mines counterfactual episode pairs (failures/silent errors vs verified successes)
-using multi-modal evidence (arguments, raw responses, state diffs, verifier remarks)
-and induces actionable precondition invariants stored directly in the Knowledge Graph.
-"""
+"""Mine observed contrasts for model analysis; correlation does not establish prerequisites."""
 
 import hashlib
-import json
 import re
-from typing import Any, Literal
-from uuid import uuid4
+from typing import Literal
 
-from pydantic import Field
-
-from .knowledge import Claim, Episode, Layer, Record, Scope, utc_now
+from .knowledge import Claim, Episode, Layer, Record, Scope
 from .learning import claim_identity
-from .retrieval import terms
 from .store import KnowledgeStore
 
 
@@ -58,10 +48,10 @@ def is_unproductive_episode(episode: Episode) -> tuple[bool, str]:
             return True, "silent_failure"
         # Empty collection returns when searching
         for list_key in ("records", "results", "items", "data", "rows", "values"):
-            if list_key in resp and isinstance(resp[list_key], list) and len(resp[list_key]) == 0:
-                # If arguments contained specific search terms, an empty list suggests a missed query/tab prerequisite
-                if episode.arguments:
-                    return True, "empty_result"
+            if (list_key in resp and isinstance(resp[list_key], list)
+                and len(resp[list_key]) == 0 and episode.arguments):
+                # An empty result nominates a contrast, not a missing prerequisite.
+                return True, "empty_result"
     elif isinstance(resp, list) and len(resp) == 0 and episode.arguments:
         return True, "empty_result"
 
@@ -69,7 +59,7 @@ def is_unproductive_episode(episode: Episode) -> tuple[bool, str]:
 
 
 def is_productive_episode(episode: Episode) -> bool:
-    """Verifies that an episode produced non-empty, error-free results."""
+    """Select a contrasting observation; this does not verify task success."""
     if episode.outcome != "success":
         return False
     unproductive, _ = is_unproductive_episode(episode)
@@ -77,18 +67,18 @@ def is_productive_episode(episode: Episode) -> bool:
 
 
 def mine_contrastive_pairs(store: KnowledgeStore, scope: Scope) -> list[ContrastivePair]:
-    """Scans historical episodes to find counterfactual pairs for the same tool or route."""
+    """Pair earlier candidate failures with later outcomes in the same observation channel."""
     episodes = store.episodes(scope)
-    by_target: dict[str, list[Episode]] = {}
+    by_target: dict[tuple[str, str], list[Episode]] = {}
     for ep in episodes:
-        if ep.purpose in ("validation", "probe"):
+        if ep.purpose == "validation" or ep.scope.tenant != scope.tenant:
             continue
         route = _endpoint_route(ep)
-        key = route or ep.operation
+        key = (ep.origin, route or ep.operation)
         by_target.setdefault(key, []).append(ep)
 
     pairs = []
-    for key, group in by_target.items():
+    for group in by_target.values():
         negatives = []
         positives = []
         for ep in group:
@@ -101,7 +91,7 @@ def mine_contrastive_pairs(store: KnowledgeStore, scope: Scope) -> list[Contrast
         # Pair each negative with the most relevant positive episode
         for neg_ep, kind in negatives:
             for pos_ep in positives:
-                if neg_ep.episode_id == pos_ep.episode_id:
+                if neg_ep.episode_id == pos_ep.episode_id or pos_ep.timestamp <= neg_ep.timestamp:
                     continue
                 pair_id = hashlib.sha256(
                     f"{neg_ep.episode_id}:{pos_ep.episode_id}".encode()
@@ -135,123 +125,60 @@ def induce_contrastive_precondition(
     pair: ContrastivePair,
     store: KnowledgeStore,
     scope: Scope,
-    *,
-    client: Any | None = None,
 ) -> Claim:
-    """Extracts a causal invariant claim from a contrastive episode pair."""
-    neg_ep = store.episode(pair.negative_episode_id)
-    pos_ep = store.episode(pair.positive_episode_id)
+    """Retain an unexplained contrast, never infer a necessary precondition.
 
-    target_name = pair.target_route or pair.target_tool
-
-    # Heuristic / deterministic difference extraction
-    pos_args = pos_ep.arguments if isinstance(pos_ep.arguments, dict) else {}
-    neg_args = neg_ep.arguments if isinstance(neg_ep.arguments, dict) else {}
-    missing_args = sorted(set(pos_args.keys()) - set(neg_args.keys()))
-
-    # Check trajectory history for prerequisite operations
-    all_episodes = store.episodes(scope)
-    pos_history = [
-        e for e in all_episodes
-        if e.task_id == pos_ep.task_id
-        and e.timestamp < pos_ep.timestamp
-        and e.outcome == "success"
-    ]
-    neg_history = [
-        e for e in all_episodes
-        if e.task_id == neg_ep.task_id
-        and e.timestamp < neg_ep.timestamp
-        and e.outcome == "success"
-    ]
-    pos_prior_ops = {e.operation for e in pos_history}
-    neg_prior_ops = {e.operation for e in neg_history}
-    # An action cannot be a prerequisite for itself, and discovery operations are not prerequisites
-    diff_ops = sorted((pos_prior_ops - neg_prior_ops) - {pair.target_tool, "api_search", "lookup_knowledge"})
-
-    # Discovery operations (api_search, lookup_knowledge) do not have workflow prerequisite actions
-    if pair.target_tool in ("api_search", "lookup_knowledge"):
-        prereq_action = None
-    else:
-        prereq_action = diff_ops[-1] if diff_ops else None
-    required_arg = missing_args[0] if missing_args else None
-
-    statement_parts = [f"Calling {target_name}"]
-    if pair.failure_kind == "silent_failure":
-        statement_parts.append("previously resulted in a silent failure/no-op")
-    elif pair.failure_kind == "empty_result":
-        statement_parts.append("returned empty unhelpful data")
-    else:
-        statement_parts.append("failed with an error")
-
-    if prereq_action:
-        statement_parts.append(f"unless preceded by {prereq_action}")
-    if required_arg:
-        statement_parts.append(f"with parameter '{required_arg}'")
-    statement_parts.append("(derived from contrastive trajectory analysis).")
-
-    # Identify canonical target operation from endpoint contract if present
-    target_contract = None
-    if neg_ep.operation == "api_fetch" and isinstance(neg_ep.arguments, dict):
-        from .behavior import endpoint_contract
-        target_contract = endpoint_contract(store, scope, neg_ep.arguments)
-
-    target_operation = (
-        target_contract.payload.get("id")
-        if target_contract and isinstance(target_contract.payload, dict) and "id" in target_contract.payload
-        else (pair.target_route or pair.target_tool)
-    )
-
-    statement = " ".join(statement_parts)
-    payload = {
-        "target_operation": target_operation,
-        "target_contract_id": target_contract.claim_id if target_contract else None,
-        "target_tool": pair.target_tool,
-        "target_route": pair.target_route,
-        "failure_kind": pair.failure_kind,
-        "required_preceding_action": prereq_action,
-        "required_argument": required_arg,
-        "negative_evidence": pair.negative_episode_id,
-        "positive_evidence": pair.positive_episode_id,
-        "contrastive_pair_id": pair.pair_id,
-    }
-
-    env_scope = Scope(environment=scope.environment, version=scope.version, role=scope.role)
-    participants = (target_operation, prereq_action or required_arg or "precondition")
-    signature = (target_name, pair.failure_kind, prereq_action or "", required_arg or "")
-    identity = claim_identity(env_scope, "contrastive_precondition", signature)
-
+    The legacy function name is kept for callers. Model consolidation consumes
+    the original observations and proposes explanations separately.
+    """
+    negative = store.episode(pair.negative_episode_id)
+    positive = store.episode(pair.positive_episode_id)
+    if (
+        negative.scope.tenant != positive.scope.tenant
+        or negative.scope.tenant != scope.tenant
+        or negative.origin != positive.origin
+        or negative.scope.environment != scope.environment
+        or positive.scope.environment != scope.environment
+        or negative.scope.version != scope.version
+        or positive.scope.version != scope.version
+        or negative.scope.role != scope.role
+        or positive.scope.role != scope.role
+    ):
+        raise ValueError("Contrast evidence must share environment, tenant and observation origin")
+    target = pair.target_route or pair.target_tool
+    identity = claim_identity(scope, "contrastive_observation", (pair.pair_id,))
     return Claim(
         claim_id=identity,
-        version=1,
         layer=Layer.BEHAVIOR,
-        relation="contrastive_precondition",
-        participants=participants,
-        statement=statement,
-        scope=env_scope,
-        payload=payload,
-        origin="inferred",
-        status="supported",
-        needs_review=False,
-        supporting_episodes=(pair.positive_episode_id,),
-        contradicting_episodes=(pair.negative_episode_id,),
-        observed_at=pos_ep.timestamp,
-        last_verified_at=pos_ep.timestamp,
+        relation="contrastive_observation",
+        participants=(target,),
+        statement="Different observed outcomes for " + target + "; cause unestablished.",
+        scope=scope,
+        payload={
+            "negative_evidence": negative.episode_id,
+            "positive_evidence": positive.episode_id,
+            "contrastive_pair_id": pair.pair_id,
+            "difference": pair.divergence_summary,
+            "interpretation": "Candidate evidence for model analysis, not a prerequisite or causal rule",
+        },
+        origin="observed",
+        status="hypothesis",
+        needs_review=True,
+        supporting_episodes=(negative.episode_id, positive.episode_id),
+        observed_at=positive.timestamp,
     )
 
 
-def learn_contrastive_preconditions(
-    store: KnowledgeStore,
-    scope: Scope,
-    *,
-    client: Any | None = None,
-) -> list[str]:
-    """Mines counterfactual pairs, induces contrastive precondition claims, and stores them."""
+def learn_contrastive_preconditions(store: KnowledgeStore, scope: Scope) -> list[str]:
+    """Retain deduplicated contrasts without promoting or broadening their scope."""
     if store.frozen:
         return []
-    pairs = mine_contrastive_pairs(store, scope)
     created_ids = []
-    for pair in pairs:
-        claim = induce_contrastive_precondition(pair, store, scope, client=client)
-        store.put_claim(claim)
-        created_ids.append(claim.claim_id)
+    for pair in mine_contrastive_pairs(store, scope):
+        claim = induce_contrastive_precondition(pair, store, scope)
+        try:
+            store.claim(claim.claim_id)
+        except KeyError:
+            store.put_claim(claim)
+            created_ids.append(claim.claim_id)
     return created_ids

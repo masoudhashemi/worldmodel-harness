@@ -8,8 +8,10 @@ from pydantic import Field
 from stirrup.core.models import Tool, ToolResult
 
 from .context_compression import encode_records
+from .grounding import GroundedDerivation, verify_derivation
 from .knowledge import OutputExpectation, Record
 from .observable_predictions import compare_expectations, inspect_path
+from .operation_semantics import is_observation_read
 
 
 class OutcomeContract(Record):
@@ -22,6 +24,7 @@ class OutcomeContract(Record):
     source_requirement_id: str | None = None
     identity_path: tuple[str | int, ...] = ()
     identity_anchor: str | None = None
+    derivation: GroundedDerivation | None = None
 
 
 class SourceBinding(Record):
@@ -89,9 +92,7 @@ class GoalTracker:
         if check.kind == "source":
             if check.evidence_mode != "historical_observation":
                 return "source_requires_historical_mode"
-            if event.operation != "api_fetch" or event.arguments.get(
-                "method", "GET"
-            ).upper() not in ("GET", "HEAD"):
+            if not is_observation_read(self.adapter, event):
                 return "source_requires_read"
             if not check.observation.path or path["value"] in (None, "", [], {}):
                 return "missing_source_content"
@@ -124,8 +125,7 @@ class GoalTracker:
                 return "missing_outcome_resource"
             if event.arguments.get("url") != check.outcome.resource_url:
                 return "outcome_resource_mismatch"
-            method = event.arguments.get("method", "GET").upper()
-            if method not in ("GET", "HEAD"):
+            if not is_observation_read(self.adapter, event):
                 return "outcome_verification_requires_read"
         grounding = self.grounding(check)
         if grounding != "grounded":
@@ -146,9 +146,7 @@ class GoalTracker:
                 return "target_identity_mismatch"
         if check.evidence_mode == "historical_observation":
             # Past reads can establish what was observed, never a present-state effect.
-            if event.operation != "api_fetch" or event.arguments.get(
-                "method", "GET"
-            ).upper() not in ("GET", "HEAD"):
+            if not is_observation_read(self.adapter, event):
                 return "historical_evidence_requires_read"
             return compare_expectations(
                 event.model_copy(update={"output_expectations": (check.observation,)})
@@ -197,6 +195,14 @@ class GoalTracker:
             return "insufficient_outcome_predicate"
         if contract.target.predicate != "equals" or not contract.target.path:
             return "insufficient_outcome_predicate"
+        if contract.derivation is not None:
+            try:
+                target = self.adapter.evidence.episode(check.episode_id)
+            except KeyError:
+                return "missing_evidence"
+            return verify_derivation(self.adapter, target, contract.target.path, expected,
+                                     check.task_quote, contract.identity_anchor,
+                                     contract.derivation)
         if contract.source_episode_id:
             if contract.source_requirement_id:
                 source_check = self.checks.get(contract.source_requirement_id)
@@ -221,8 +227,7 @@ class GoalTracker:
                 source.scope != self.adapter.scope
                 or source.outcome != "success"
                 or (
-                    source.operation != "api_fetch"
-                    or source.arguments.get("method", "GET").upper() not in ("GET", "HEAD")
+                    not is_observation_read(self.adapter, source)
                 )
             ):
                 return "incompatible_outcome_source"
@@ -344,7 +349,7 @@ class GoalTracker:
             "grounded literally in task_quote or in a separate source_episode_id/source_path "
             "(a source string may contain the desired value). Set observation to that same target. "
             "For API evidence set outcome.resource_url to the intended verification resource; "
-            "use a successful GET/HEAD read, not a write acknowledgment. "
+            "use a successful known non-mutating read, not a write acknowledgment. "
             "The outcome value, resource and grounding are immutable once supplied; target "
             "paths can be corrected to match response shape. Presence/type checks cannot "
             "establish task completion. Register pending requirements without evidence first. "
@@ -384,6 +389,7 @@ class GoalTracker:
                 event.scope != scope
                 or event.outcome != "success"
                 or event.operation != "api_fetch"
+                or is_observation_read(self.adapter, event)
                 or method not in ("POST", "PUT", "PATCH")
             ):
                 continue
@@ -459,7 +465,7 @@ class GoalTracker:
                             "Check the field holding that value on the current record, "
                             "or finish with unresolved=true."
                             if all_matched and (missing or unverified_written)
-                            else "Call check_effect directly before finish: supply requirement_id, exact task_quote, latest GET/HEAD episode_id, modified field path, exact expected value from task/source, and task-quoted identity anchor_text. A read alone does not register verification. Do not repeat a successful write. Use unresolved=true if evidence is unavailable."
+                            else "Call check_effect directly before finish: supply requirement_id, exact task_quote, latest known non-mutating read episode_id, modified field path, exact expected value from task/source, and task-quoted identity anchor_text. A read alone does not register verification. Do not repeat a successful write. Use unresolved=true if evidence is unavailable."
                         ),
                     }
                 ),

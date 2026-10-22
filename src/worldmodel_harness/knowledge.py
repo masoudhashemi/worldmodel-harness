@@ -101,6 +101,10 @@ class OutputExpectation(Record):
     def normalize_expectation(cls, data: Any) -> Any:
         if isinstance(data, dict):
             data = dict(data)
+            if "field" in data and "path" not in data:
+                data["path"] = (data.pop("field"),)
+            elif "field" in data:
+                data.pop("field")
             if "path" in data and isinstance(data["path"], (str, int)):
                 data["path"] = (data["path"],)
             if "type" in data:
@@ -116,6 +120,14 @@ class Episode(Record):
     episode_id: str = Field(default_factory=lambda: uuid4().hex)
     # Repeated reads/duplicate logging of one event do not supply independent support.
     event_id: str = Field(default_factory=lambda: uuid4().hex)
+    # Harness observations and environment responses have different authority.
+    origin: Literal["environment", "harness"] = "environment"
+    interaction_id: str | None = None
+    previous_interaction_id: str | None = None
+    related_episode_ids: tuple[str, ...] = ()
+    environment_called: bool | None = None
+    effect_kind: Literal["read", "write", "unknown"] = "unknown"
+    effect_source_claim_id: str | None = None
     task_id: str
     scope: Scope
     operation: str
@@ -134,6 +146,27 @@ class Episode(Record):
     purpose: Literal["task", "refresh", "probe", "validation", "discovery"] = "task"
     elapsed_seconds: float = Field(default=0, ge=0)
     timestamp: datetime = Field(default_factory=utc_now)
+
+
+def response_coverage(response: Any) -> tuple[str, ...]:
+    """Covered root keys; array indexes use decimal strings in stored coverage."""
+    if isinstance(response, dict):
+        return tuple(response)
+    if isinstance(response, list):
+        return tuple(str(index) for index in range(len(response)))
+    return ()
+
+
+def covered_path(episode: Episode, path) -> bool:
+    if not path:
+        return True
+    root = path[0]
+    if isinstance(episode.response, list):
+        if type(root) is int or isinstance(root, str) and root.isascii() and root.isdigit():
+            root = str(root)
+        else:
+            return False
+    return root in episode.coverage
 
 
 class Dependency(Record):
@@ -181,6 +214,8 @@ class WorkingGraph(Record):
     gaps: tuple[str, ...] = ()
     # True means a missing mandatory dependency prevented a usable selection.
     blocked: bool = False
+    stages: tuple[str, ...] = ()
+    reasons: dict[str, tuple[str, ...]] = Field(default_factory=dict)
 
 
 class LiveState:
@@ -200,12 +235,14 @@ class LiveState:
         namespace = episode.operation
         if "url" in episode.arguments:
             namespace += ":" + str(episode.arguments["url"])
-        if isinstance(episode.response, dict):
+        if isinstance(episode.response, (dict, list)):
+            values = (episode.response if isinstance(episode.response, dict)
+                      else {str(i): value for i, value in enumerate(episode.response)})
             for key in episode.coverage:
-                if key in episode.response:
+                if key in values:
                     self._facts[f"{namespace}:{key}"] = LiveFact(
                         key=f"{namespace}:{key}",
-                        value=episode.response[key],
+                        value=values[key],
                         episode_id=episode.episode_id,
                         observed_at=episode.timestamp,
                     )
