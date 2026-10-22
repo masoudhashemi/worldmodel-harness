@@ -7,6 +7,7 @@ on natural language task instructions. Strictly decoupled from benchmark metadat
 from __future__ import annotations
 
 import re
+from collections import defaultdict
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -152,6 +153,11 @@ def extract_workflow_plan(
                 expanded_terms.add(v)
                 active_services.add(v)
 
+    # Enterprise channel handles (e.g. #ops-updates, #security, #alerts) represent chat/slack notifications
+    if re.search(r"#\w+", query):
+        expanded_terms.update({"slack", "channel", "message", "chat", "notify", "post"})
+        active_services.add("slack")
+
     # 2. Score candidate start nodes (readers) and target nodes (mutators)
     start_candidates: list[tuple[int, str, OperationNode]] = []
     target_candidates: list[tuple[int, str, OperationNode]] = []
@@ -173,8 +179,8 @@ def extract_workflow_plan(
         if node.action_type == "read":
             start_candidates.append((score, nid, node))
         else:
-            # Target mutations must belong to an active service if any were identified
-            if active_services and node.service not in active_services:
+            # Prefer active services if any were identified, but do not hard-exclude high-overlap mutations
+            if active_services and node.service not in active_services and score < 4:
                 continue
             target_candidates.append((score, nid, node))
 
@@ -189,14 +195,15 @@ def extract_workflow_plan(
     min_target_score = max(4, int(top_target_score * 0.6))
     filtered_targets = [item for item in target_candidates if item[0] >= min_target_score]
 
-    # Group target candidates by service to cover distinct required domain mutations
-    seen_target_services: set[str] = set()
+    # Select best targets (allowing composite intra-service mutations!)
+    # Allow up to 2 distinct operations per service, preserving sequential multi-step mutations
+    service_target_counts: dict[str, int] = defaultdict(int)
     best_targets: list[str] = []
     for _, nid, node in filtered_targets:
-        if node.service not in seen_target_services:
-            seen_target_services.add(node.service)
+        if service_target_counts[node.service] < 2:
+            service_target_counts[node.service] += 1
             best_targets.append(nid)
-            if len(best_targets) >= 3:
+            if len(best_targets) >= 6:
                 break
 
     # Group start candidates by service
@@ -222,7 +229,7 @@ def extract_workflow_plan(
         remaining_targets = [t for t in best_targets if t not in completed and t != current_node]
         if remaining_targets:
             candidate_paths = graph.find_all_candidate_paths(
-                [current_node], remaining_targets, allowed_services=active_services or None, max_paths=3
+                [current_node], remaining_targets, max_paths=3
             )
             path_updated = True
         else:
@@ -230,15 +237,15 @@ def extract_workflow_plan(
 
     if not candidate_paths:
         candidate_paths = graph.find_all_candidate_paths(
-            top_starts, best_targets, allowed_services=active_services or None, max_paths=3
+            top_starts, best_targets, max_paths=3
         )
 
     if not candidate_paths:
-        # Fallback: check if any top start node can reach any valid target within allowed services
+        # Fallback: check if any top start node can reach any valid target
         import math
         for s in top_starts:
             for _, t, _ in target_candidates:
-                res = graph.shortest_path(s, t, allowed_services=active_services or None)
+                res = graph.shortest_path(s, t)
                 if res:
                     seg_path, seg_cost = res
                     conf = max(0.05, min(1.0, math.exp(-seg_cost)))

@@ -677,12 +677,17 @@ def compile_trajectory_graph(
         if src in graph.nodes and tgt in graph.nodes:
             transitions[(src, tgt)] += len(flows)
 
-    # Contrastive preconditions: if a contract requires base64_encode or prior action
+    # Generic contrastive preconditions: prerequisite operation precedes target operation
     for c in claims:
         if c.relation == "contrastive_precondition":
-            # e.g., messages.send requires prior base64_encode
-            if "base64_encode" in c.statement and "gmail.users.messages.send" in graph.nodes:
-                transitions[("base64_encode", "gmail.users.messages.send")] += 5
+            src = c.payload.get("source_operation") or (c.participants[0] if len(c.participants) >= 1 else None)
+            tgt = c.payload.get("target_operation") or (c.participants[1] if len(c.participants) >= 2 else None)
+            if src and tgt and src in graph.nodes and tgt in graph.nodes:
+                transitions[(src, tgt)] += 5
+            elif "base64_encode" in c.statement:
+                for nid in graph.nodes:
+                    if "send" in nid:
+                        transitions[("base64_encode", nid)] += 5
 
     # 6. Build transition edges with normalized probabilities and costs
     out_degree: Counter[str] = Counter()

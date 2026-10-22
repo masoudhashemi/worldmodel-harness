@@ -459,4 +459,87 @@ def test_mutation_on_excluded_entity_is_blocked(tmp_path):
     store.close()
 
 
+def test_mutation_failure_repair_guard_intercepts_abandonment(tmp_path):
+    from worldmodel_harness.knowledge import Episode
+
+    store = KnowledgeStore(tmp_path / "repair.sqlite")
+    scope = Scope(environment="test", version="1", role="ops", task_id="task_fail")
+
+    # Log a prior failed mutation episode (e.g. Jira HTTP 400 malformed syntax)
+    failed_ep = Episode(
+        task_id="task_fail",
+        scope=scope,
+        operation="api_fetch",
+        arguments={"method": "POST", "url": "https://company.atlassian.net/rest/api/3/issue", "body": "{\"bad\": json"},
+        response={"error": {"code": 400, "message": "Invalid JSON: Expecting ',' delimiter"}},
+        outcome="error",
+        origin="environment",
+    )
+    store.append_episode(failed_ep)
+
+    class ConfluenceParams(BaseModel):
+        title: str
+
+    calls = []
+    tool = Tool(
+        name="confluence_create",
+        description="create page",
+        parameters=ConfluenceParams,
+        executor=lambda p: calls.append(p) or ToolResult(content="ok"),
+    )
+
+    # Agent attempts to abandon Jira and move to Confluence without repairing
+    decision = proposal("confluence_create", {"title": "Incident Notes"})
+    audit = []
+    result = asyncio.run(
+        dispatch_decision(
+            decision,
+            tools={"confluence_create": tool},
+            requirements_for=lambda _: ActionRequirements(),
+            store=store,
+            evidence_store=store,
+            scope=scope,
+            live=LiveState("task_fail"),
+            audit=audit,
+        )
+    )
+
+    # Must be intercepted by the Mutation Failure Repair Guard!
+    assert not result.success
+    assert len(calls) == 0  # Confluence call was not sent yet
+    feedback = json.loads(result.content)
+    assert feedback["status"] == "blocked"
+    assert "action:repair_failed_mutation" in feedback["gaps"]
+    assert "Invalid JSON: Expecting ',' delimiter" in feedback["next_step"]
+    assert "Do not abandon this required action" in feedback["next_step"]
+
+    # Now verify that retrying / repairing the Jira endpoint IS allowed
+    class ApiFetchParams(BaseModel):
+        method: str
+        url: str
+
+    api_tool = Tool(
+        name="api_fetch",
+        description="fetch",
+        parameters=ApiFetchParams,
+        executor=lambda p: calls.append(p) or ToolResult(content="ok"),
+    )
+    repair_decision = proposal("api_fetch", {"method": "POST", "url": "https://company.atlassian.net/rest/api/3/issue"})
+    repair_result = asyncio.run(
+        dispatch_decision(
+            repair_decision,
+            tools={"api_fetch": api_tool},
+            requirements_for=lambda _: ActionRequirements(),
+            store=store,
+            evidence_store=store,
+            scope=scope,
+            live=LiveState("task_fail"),
+            audit=[],
+        )
+    )
+    assert repair_result.success
+    assert len(calls) == 1  # Repaired mutation was allowed to dispatch!
+    store.close()
+
+
 
