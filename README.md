@@ -4,6 +4,73 @@ An adaptive agent execution harness that learns and accumulates operational envi
 
 The system compiles empirical interaction traces into a persistent operational trajectory graph, models transition reliability using Bayesian posterior distributions, and gates agent decisions to prevent unproductive loops, duplicate actions, and premature finishes.
 
+```mermaid
+flowchart TD
+    subgraph KNOWLEDGE ["1. Persistent World Model Store (SQLite)"]
+        direction TB
+        C["Discovered Contracts & Value Flows"]
+        E["Immutable Execution Episodes"]
+        P["Conjugate Edge Posteriors (Beta Distribution)"]
+    end
+
+    subgraph PLANNING ["2. Bayesian Trajectory Planning"]
+        direction TB
+        TG["Compile Operational Trajectory Graph"]
+        MP["Multi-Path Candidate Search (Starts to Targets)"]
+        TS["Thompson Sampling (Sample from Beta Posterior)"]
+        CERT["Continuous Certainty Metric (Variance to 0)"]
+        WP["Ranked Workflow Process & Guidance"]
+    end
+
+    subgraph RUNTIME ["3. Audited Decision Runtime & Safety Guards"]
+        direction TB
+        LLM["LLM Agent (Decision Proposal)"]
+        QG{"Unproductive Query<br/>Loop Guard"}
+        EG{"Excluded Entity<br/>Gate"}
+        FG{"Entity Obligation<br/>Finish Guard"}
+        DISP["Environment Tool Dispatch (API / Mutation)"]
+    end
+
+    subgraph ENVIRONMENT ["4. External Environment & Dynamic State"]
+        direction TB
+        ENV["Target APIs & Services (Gmail, Sheets, Twilio, Asana)"]
+        ET["Entity Obligation Tracker & Recalibrated Frontier"]
+        OBS["Observed Responses & Errors"]
+    end
+
+    %% Flow connections
+    KNOWLEDGE --> TG
+    TG --> MP --> TS --> CERT --> WP
+    WP --> LLM
+    
+    LLM --> QG
+    QG -- "Redundant Empty Query" --> LLM
+    QG -- "Pass" --> EG
+    EG -- "Excluded Entity Mutation" --> LLM
+    EG -- "Pass" --> FG
+    FG -- "Unfulfilled Obligations" --> LLM
+    FG -- "All Clear" --> DISP
+
+    DISP --> ENV --> OBS
+    OBS --> ET
+    ET -. "Active State & Recalibrated Frontier" .-> LLM
+
+    %% Closed-Loop Learning
+    OBS ==>|"Append Evidence Episode"| E
+    OBS ==>|"Success: α ← α + 1 / Failure: β ← β + 1"| P
+    OBS ==>|"Derive Contracts & Value Flows"| C
+
+    classDef store fill:#e1f5fe,stroke:#0288d1,stroke-width:2px;
+    classDef plan fill:#ede7f6,stroke:#512da8,stroke-width:2px;
+    classDef runtime fill:#fff3e0,stroke:#e65100,stroke-width:2px;
+    classDef env fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px;
+
+    class KNOWLEDGE store;
+    class PLANNING plan;
+    class RUNTIME runtime;
+    class ENVIRONMENT env;
+```
+
 ---
 
 ## Architecture & Implementation
