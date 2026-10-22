@@ -100,4 +100,6 @@ class InteractionRecorder:
         self.retain(episode)
         self.previous_id = interaction_id
         self.adapter.last_interaction = episode
+        if hasattr(self.adapter, "interaction_history"):
+            self.adapter.interaction_history.append(episode)
         return episode

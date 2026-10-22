@@ -65,9 +65,11 @@ def operational_tools(
 ):
     """No raw-action bypass: procedures use the same guarded primitive boundary."""
     raw = {t.name: t for t in base_tools}
+    from .execution_state import EntityTracker
     from .goal_checks import GoalTracker
 
     adapter.goal_tracker = GoalTracker(adapter)
+    adapter.entity_tracker = EntityTracker()
     adapter.evidence_aliases = {}
     adapter.artifact_audit = []
 
@@ -86,6 +88,7 @@ def operational_tools(
                 scope=adapter.scope,
                 live=adapter.live,
                 audit=audit,
+                entity_tracker=getattr(adapter, "entity_tracker", None),
             )
         finally:
             CURRENT_EXPECTATIONS.reset(token)
@@ -174,6 +177,14 @@ def operational_tools(
                 alias = f"e{len(adapter.evidence_aliases) + 1}"
                 adapter.evidence_aliases[alias] = event.episode_id
                 known.add(event.episode_id)
+                if hasattr(adapter, "entity_tracker") and adapter.entity_tracker is not None:
+                    task = getattr(adapter, "task", None)
+                    task_text = " ".join(m["content"] for m in task.prompt) if task else ""
+                    method = event.arguments.get("method", "GET").upper() if isinstance(event.arguments, dict) else "GET"
+                    if event.operation == "api_fetch" and method == "GET":
+                        adapter.entity_tracker.register_from_read(event, task_text=task_text)
+                    else:
+                        adapter.entity_tracker.record_action(event)
                 if (
                     event.outcome == "success"
                     and event.purpose not in ("discovery", "validation")

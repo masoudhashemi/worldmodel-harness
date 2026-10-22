@@ -13,7 +13,7 @@ def terms(text: str) -> set[str]:
 
 
 def decision_focus(adapter):
-    """Only explicit action identity/subgoal, never arbitrary response prose."""
+    """Only explicit action identity/subgoal, conditioned on active entity and requirements."""
     decision = getattr(adapter, "active_decision", None)
     entities, subgoal = [], ""
     if decision is not None:
@@ -24,9 +24,36 @@ def decision_focus(adapter):
             value = action.arguments.get(key)
             if isinstance(value, str):
                 entities.append(value)
+
+    # Condition retrieval on the active entity's next pending requirement
+    entity_tracker = getattr(adapter, "entity_tracker", None)
+    if entity_tracker is not None:
+        active = entity_tracker.active_entity()
+        if active is not None:
+            next_ch = active.next_pending_channel()
+            if next_ch:
+                channel_service_map = {
+                    "sms": "twilio",
+                    "email": "gmail",
+                    "slack": "slack",
+                    "asana": "asana",
+                }
+                svc = channel_service_map.get(next_ch, next_ch)
+                entities.append(svc)
+                if active.email and next_ch == "email":
+                    entities.append(active.email)
+                if active.phone and next_ch == "sms":
+                    entities.append(active.phone)
+                if active.name:
+                    entities.append(active.name)
+                if active.badge_id:
+                    entities.append(active.badge_id)
+                subgoal = f"Send {next_ch} notification to {active.name or active.badge_id}"
+
     interaction = getattr(adapter, "last_interaction", None)
     if interaction is not None:
-        entities.append(interaction.operation)
+        if not interaction.operation.startswith("tool_call:"):
+            entities.append(interaction.operation)
         feedback = interaction.response.get("result", {})
         if interaction.outcome != "success" and isinstance(feedback, dict):
             # Error labels are retrieval data, never instructions or proof.

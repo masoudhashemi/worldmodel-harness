@@ -43,6 +43,8 @@ class ExperimentSettings(BaseModel):
     offset: int = Field(default=0, ge=0)
     phase: Literal["development", "frozen", "online", "checkpoint", "train", "test"] = "development"
     memory: Literal["none", "episodes", "flat", "graph"] = "graph"
+    resolve_execution_frontier: bool = False
+    successful_transition_graph: bool = False
     adaptive: bool = False
     operational: bool = False
     semantic_learning: bool = False
@@ -137,6 +139,8 @@ class KnowledgeClient:
         self.online_learner = None
         self._last_working_claims = set()
         self._completed_operations = set()
+        self._current_operation = None
+        self._last_processed_interaction_index = 0
 
     async def _generate(self, messages, tools):
         self.last_messages = list(messages)
@@ -190,27 +194,58 @@ class KnowledgeClient:
                 return await self._generate(selected_messages, tools)
             from .retrieval import decision_focus
 
-            current_node = None
-            last_interaction = getattr(self.adapter, "last_interaction", None)
-            if last_interaction is not None:
-                if last_interaction.operation == "api_fetch":
-                    from .behavior import endpoint_contract
-
-                    contract = endpoint_contract(
-                        self.knowledge,
-                        self.adapter.scope,
-                        last_interaction.arguments.get("method", "GET"),
-                        last_interaction.arguments.get("url", ""),
-                    )
-                    if contract is not None:
-                        current_node = contract.payload.get("id") or contract.claim_id
+            if self.settings.resolve_execution_frontier or self.settings.operational:
+                from .execution_state import advance_frontier
+    
+                history = getattr(self.adapter, "interaction_history", None)
+                if history:
+                    unprocessed = history[self._last_processed_interaction_index:]
+                    task = getattr(self.adapter, "task", None)
+                    task_text = " ".join(m["content"] for m in task.prompt) if task else ""
+                    entity_tracker = getattr(self.adapter, "entity_tracker", None)
+                    for inter in unprocessed:
+                        self._current_operation = advance_frontier(
+                            self.knowledge, self.adapter.scope, self.adapter.evidence,
+                            inter, self._current_operation, self._completed_operations,
+                            entity_tracker=entity_tracker,
+                            task_text=task_text,
+                        )
+                    self._last_processed_interaction_index = len(history)
+                else:
+                    last_interaction = getattr(self.adapter, "last_interaction", None)
+                    if last_interaction is not None:
+                        task = getattr(self.adapter, "task", None)
+                        task_text = " ".join(m["content"] for m in task.prompt) if task else ""
+                        entity_tracker = getattr(self.adapter, "entity_tracker", None)
+                        self._current_operation = advance_frontier(
+                            self.knowledge, self.adapter.scope, self.adapter.evidence,
+                            last_interaction, self._current_operation, self._completed_operations,
+                            entity_tracker=entity_tracker,
+                            task_text=task_text,
+                        )
+                current_node = self._current_operation
+            else:
+                current_node = None
+                last_interaction = getattr(self.adapter, "last_interaction", None)
+                if last_interaction is not None:
+                    if last_interaction.operation == "api_fetch":
+                        from .behavior import endpoint_contract
+    
+                        contract = endpoint_contract(
+                            self.knowledge,
+                            self.adapter.scope,
+                            last_interaction.arguments.get("method", "GET"),
+                            last_interaction.arguments.get("url", ""),
+                        )
+                        if contract is not None:
+                            current_node = contract.payload.get("id") or contract.claim_id
+                        else:
+                            current_node = last_interaction.operation
                     else:
                         current_node = last_interaction.operation
-                else:
-                    current_node = last_interaction.operation
-
-                if last_interaction.outcome == "success" and current_node:
-                    self._completed_operations.add(current_node)
+    
+                    if last_interaction.outcome == "success" and current_node:
+                        self._completed_operations.add(current_node)
 
             focus, subgoal = decision_focus(self.adapter)
             # Response bodies can contain unrelated words and instructions. In the
@@ -311,6 +346,8 @@ class KnowledgeClient:
                 query=retrieval_query,
                 current_node=current_node,
                 completed_nodes=set(self._completed_operations),
+                successful_transition_graph=self.settings.successful_transition_graph or self.settings.operational,
+                entity_tracker=getattr(self.adapter, "entity_tracker", None),
             )
             current_claim_ids = {c.claim_id for c in working.claims}
             newly_injected = current_claim_ids - self._last_working_claims

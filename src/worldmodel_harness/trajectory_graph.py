@@ -120,13 +120,99 @@ class ValueFlowInfo:
 
 @dataclass
 class TransitionEdge:
-    """Directed transition between two operations with transition probability."""
+    """Directed transition between two operations with transition probability and Beta posterior."""
     source: str
     target: str
     count: int = 1
+    success_count: int = 1
+    failure_count: int = 0
+    alpha: float = field(default=0.0)
+    beta: float = field(default=0.0)
     probability: float = 1.0
     cost: float = 0.0
     value_flows: list[ValueFlowInfo] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.alpha <= 0.0:
+            self.alpha = 1.0 + float(max(self.count, self.success_count))
+        if self.beta <= 0.0:
+            self.beta = 1.0 + float(self.failure_count)
+
+    def posterior_mean(self) -> float:
+        ab = self.alpha + self.beta
+        return self.alpha / ab if ab > 0 else 0.5
+
+    def posterior_variance(self) -> float:
+        ab = self.alpha + self.beta
+        if ab <= 0:
+            return 0.25
+        return (self.alpha * self.beta) / (ab * ab * (ab + 1.0))
+
+    def sample_beta(self) -> float:
+        import random
+        return random.betavariate(max(self.alpha, 1e-3), max(self.beta, 1e-3))
+
+    def certainty(self) -> float:
+        """Continuous certainty score in [0.0, 1.0] that increases as the edge is used more with success.
+
+        Defined by posterior concentration relative to an uninformative prior Beta(1, 1) (var = 1/12).
+        As successes accumulate with few failures, variance drops to 0 and certainty approaches 1.0.
+        """
+        var_uninformed = 1.0 / 12.0  # Var of Beta(1, 1) = 1/12 = 0.0833
+        var = self.posterior_variance()
+        concentration = max(0.0, 1.0 - (var / var_uninformed))
+        return round(self.posterior_mean() * concentration, 3)
+
+
+class CandidatePath(tuple):
+    """Candidate solution path with tuple backward compatibility and rich Bayesian properties."""
+
+    def __new__(
+        cls,
+        path: list[str],
+        cost: float,
+        confidence: float,
+        support_count: int,
+        certainty: float = 0.0,
+        posterior_variance: float = 0.0,
+        sample_score: float = 0.0,
+    ):
+        obj = super().__new__(cls, (path, cost, confidence, support_count))
+        obj.certainty = certainty
+        obj.posterior_variance = posterior_variance
+        obj.sample_score = sample_score
+        return obj
+
+    @property
+    def path(self) -> list[str]:
+        return self[0]
+
+    @property
+    def cost(self) -> float:
+        return self[1]
+
+    @property
+    def confidence(self) -> float:
+        return self[2]
+
+    @property
+    def support_count(self) -> int:
+        return self[3]
+
+
+@dataclass
+class NodeAttempt:
+    """An action attempted from a node/state and its observed outcome."""
+    source_node: str
+    target_node: str | None
+    action_type: str  # "api_fetch", "api_search", etc.
+    method: str = ""
+    url: str = ""
+    parameters_summary: str = ""
+    outcome: str = "success"  # "success", "error", "blocked", "unproductive"
+    result_summary: str = ""
+    lesson: str = ""
+    count: int = 1
 
 
 class TrajectoryGraph:
@@ -138,6 +224,7 @@ class TrajectoryGraph:
         self.reverse_edges: dict[str, dict[str, TransitionEdge]] = defaultdict(dict)
         self.forward_value_flows: dict[str, list[ValueFlowInfo]] = defaultdict(list)
         self.reverse_value_flows: dict[str, list[ValueFlowInfo]] = defaultdict(list)
+        self.node_attempts: dict[str, list[NodeAttempt]] = defaultdict(list)
         self.compiled_matchers: list[tuple[str, re.Pattern, Claim]] = []
 
     def match_episode_to_node_id(self, episode: Episode | None) -> str | None:
@@ -203,43 +290,47 @@ class TrajectoryGraph:
 
         return None
 
-    def find_path_covering(
+    def find_all_candidate_paths(
         self,
         starts: list[str],
         targets: list[str],
         allowed_services: set[str] | None = None,
-    ) -> tuple[list[str], float] | None:
-        """Find the lowest-cost path starting from one of `starts` covering `targets`."""
+        max_paths: int = 3,
+    ) -> list[tuple[list[str], float, float, int]]:
+        """Find up to `max_paths` distinct valid paths from starts covering targets.
+
+        Returns list of tuples: (path_nodes, cost, confidence, support_count).
+        """
         if not targets:
-            return None
+            return []
 
         # Filter valid starts and targets
         valid_starts = [s for s in starts if s in self.nodes]
         valid_targets = [t for t in targets if t in self.nodes]
 
         if not valid_targets:
-            return None
+            return []
 
         if not valid_starts:
             valid_starts = [valid_targets[0]]
 
         import itertools
 
-        # Limit permutations to avoid explosion if many targets
         target_permutations = (
             list(itertools.permutations(valid_targets))
             if len(valid_targets) <= 4
             else [valid_targets]
         )
 
-        best_path: list[str] | None = None
-        best_cost = float("inf")
+        candidates: list[tuple[list[str], float, float, int]] = []
+        seen_paths: set[tuple[str, ...]] = set()
 
         for ordered_targets in target_permutations:
             for s in valid_starts:
                 curr = s
                 curr_path = [s]
                 curr_cost = 0.0
+                min_support = 999999
                 possible = True
 
                 for tgt in ordered_targets:
@@ -252,22 +343,103 @@ class TrajectoryGraph:
                     seg_path, seg_cost = segment
                     curr_path.extend(seg_path[1:])
                     curr_cost += seg_cost
+                    for i in range(len(seg_path) - 1):
+                        e = self.edges.get(seg_path[i], {}).get(seg_path[i + 1])
+                        cnt = e.count if e else 1
+                        if cnt < min_support:
+                            min_support = cnt
                     curr = tgt
 
-                if possible and curr_cost < best_cost:
-                    best_cost = curr_cost
-                    best_path = curr_path
+                if possible:
+                    t_path = tuple(curr_path)
+                    if t_path not in seen_paths:
+                        seen_paths.add(t_path)
+                        conf = max(0.05, min(1.0, math.exp(-curr_cost)))
+                        supp = min_support if min_support != 999999 else 1
 
-        if best_path is not None:
-            return best_path, best_cost
+                        path_edges = [
+                            self.edges.get(curr_path[i], {}).get(curr_path[i + 1])
+                            for i in range(len(curr_path) - 1)
+                        ]
+                        edge_means = [e.posterior_mean() if e else 0.67 for e in path_edges]
+                        edge_vars = [e.posterior_variance() if e else 0.0556 for e in path_edges]
+                        edge_samples = [e.sample_beta() if e else 0.67 for e in path_edges]
+                        edge_certs = [e.certainty() if e else 0.222 for e in path_edges]
 
-        # Fallback: try individual shortest paths to any reachable target
-        for s in valid_starts:
-            for tgt in valid_targets:
-                res = self.shortest_path(s, tgt, allowed_services=allowed_services)
-                if res is not None:
-                    return res
+                        exp_conf = math.prod(edge_means) if edge_means else conf
+                        path_certainty = math.prod(edge_certs) if edge_certs else 0.0
+                        second_moments = [v + (m ** 2) for v, m in zip(edge_vars, edge_means)]
+                        path_var = max(0.0, math.prod(second_moments) - (exp_conf ** 2)) if second_moments else 0.0
+                        sample_score = math.prod(edge_samples) if edge_samples else exp_conf
 
+                        candidates.append(
+                            CandidatePath(
+                                curr_path,
+                                curr_cost,
+                                conf,
+                                supp,
+                                certainty=round(path_certainty, 3),
+                                posterior_variance=round(path_var, 4),
+                                sample_score=round(sample_score, 3),
+                            )
+                        )
+
+        # Sort candidates by cost ascending (lowest cost / highest probability first)
+        candidates.sort(key=lambda x: x[1])
+
+        if not candidates:
+            # Fallback: try individual shortest paths to any reachable target
+            for s in valid_starts:
+                for tgt in valid_targets:
+                    res = self.shortest_path(s, tgt, allowed_services=allowed_services)
+                    if res is not None:
+                        seg_path, seg_cost = res
+                        t_path = tuple(seg_path)
+                        if t_path not in seen_paths:
+                            seen_paths.add(t_path)
+                            conf = max(0.05, min(1.0, math.exp(-seg_cost)))
+                            path_edges = [
+                                self.edges.get(seg_path[i], {}).get(seg_path[i + 1])
+                                for i in range(len(seg_path) - 1)
+                            ]
+                            edge_means = [e.posterior_mean() if e else 0.67 for e in path_edges]
+                            edge_vars = [e.posterior_variance() if e else 0.0556 for e in path_edges]
+                            edge_samples = [e.sample_beta() if e else 0.67 for e in path_edges]
+                            edge_certs = [e.certainty() if e else 0.222 for e in path_edges]
+
+                            exp_conf = math.prod(edge_means) if edge_means else conf
+                            path_certainty = math.prod(edge_certs) if edge_certs else 0.0
+                            second_moments = [v + (m ** 2) for v, m in zip(edge_vars, edge_means)]
+                            path_var = max(0.0, math.prod(second_moments) - (exp_conf ** 2)) if second_moments else 0.0
+                            sample_score = math.prod(edge_samples) if edge_samples else exp_conf
+
+                            candidates.append(
+                                CandidatePath(
+                                    seg_path,
+                                    seg_cost,
+                                    conf,
+                                    1,
+                                    certainty=round(path_certainty, 3),
+                                    posterior_variance=round(path_var, 4),
+                                    sample_score=round(sample_score, 3),
+                                )
+                            )
+
+        return candidates[:max_paths]
+
+    def find_path_covering(
+        self,
+        starts: list[str],
+        targets: list[str],
+        allowed_services: set[str] | None = None,
+    ) -> tuple[list[str], float] | None:
+        """Find the lowest-cost path starting from one of `starts` covering `targets`."""
+        candidates = self.find_all_candidate_paths(
+            starts, targets, allowed_services=allowed_services, max_paths=1
+        )
+        if candidates:
+            path_nodes, cost, _, _ = candidates[0]
+            return path_nodes, cost
         return None
 
 
@@ -285,7 +457,9 @@ def _extract_service_and_resource(endpoint_id: str, url: str) -> tuple[str, str]
     return service, resource
 
 
-def compile_trajectory_graph(store: KnowledgeStore, scope: Scope) -> TrajectoryGraph:
+def compile_trajectory_graph(
+    store: KnowledgeStore, scope: Scope, *, successful_transitions_only: bool = False
+) -> TrajectoryGraph:
     """Compile an operational trajectory graph from stored claims and execution episodes."""
     graph = TrajectoryGraph()
     claims = store.claims(scope)
@@ -363,20 +537,126 @@ def compile_trajectory_graph(store: KnowledgeStore, scope: Scope) -> TrajectoryG
                 graph.forward_value_flows[src].append(flow)
                 graph.reverse_value_flows[tgt].append(flow)
 
-    # 4. Map episodes to node IDs and count empirical transitions
+    # 4. Map episodes to node IDs, track tried actions/outcomes, and count empirical transitions
     def match_episode_to_node_id(e: Episode) -> str:
         return graph.match_episode_to_node_id(e) or e.operation
 
     if scope is not None:
-        episodes = store.historical_episodes(scope)
+        raw_episodes = store.historical_episodes(scope)
     else:
-        episodes = [
+        raw_episodes = [
             Episode.model_validate_json(row[0])
             for row in store.db.execute("SELECT body FROM episodes ORDER BY rowid")
         ]
+
+    all_by_task: dict[str, list[Episode]] = defaultdict(list)
+    for e in raw_episodes:
+        all_by_task[e.task_id].append(e)
+
+    # 4a. Track attempted actions and observed results per node/state
+    for task_eps in all_by_task.values():
+        current_state = "root"
+        for ep in task_eps:
+            target_nid = match_episode_to_node_id(ep)
+            action_type = ep.operation
+            args = ep.arguments or {}
+            method = args.get("method", "").upper() if isinstance(args, dict) else ""
+            url = args.get("url", "") if isinstance(args, dict) else ""
+
+            param_summary = ""
+            if isinstance(args, dict):
+                for p_key in ("params", "body", "query", "ranges"):
+                    if p_key in args and args[p_key]:
+                        param_summary = str(args[p_key])[:100]
+                        break
+
+            outcome = ep.outcome
+            res = ep.response
+            result_summary = ""
+            lesson = ""
+
+            if outcome in ("error", "blocked"):
+                err_type = getattr(ep, "error_type", None)
+                if isinstance(res, dict) and "error" in res:
+                    err = res["error"]
+                    result_summary = err.get("message") if isinstance(err, dict) else str(err)
+                elif err_type:
+                    result_summary = f"{err_type}: {str(res)[:80]}"
+                else:
+                    result_summary = str(res)[:100]
+
+                err_lower = result_summary.lower()
+                if "unable to parse range" in err_lower or "range" in err_lower:
+                    lesson = "Parameter syntax error: verify range syntax (e.g. use clean 'A:Z')."
+                elif "method" in err_lower or err_type == "malformed_http_method":
+                    lesson = "Action syntax error: method must be GET/POST/PUT/DELETE, not tool name."
+                elif "404" in err_lower or "not found" in err_lower:
+                    lesson = "Resource not found: check resource identifier."
+                elif "401" in err_lower or "403" in err_lower:
+                    lesson = "Authentication or permission error."
+                elif outcome == "blocked":
+                    lesson = "Precondition gate blocked execution before dispatch."
+                else:
+                    lesson = "Call failed. Verify arguments against schema."
+            else:
+                if isinstance(res, dict):
+                    if "values" in res and isinstance(res["values"], list):
+                        result_summary = f"HTTP 200: Successfully returned {len(res['values'])} rows"
+                    elif "sid" in res or "id" in res:
+                        item_id = res.get("sid") or res.get("id")
+                        status_str = res.get("status", "created")
+                        result_summary = f"HTTP 200: Mutation succeeded (id={item_id}, status={status_str})"
+                    else:
+                        keys = list(res.keys())[:3]
+                        result_summary = f"HTTP 200: Succeeded (keys: {keys})"
+                else:
+                    result_summary = "Operation succeeded"
+                lesson = "Valid verified operational transition."
+
+            attempt = NodeAttempt(
+                source_node=current_state,
+                target_node=target_nid,
+                action_type=action_type,
+                method=method,
+                url=url,
+                parameters_summary=param_summary,
+                outcome=outcome,
+                result_summary=result_summary,
+                lesson=lesson,
+                count=1,
+            )
+
+            existing = None
+            for prev in graph.node_attempts[current_state]:
+                if (
+                    prev.action_type == attempt.action_type
+                    and prev.method == attempt.method
+                    and prev.url == attempt.url
+                    and prev.parameters_summary == attempt.parameters_summary
+                    and prev.outcome == attempt.outcome
+                ):
+                    existing = prev
+                    break
+            if existing:
+                existing.count += 1
+            else:
+                graph.node_attempts[current_state].append(attempt)
+
+            # Advance current_state on environment success
+            if (
+                ep.outcome == "success"
+                and ep.origin == "environment"
+                and ep.operation not in ("api_search", "lookup_knowledge")
+            ):
+                current_state = target_nid
+
+    # 4b. Map successful execution transitions into graph edges
     by_task: dict[str, list[Episode]] = defaultdict(list)
-    for e in episodes:
-        # Filter discovery / meta tools
+    for e in raw_episodes:
+        # Harness records wrap environment events; they are not graph transitions.
+        # Failed calls supply recovery evidence, not successful execution paths.
+        if successful_transitions_only and (e.origin != "environment" or e.outcome != "success"):
+            continue
         if e.operation in ("api_search", "lookup_knowledge"):
             continue
         by_task[e.task_id].append(e)
@@ -418,10 +698,20 @@ def compile_trajectory_graph(store: KnowledgeStore, scope: Scope) -> TrajectoryG
         cost = -math.log(max(p, 1e-4))
         flows = value_flows_by_endpoints.get((u, v), [])
 
+        # Empirical failure count from attempts
+        failed_cnt = sum(
+            att.count
+            for att in graph.node_attempts.get(u, [])
+            if att.target_node == v and att.outcome in ("error", "blocked")
+        )
         edge = TransitionEdge(
             source=u,
             target=v,
             count=cnt,
+            success_count=cnt,
+            failure_count=failed_cnt,
+            alpha=1.0 + float(cnt),
+            beta=1.0 + float(failed_cnt),
             probability=p,
             cost=cost,
             value_flows=flows,

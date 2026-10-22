@@ -160,3 +160,143 @@ def test_compile_trajectory_graph_from_episodes(memory_store, sample_scope):
     path_result = graph.shortest_path("google_drive.files.list", "mailchimp.lists.members.delete")
     assert path_result is not None
     assert path_result[0] == ["google_drive.files.list", "sheets.spreadsheets.values.get", "mailchimp.lists.members.delete"]
+
+
+def test_trajectory_graph_tracks_tried_attempts_and_multi_paths(memory_store, sample_scope):
+    # Setup 3 nodes: start, branch_a, branch_b
+    n1 = OperationNode(node_id="read_start", operation="api_fetch", method="GET", action_type="read")
+    n2 = OperationNode(node_id="mutate_a", operation="api_fetch", method="POST", action_type="mutate")
+    n3 = OperationNode(node_id="mutate_b", operation="api_fetch", method="POST", action_type="mutate")
+
+    graph = TrajectoryGraph()
+    for n in (n1, n2, n3):
+        graph.add_node(n)
+
+    # Path A: read_start -> mutate_a -> mutate_b (Cost: 0.2)
+    graph.add_edge(TransitionEdge(source="read_start", target="mutate_a", count=3, cost=0.1))
+    graph.add_edge(TransitionEdge(source="mutate_a", target="mutate_b", count=3, cost=0.1))
+
+    # Path B: read_start -> mutate_b -> mutate_a (Cost: 0.45)
+    graph.add_edge(TransitionEdge(source="read_start", target="mutate_b", count=1, cost=0.15))
+    graph.add_edge(TransitionEdge(source="mutate_b", target="mutate_a", count=1, cost=0.3))
+
+    # Test multi-path candidate extraction
+    candidate_paths = graph.find_all_candidate_paths(
+        starts=["read_start"], targets=["mutate_a", "mutate_b"], max_paths=3
+    )
+    assert len(candidate_paths) == 2
+    # Recommended Path A has lower cost and higher confidence
+    path_a, cost_a, conf_a, supp_a = candidate_paths[0]
+    path_b, cost_b, conf_b, supp_b = candidate_paths[1]
+
+    assert path_a == ["read_start", "mutate_a", "mutate_b"]
+    assert path_b == ["read_start", "mutate_b", "mutate_a"]
+    assert cost_a < cost_b
+    assert conf_a > conf_b
+    assert supp_a == 3
+    assert supp_b == 1
+
+    # Now verify compilation records error and success attempts from nodes
+    # Add an error episode from read_start (e.g. invalid range syntax)
+    err_ep = Episode(
+        task_id="t_err",
+        scope=sample_scope,
+        operation="api_fetch",
+        arguments={"method": "GET", "url": "https://sheets.googleapis.com/test", "params": '{"ranges": "Bad!A:Z"}'},
+        response={"error": {"code": 400, "message": "Unable to parse range: Bad!A:Z"}},
+        outcome="error",
+    )
+    success_ep = Episode(
+        task_id="t_err",
+        scope=sample_scope,
+        operation="api_fetch",
+        arguments={"method": "GET", "url": "https://sheets.googleapis.com/test", "params": '{"ranges": "A:Z"}'},
+        response={"values": [["1", "2"]]},
+        outcome="success",
+    )
+    memory_store.append_episode(err_ep)
+    memory_store.append_episode(success_ep)
+
+    compiled = compile_trajectory_graph(memory_store, sample_scope)
+    # Check attempts recorded under root / initial state
+    root_attempts = compiled.node_attempts.get("root", [])
+    assert len(root_attempts) >= 2
+    err_att = next(a for a in root_attempts if a.outcome == "error")
+    succ_att = next(a for a in root_attempts if a.outcome == "success")
+
+    assert "Unable to parse range" in err_att.result_summary
+    assert "syntax error" in err_att.lesson
+    assert "returned 1 rows" in succ_att.result_summary
+
+
+def test_bayesian_certainty_increases_with_success_and_usage():
+    """Verify certainty increases monotonically with successful usage without hard thresholds."""
+    counts = [1, 2, 3, 5, 10, 20]
+    edges = [
+        TransitionEdge(source="u", target="v", count=c, success_count=c, failure_count=0)
+        for c in counts
+    ]
+
+    certainties = [e.certainty() for e in edges]
+    variances = [e.posterior_variance() for e in edges]
+
+    # Certainty must strictly increase
+    for i in range(len(certainties) - 1):
+        assert certainties[i] < certainties[i + 1], f"Certainty did not increase: {certainties}"
+
+    # Posterior variance (uncertainty) must strictly decrease
+    for i in range(len(variances) - 1):
+        assert variances[i] > variances[i + 1], f"Variance did not decrease: {variances}"
+
+    # Check realistic boundaries
+    assert certainties[0] > 0.0  # s=1 has positive certainty
+    assert certainties[-1] > 0.90  # s=20 reaches high certainty (~0.93)
+    assert variances[-1] < 0.003  # variance concentrated near 0
+
+
+def test_thompson_sampling_favors_high_confidence_while_exploring():
+    """Verify Thompson Sampling samples proven paths more often while allowing probabilistic exploration."""
+    edge_high = TransitionEdge(source="u", target="v1", count=10, success_count=10, failure_count=0)
+    edge_low = TransitionEdge(source="u", target="v2", count=1, success_count=1, failure_count=0)
+
+    high_wins = 0
+    total_draws = 1000
+    for _ in range(total_draws):
+        s_high = edge_high.sample_beta()
+        s_low = edge_low.sample_beta()
+        if s_high > s_low:
+            high_wins += 1
+
+    win_rate = high_wins / total_draws
+    # High-confidence path should win roughly 70-85% of draws
+    assert 0.65 <= win_rate <= 0.90
+    # Low-confidence path should still be explored roughly 10-35% of the time (no hard lock-out)
+    assert (1.0 - win_rate) >= 0.10
+
+
+def test_candidate_path_rich_attributes_and_tuple_unpacking():
+    from worldmodel_harness.trajectory_graph import CandidatePath
+
+    cand = CandidatePath(
+        path=["node1", "node2"],
+        cost=0.25,
+        confidence=0.88,
+        support_count=5,
+        certainty=0.72,
+        posterior_variance=0.015,
+        sample_score=0.89,
+    )
+
+    # 4-tuple unpacking for backward compatibility
+    nodes, cost, conf, supp = cand
+    assert nodes == ["node1", "node2"]
+    assert cost == 0.25
+    assert conf == 0.88
+    assert supp == 5
+    assert len(cand) == 4
+
+    # Rich attributes
+    assert cand.certainty == 0.72
+    assert cand.posterior_variance == 0.015
+    assert cand.sample_score == 0.89
+    assert cand.path == ["node1", "node2"]

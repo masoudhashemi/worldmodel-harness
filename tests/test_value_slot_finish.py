@@ -473,6 +473,35 @@ def test_shared_numbers_do_not_ground_arbitrary_summary(make_adapter):
     assert not adapter.goal_tracker.finish(CheckedFinish(summary="done")).success
 
 
+def test_finish_warns_on_pending_entity_obligations(make_adapter):
+    from worldmodel_harness.execution_state import EntityTracker, TrackedEntity, ChannelObligation
+
+    adapter = make_adapter("Process contractor notifications")
+    tracker = EntityTracker(required_channels=("sms",))
+    entity = TrackedEntity(
+        entity_id="BDG-101",
+        name="Luis Moreno",
+        obligations={"sms": ChannelObligation(channel="sms", status="pending")},
+    )
+    tracker.entities["BDG-101"] = entity
+    adapter.entity_tracker = tracker
+
+    # 1. First finish attempt (even with unresolved=True) must be intercepted by the guard
+    first_finish = adapter.goal_tracker.finish(CheckedFinish(summary="premature finish", unresolved=True))
+    assert not first_finish.success
+    payload = json.loads(first_finish.content)
+    assert payload["status"] == "pending_entity_obligations"
+    assert "Luis Moreno" in payload["unprocessed_entities"]
+    assert "still have pending obligations" in payload["message"]
+
+    # 2. Second finish attempt with unresolved=True succeeds (honest abort acknowledged)
+    second_finish = adapter.goal_tracker.finish(CheckedFinish(summary="confirmed abort", unresolved=True))
+    assert second_finish.success
+    payload2 = json.loads(second_finish.content)
+    assert payload2["status"] == "unresolved"
+
+
+
 
 
 

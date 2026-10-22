@@ -72,6 +72,8 @@ def render_context(
     query: str = "",
     current_node: str | None = None,
     completed_nodes: set[str] | None = None,
+    successful_transition_graph: bool = False,
+    entity_tracker=None,
 ) -> tuple[str, dict]:
     """Count the entire injected message, including metadata and artifact menus.
 
@@ -92,6 +94,7 @@ def render_context(
                 query,
                 current_node=current_node,
                 completed_nodes=completed_nodes,
+                successful_transition_graph=successful_transition_graph,
             )
         except Exception:
             plan = None
@@ -148,7 +151,7 @@ def render_context(
             "unresolved_gaps": list(actionable_gaps[:16]),
         }
         if plan:
-            payload["workflow_process"] = {
+            wf = {
                 "goal": plan.goal,
                 "confidence": plan.confidence,
                 "active_step_index": plan.active_step_index,
@@ -166,6 +169,39 @@ def render_context(
                     for s in plan.steps
                 ],
             }
+            if plan.tried_from_this_state:
+                wf["tried_from_this_state"] = [
+                    {
+                        "action": t.action,
+                        "outcome": t.outcome,
+                        "result": t.result,
+                        "lesson": t.lesson,
+                        "observed_count": t.count,
+                    }
+                    for t in plan.tried_from_this_state
+                ]
+            if plan.potential_solution_paths:
+                wf["potential_solution_paths"] = [
+                    {
+                        "path": p.path_id,
+                        "steps": p.steps,
+                        "confidence": p.confidence,
+                        "certainty": p.certainty,
+                        "posterior_variance": p.posterior_variance,
+                        "turns": p.estimated_steps,
+                        "strategy": p.strategy_description,
+                    }
+                    for p in plan.potential_solution_paths
+                ]
+                rec_path = plan.potential_solution_paths[0]
+                wf["exploration_guidance"] = (
+                    f"Candidate paths sampled via Bayesian posterior distribution (Thompson Sampling). "
+                    f"Recommended path certainty: {rec_path.certainty:.2f}. "
+                    f"Certainty increases continuously as paths are used more with success."
+                )
+            payload["workflow_process"] = wf
+        if entity_tracker is not None and getattr(entity_tracker, "entities", None):
+            payload["entity_obligations"] = entity_tracker.summary()
         if contrasts:
             payload["unverified_contrasts"] = contrasts
         if working.stages:

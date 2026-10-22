@@ -120,6 +120,8 @@ async def run_trial(
         timeout_seconds=timeout,
         memory="graph",
         operational=True,
+        resolve_execution_frontier=True,
+        successful_transition_graph=True,
         phase="test",  # Enables learning from trajectories into the store
         semantic_learning=False,
         adaptive=True,

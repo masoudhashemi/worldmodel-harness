@@ -11,16 +11,52 @@ from .knowledge import Dependency, Scope
 from .store import KnowledgeStore
 
 
+VALID_HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
+
+
 def api_requirements(
     store: KnowledgeStore, scope: Scope, action: ProposedAction
 ) -> ActionRequirements:
     if action.tool != "api_fetch":
         return ActionRequirements(operation_id=action.tool)
-    method = action.arguments.get("method", "GET").upper()
+    raw_method = action.arguments.get("method")
+    method = (raw_method or "GET").upper() if isinstance(raw_method, str) else "GET"
     url = action.arguments.get("url", "")
     # Query/fragment text does not change endpoint identity. Preserve the actual
     # request unchanged; this normalization is only for matching its contract.
     endpoint_url = request_target(url)
+
+    # 1. Distinguish malformed HTTP method field (e.g. method="api_fetch") from missing route contract
+    if method not in VALID_HTTP_METHODS:
+        all_contracts = [
+            c for c in store.claims(scope)
+            if c.relation == "endpoint_contract" and c.status == "supported"
+        ]
+        supported_methods = sorted({
+            c.payload.get("method", "").upper()
+            for c in all_contracts
+            if c.payload.get("method") and (
+                request_target(c.payload.get("url", "")) == endpoint_url
+                or (url and request_target(url) == request_target(c.payload.get("url", "")))
+            )
+        })
+        methods_str = ", ".join(supported_methods) if supported_methods else "GET, POST, PUT, PATCH, DELETE"
+        raise UnresolvedRequirements(
+            f"Malformed HTTP method field '{raw_method}'. No environment action occurred.",
+            details={
+                "reason": "malformed_http_method",
+                "method": raw_method,
+                "url": endpoint_url,
+                "valid_methods": supported_methods or sorted(VALID_HTTP_METHODS),
+                "discovery_action": None,
+                "instruction": (
+                    f"No environment action occurred. '{raw_method}' is the tool name, not an HTTP method. "
+                    f"The endpoint '{endpoint_url}' accepts: {methods_str}. "
+                    f"Correct the action using a valid HTTP method; do not run api_search."
+                ),
+            },
+        )
+
     matches = matching_contracts(store, scope, method, url)
     claim = preferred_contract(matches)
     # Do not drop stale/disputed matches: the gate must reject their use, rather
@@ -28,6 +64,35 @@ def api_requirements(
     # templates stay ambiguous. Identical templates are one route.
     if claim is None:
         templates = sorted({route_key(item.payload)[1] for item in matches})
+        # Check if the URL exists under a different HTTP method
+        all_contracts = [
+            c for c in store.claims(scope)
+            if c.relation == "endpoint_contract" and c.status == "supported"
+        ]
+        other_methods = sorted({
+            c.payload.get("method", "").upper()
+            for c in all_contracts
+            if c.payload.get("method") and (
+                request_target(c.payload.get("url", "")) == endpoint_url
+                or (url and request_target(url) == request_target(c.payload.get("url", "")))
+            )
+        })
+        if other_methods and method not in other_methods:
+            raise UnresolvedRequirements(
+                f"Unsupported HTTP method '{method}' for endpoint '{endpoint_url}'.",
+                details={
+                    "reason": "unsupported_method",
+                    "method": method,
+                    "url": endpoint_url,
+                    "supported_methods": other_methods,
+                    "matching_claim_ids": [item.claim_id for item in matches],
+                    "discovery_action": None,
+                    "instruction": (
+                        f"No environment action occurred. Endpoint '{endpoint_url}' supports: {', '.join(other_methods)}, but not '{method}'. "
+                        f"Use a supported method or identify an alternative mutation route; do not repeat this call unchanged."
+                    ),
+                },
+            )
         raise UnresolvedRequirements(
             "Endpoint identity unresolved; discover or disambiguate its contract",
             details={

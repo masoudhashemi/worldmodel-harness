@@ -250,3 +250,30 @@ def test_state_local_path_recalibration_with_current_node(plan_store):
     assert plan_t2.steps[1].status == "active"
     assert plan_t2.active_step_index == 2
 
+
+def test_workflow_plan_includes_tried_actions_and_potential_solution_paths(plan_store):
+    store, scope = plan_store
+    query = "Check the spreadsheet for bounces, remove subscribers from Mailchimp, and email ops."
+
+    plan = extract_workflow_plan(store, scope, query)
+    assert plan is not None
+
+    # Check candidate solution paths
+    assert len(plan.potential_solution_paths) >= 1
+    rec_path = plan.potential_solution_paths[0]
+    assert rec_path.is_recommended
+    assert "finish" in rec_path.steps
+    assert rec_path.confidence > 0.0
+
+    # Verify rendering context includes tried_from_this_state & potential_solution_paths
+    working = WorkingGraph(scope=scope, claims=tuple(store.claims(scope)))
+    content, _ = render_context(working, [], max_chars=12000, store=store, query=query)
+    payload_json = content.split("\n", 1)[1]
+    parsed = json.loads(payload_json)
+    wf = parsed.get("workflow_process", {})
+
+    assert "potential_solution_paths" in wf
+    assert len(wf["potential_solution_paths"]) >= 1
+    assert "exploration_guidance" in wf
+
+

@@ -67,6 +67,7 @@ class GoalTracker:
         self.checks = {}
         self.verification_audit = []
         self.finish_audit = []
+        self._entity_finish_warning_given = False
 
     def assess(self, check):
         return self.diagnose(check)["result"]
@@ -449,6 +450,37 @@ class GoalTracker:
         }
         if unverified_written:
             slots["unverified_written_fields"] = unverified_written
+
+        entity_tracker = getattr(self.adapter, "entity_tracker", None)
+        pending_entities = entity_tracker.pending_entities() if entity_tracker is not None else []
+        if pending_entities and not getattr(self, "_entity_finish_warning_given", False):
+            self._entity_finish_warning_given = True
+            unprocessed = [e.name or e.badge_id or e.entity_id for e in pending_entities]
+            result = ToolResult(
+                content=json.dumps(
+                    {
+                        "status": "pending_entity_obligations",
+                        "unprocessed_entities": unprocessed,
+                        "message": (
+                            f"Eligible entities {unprocessed} still have pending obligations. "
+                            "The task requires processing all eligible entities identified in the records before completing. "
+                            "Please process the remaining entities or confirm with unresolved=true if truly unreachable."
+                        ),
+                        "next_step": f"Process obligations for {unprocessed[0]}.",
+                    }
+                ),
+                success=False,
+            )
+            self.finish_audit.append(
+                {
+                    "request": params.model_dump(mode="json"),
+                    "success": False,
+                    "reason": "pending_entity_obligations",
+                    "unprocessed_entities": unprocessed,
+                    **slots,
+                }
+            )
+            return result
         if not verified and not params.unresolved:
             result = ToolResult(
                 content=json.dumps(

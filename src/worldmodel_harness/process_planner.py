@@ -47,6 +47,29 @@ class WorkflowStep(BaseModel):
     status: str = "pending"  # "completed", "active", "pending"
 
 
+class TriedActionSummary(BaseModel):
+    """Summary of an action previously attempted from this state and its outcome."""
+    action: str
+    outcome: str  # "error", "failure", "success", "blocked"
+    result: str
+    lesson: str
+    count: int = 1
+
+
+class SolutionPath(BaseModel):
+    """A candidate solution path covering the goal from the current state."""
+    path_id: str
+    steps: list[str]
+    confidence: float
+    certainty: float = 0.0
+    posterior_variance: float = 0.0
+    sample_score: float = 0.0
+    support_count: int = 1
+    estimated_steps: int
+    strategy_description: str
+    is_recommended: bool = False
+
+
 class WorkflowProcess(BaseModel):
     """Declarative workflow plan providing step-by-step operational guidance."""
     goal: str
@@ -56,6 +79,9 @@ class WorkflowProcess(BaseModel):
     required_claim_ids: list[str] = Field(default_factory=list)
     active_step_index: int = 1
     path_updated: bool = False
+    current_node: str | None = None
+    tried_from_this_state: list[TriedActionSummary] = Field(default_factory=list)
+    potential_solution_paths: list[SolutionPath] = Field(default_factory=list)
 
 
 def _generate_step_description(node: OperationNode, next_node: OperationNode | None = None) -> str:
@@ -94,12 +120,15 @@ def extract_workflow_plan(
     trajectory_graph: TrajectoryGraph | None = None,
     current_node: str | None = None,
     completed_nodes: set[str] | None = None,
+    successful_transition_graph: bool = False,
 ) -> WorkflowProcess | None:
     """Extract an operational workflow process plan covering task intent from the trajectory graph."""
     if not query or not query.strip():
         return None
 
-    graph = trajectory_graph or compile_trajectory_graph(store, scope)
+    graph = trajectory_graph or compile_trajectory_graph(
+        store, scope, successful_transitions_only=successful_transition_graph
+    )
     if not graph.nodes or not graph.edges:
         return None
 
@@ -185,44 +214,104 @@ def extract_workflow_plan(
     if not top_starts and best_targets:
         top_starts = [best_targets[0]]
 
-    # 3. Find optimal path covering the start and target nodes
+    # 3. Find candidate solution paths covering the start and target nodes
     path_updated = False
-    covering_result = None
+    candidate_paths: list[tuple[list[str], float, float, int]] = []
 
     if current_node and current_node in graph.nodes:
         remaining_targets = [t for t in best_targets if t not in completed and t != current_node]
         if remaining_targets:
-            covering_result = graph.find_path_covering(
-                [current_node], remaining_targets, allowed_services=active_services or None
+            candidate_paths = graph.find_all_candidate_paths(
+                [current_node], remaining_targets, allowed_services=active_services or None, max_paths=3
             )
             path_updated = True
         else:
-            covering_result = ([current_node], 0.0)
+            candidate_paths = [([current_node], 0.0, 1.0, 1)]
 
-    if not covering_result:
-        covering_result = graph.find_path_covering(
-            top_starts, best_targets, allowed_services=active_services or None
+    if not candidate_paths:
+        candidate_paths = graph.find_all_candidate_paths(
+            top_starts, best_targets, allowed_services=active_services or None, max_paths=3
         )
 
-    if not covering_result:
-        # Fallback: check if the top start node can reach any target within allowed services
+    if not candidate_paths:
+        # Fallback: check if any top start node can reach any valid target within allowed services
+        import math
         for s in top_starts:
-            for t in [nid for _, nid, _ in target_candidates[:3]]:
+            for _, t, _ in target_candidates:
                 res = graph.shortest_path(s, t, allowed_services=active_services or None)
                 if res:
-                    covering_result = res
+                    seg_path, seg_cost = res
+                    conf = max(0.05, min(1.0, math.exp(-seg_cost)))
+                    candidate_paths = [(seg_path, seg_cost, conf, 1)]
                     break
-            if covering_result:
+            if candidate_paths:
                 break
 
-    if not covering_result:
+    if not candidate_paths:
         return None
 
-    path_nodes, cost = covering_result
+    # Construct candidate solution paths for multi-path exploration
+    # When multiple candidate paths exist, rank them via Bayesian posterior draws (Thompson Sampling)
+    ranked_candidates = list(candidate_paths)
+    if len(ranked_candidates) > 1:
+        ranked_candidates.sort(key=lambda c: getattr(c, "sample_score", c[2]), reverse=True)
+
+    path_nodes, cost, _, _ = ranked_candidates[0][:4]
     if not path_nodes:
         return None
 
-    # 4. Construct sequential workflow steps
+    potential_solution_paths: list[SolutionPath] = []
+    for p_idx, cand in enumerate(ranked_candidates):
+        p_nodes, p_cost, p_conf, p_supp = cand[:4]
+        full_steps = list(p_nodes) + ["finish"]
+        is_rec = (p_idx == 0)
+        p_certainty = getattr(cand, "certainty", round(p_conf, 2))
+        p_var = getattr(cand, "posterior_variance", 0.0)
+        p_sample = getattr(cand, "sample_score", round(p_conf, 2))
+        p_name = f"Path {chr(65 + p_idx)} (" + (
+            f"Recommended - Sampled Score: {p_sample:.2f}, Certainty: {p_certainty:.2f}"
+            if is_rec
+            else f"Alternative Exploration Path - Sampled Score: {p_sample:.2f}, Certainty: {p_certainty:.2f}"
+        ) + ")"
+        strat = f"Execute: {' -> '.join(full_steps[:-1])} -> finish"
+        potential_solution_paths.append(
+            SolutionPath(
+                path_id=p_name,
+                steps=full_steps,
+                confidence=round(p_conf, 2),
+                certainty=p_certainty,
+                posterior_variance=round(p_var, 4),
+                sample_score=round(p_sample, 3),
+                support_count=p_supp,
+                estimated_steps=len(full_steps),
+                strategy_description=strat,
+                is_recommended=is_rec,
+            )
+        )
+
+    # 4. Extract what has been tried from this state/node
+    tried_summaries: list[TriedActionSummary] = []
+    state_key = current_node or "root"
+    attempts = graph.node_attempts.get(state_key, [])
+    for att in attempts[:5]:
+        act_label = att.action_type
+        if att.method:
+            act_label += f" {att.method}"
+        if att.url:
+            act_label += f" {att.url}"
+        if att.parameters_summary:
+            act_label += f" ({att.parameters_summary})"
+        tried_summaries.append(
+            TriedActionSummary(
+                action=act_label.strip(),
+                outcome=att.outcome,
+                result=att.result_summary,
+                lesson=att.lesson,
+                count=att.count,
+            )
+        )
+
+    # 5. Construct sequential workflow steps for the recommended path
     steps: list[WorkflowStep] = []
     required_claims: list[str] = []
 
@@ -257,7 +346,7 @@ def extract_workflow_plan(
         )
         steps.append(step)
 
-    # 5. Append final verification / finish step
+    # 6. Append final verification / finish step
     finish_step = WorkflowStep(
         step=len(steps) + 1,
         operation="finish",
@@ -265,7 +354,7 @@ def extract_workflow_plan(
     )
     steps.append(finish_step)
 
-    # 6. Resolve step execution status: completed, active, pending
+    # 7. Resolve step execution status: completed, active, pending
     active_step_index = 1
     found_active = False
     for s in steps:
@@ -297,4 +386,7 @@ def extract_workflow_plan(
         required_claim_ids=required_claims,
         active_step_index=active_step_index,
         path_updated=path_updated,
+        current_node=current_node,
+        tried_from_this_state=tried_summaries,
+        potential_solution_paths=potential_solution_paths,
     )

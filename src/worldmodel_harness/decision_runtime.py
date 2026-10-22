@@ -8,6 +8,7 @@ import inspect
 import json
 from collections.abc import Callable
 from time import perf_counter
+from typing import Any
 
 from pydantic import ValidationError
 from stirrup.core.models import SystemMessage, Tool, ToolResult, UserMessage
@@ -24,6 +25,119 @@ from .decisions import (
 )
 from .knowledge import LiveState, Scope
 from .store import KnowledgeStore
+
+
+def is_empty_query_result(response: Any) -> bool:
+    """Detect whether a query observation returned empty data."""
+    if response is None:
+        return True
+    if isinstance(response, str):
+        try:
+            response = json.loads(response)
+        except Exception:
+            return False
+    if isinstance(response, list) and len(response) == 0:
+        return True
+    if isinstance(response, dict):
+        for list_key in ("records", "values", "items", "data", "results", "valueRanges", "issues", "cards", "rows"):
+            if list_key in response:
+                val = response[list_key]
+                if isinstance(val, list) and len(val) == 0:
+                    return True
+                if list_key == "valueRanges" and isinstance(val, list) and len(val) > 0:
+                    if all(isinstance(vr, dict) and not vr.get("values") for vr in val):
+                        return True
+        if response.get("total") == 0 or response.get("count") == 0:
+            return True
+        if not response:
+            return True
+    return False
+
+
+def is_query_action(tool_name: str, arguments: dict[str, Any]) -> bool:
+    """Identify read or search queries subject to stagnation loop checks."""
+    if tool_name in ("api_search", "lookup_knowledge", "inspect_contract"):
+        return True
+    if tool_name == "api_fetch":
+        method = str(arguments.get("method", "GET")).upper()
+        url = str(arguments.get("url", "")).lower()
+        if method == "GET":
+            return True
+        if any(suffix in url for suffix in (":find", "/find", ":search", "/search", ":query", "/query")):
+            return True
+    return False
+
+
+def is_mutation_action(tool_name: str, arguments: dict[str, Any]) -> bool:
+    """Identify state-mutating actions subject to excluded-entity gating."""
+    if tool_name == "api_fetch":
+        method = str(arguments.get("method", "GET")).upper()
+        if method in ("POST", "PUT", "PATCH", "DELETE"):
+            url = str(arguments.get("url", "")).lower()
+            if any(s in url for s in (":find", "/find", ":search", "/search", ":query", "/query")):
+                return False
+            return True
+    elif tool_name not in (
+        "execute_decision",
+        "api_search",
+        "lookup_knowledge",
+        "check_effect",
+        "record_goal_checks",
+        "inspect_contract",
+        "refresh_live_fact",
+    ):
+        return True
+    return False
+
+
+def count_consecutive_empty_queries(
+    evidence_store: KnowledgeStore | None,
+    scope: Scope,
+    tool_name: str,
+    arguments: dict[str, Any],
+) -> int:
+    """Count how many times this exact query has returned empty results without intervening mutations."""
+    if evidence_store is None:
+        return 0
+    episodes = evidence_store.episodes(scope)
+    if not episodes:
+        return 0
+
+    count = 0
+    for ep in reversed(episodes):
+        if not isinstance(ep.arguments, dict):
+            continue
+        method = str(ep.arguments.get("method", "GET")).upper()
+        url = str(ep.arguments.get("url", "")).lower()
+        is_read_query = (
+            method == "GET"
+            or any(s in url for s in (":find", "/find", ":search", "/search", ":query", "/query"))
+            or ep.operation in ("api_search", "lookup_knowledge", "inspect_contract")
+        )
+        if ep.outcome == "success" and not is_read_query and method in ("POST", "PUT", "PATCH", "DELETE"):
+            # A write occurred, so state could have changed
+            break
+
+        if ep.operation == tool_name:
+            ep_url = ep.arguments.get("url")
+            prop_url = arguments.get("url")
+            ep_method = str(ep.arguments.get("method", "GET")).upper()
+            prop_method = str(arguments.get("method", "GET")).upper()
+            if ep_url == prop_url and ep_method == prop_method:
+                ep_params = ep.arguments.get("params") or ep.arguments.get("body")
+                prop_params = arguments.get("params") or arguments.get("body")
+                if ep_params == prop_params:
+                    if is_empty_query_result(ep.response):
+                        count += 1
+                    else:
+                        break
+        elif tool_name == "api_search" and ep.operation == "api_search":
+            if ep.arguments.get("query") == arguments.get("query"):
+                if is_empty_query_result(ep.response):
+                    count += 1
+                else:
+                    break
+    return count
 
 
 async def propose_decision(
@@ -100,6 +214,7 @@ async def dispatch_decision(
     live: LiveState,
     audit: list[dict],
     evidence_store: KnowledgeStore | None = None,
+    entity_tracker: Any = None,
 ) -> ToolResult:
     """Validate, recompute known requirements, gate, then invoke the real adapter.
 
@@ -277,6 +392,53 @@ async def dispatch_decision(
                     allowed_tools=set(tools),
                     evidence_store=evidence_store,
                 )
+                if gate.allowed and is_query_action(decision.action.tool, decision.action.arguments):
+                    empty_count = count_consecutive_empty_queries(
+                        evidence_store, scope, decision.action.tool, decision.action.arguments
+                    )
+                    if empty_count >= 2:
+                        gate = GateResult(
+                            allowed=False,
+                            gaps=("action:stagnant_query",),
+                            checked_claims=gate.checked_claims,
+                            checked_facts=gate.checked_facts,
+                        )
+                        repair_details = {
+                            "instruction": (
+                                f"Query '{decision.action.tool}' with arguments {json.dumps(decision.action.arguments)} "
+                                f"has already returned empty results {empty_count} times with no intervening data updates. "
+                                "Do not repeat the same query. Try querying without filters, inspect the schema, "
+                                "or search alternative resources/endpoints."
+                            ),
+                            "consecutive_empty_count": empty_count,
+                        }
+                if gate.allowed and entity_tracker is not None and getattr(entity_tracker, "excluded_entities", None):
+                    if is_mutation_action(decision.action.tool, decision.action.arguments):
+                        args_str = json.dumps(decision.action.arguments).lower()
+                        active = entity_tracker.active_entity()
+                        active_name = (active.name or active.badge_id) if active else None
+                        for excluded_name, reason in entity_tracker.excluded_entities.items():
+                            if excluded_name.lower() in args_str:
+                                if not (active_name and active_name.lower() in args_str):
+                                    gate = GateResult(
+                                        allowed=False,
+                                        gaps=(f"entity:excluded:{excluded_name}",),
+                                        checked_claims=gate.checked_claims,
+                                        checked_facts=gate.checked_facts,
+                                    )
+                                    repair_details = {
+                                        "instruction": (
+                                            f"Cannot dispatch action for entity '{excluded_name}': {reason}. "
+                                            + (
+                                                f"The active eligible entity to process is '{active_name}'."
+                                                if active_name
+                                                else "This entity is excluded from processing."
+                                            )
+                                        ),
+                                        "excluded_entity": excluded_name,
+                                        "active_entity": active_name,
+                                    }
+                                    break
     considered = []
     for identity in decision.considered_claim_ids:
         try:
@@ -319,11 +481,18 @@ async def dispatch_decision(
                         "Call the top-level finish tool directly (finish(summary=...)), NOT as an action inside execute_decision."
                         if "tool:finish" in gate.gaps
                         else (
-                            "Retrieve or discover the matching operation contract, or disambiguate "
-                            "multiple matches. If the prerequisite cannot be resolved, report it as "
-                            "unresolved; do not treat this local block as an environment error."
+                            repair_details.get("instruction")
+                            or (
+                                "Retrieve or discover the matching operation contract, or disambiguate "
+                                "multiple matches. If the prerequisite cannot be resolved, report it as "
+                                "unresolved; do not treat this local block as an environment error."
+                            )
                             if "requirements:unresolved" in gate.gaps
-                            else "Resolve the listed argument, scope, evidence, or freshness gaps before retrying."
+                            else (
+                                repair_details.get("instruction")
+                                if ("action:stagnant_query" in gate.gaps or any(g.startswith("entity:excluded") for g in gate.gaps))
+                                else "Resolve the listed argument, scope, evidence, or freshness gaps before retrying."
+                            )
                         )
                     ),
                 }

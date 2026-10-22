@@ -264,3 +264,199 @@ def test_considered_hypothesis_is_audited_without_becoming_a_prerequisite(tmp_pa
     assert audit[0]["considered_claims"][1]["result"] == "unknown"
     assert store.claim("h").status == "hypothesis"
     store.close()
+
+
+def test_malformed_http_method_diagnosis_suppresses_discovery(tmp_path):
+    from worldmodel_harness.knowledge import Claim, Episode, Layer
+    from worldmodel_harness.operational_requirements import api_requirements
+
+    store = KnowledgeStore(tmp_path / "knowledge.sqlite")
+    scope = Scope(environment="test", version="1", role="agent", task_id="task")
+    ep = Episode(
+        episode_id="ep1",
+        task_id="task",
+        scope=scope,
+        interaction_id="int1",
+        operation="api_fetch",
+        arguments={},
+        response={},
+        outcome="success",
+    )
+    store.append_episode(ep)
+    store.put_claim(
+        Claim(
+            claim_id="gmail.read",
+            scope=scope,
+            layer=Layer.INTERFACE,
+            relation="endpoint_contract",
+            participants=("gmail.read",),
+            statement="Read message",
+            status="supported",
+            supporting_episodes=("ep1",),
+            payload={"id": "gmail.read", "method": "GET", "url": "https://gmail.googleapis.com/v1/users/me/messages"},
+        )
+    )
+    # 1. Malformed method: method='api_fetch'
+    action_malformed = ProposedAction(
+        tool="api_fetch",
+        arguments={"method": "api_fetch", "url": "https://gmail.googleapis.com/v1/users/me/messages"},
+    )
+    from worldmodel_harness.decisions import UnresolvedRequirements
+    with pytest.raises(UnresolvedRequirements) as exc_info:
+        api_requirements(store, scope, action_malformed)
+    assert exc_info.value.details["reason"] == "malformed_http_method"
+    assert exc_info.value.details["discovery_action"] is None
+    assert "not an HTTP method" in exc_info.value.details["instruction"]
+
+    # 2. Unsupported method: method='DELETE' on read-only endpoint
+    action_unsupported = ProposedAction(
+        tool="api_fetch",
+        arguments={"method": "DELETE", "url": "https://gmail.googleapis.com/v1/users/me/messages"},
+    )
+    with pytest.raises(UnresolvedRequirements) as exc_info2:
+        api_requirements(store, scope, action_unsupported)
+    assert exc_info2.value.details["reason"] == "unsupported_method"
+    assert exc_info2.value.details["discovery_action"] is None
+    assert "supports: GET, but not 'DELETE'" in exc_info2.value.details["instruction"]
+
+    # 3. Verify dispatch_decision returns this exact diagnostic to the model
+    class ApiParams(BaseModel):
+        method: str
+        url: str
+
+    tool = Tool(name="api_fetch", description="api", parameters=ApiParams, executor=lambda _: ToolResult(content="ok"))
+    audit = []
+    res = asyncio.run(
+        dispatch_decision(
+            proposal("api_fetch", {"method": "api_fetch", "url": "https://gmail.googleapis.com/v1/users/me/messages"}),
+            tools={"api_fetch": tool},
+            requirements_for=lambda a: api_requirements(store, scope, a),
+            store=store,
+            scope=scope,
+            live=LiveState("task"),
+            audit=audit,
+        )
+    )
+    assert not res.success
+    feedback = json.loads(res.content)
+    assert feedback["status"] == "blocked"
+    assert not feedback["environment_called"]
+    assert feedback["repair"]["reason"] == "malformed_http_method"
+    assert "not an HTTP method" in feedback["next_step"]
+    store.close()
+
+
+def test_stagnant_query_blocked_after_consecutive_empty_results(tmp_path):
+    from worldmodel_harness.knowledge import Episode
+
+    store = KnowledgeStore(tmp_path / "stagnant.sqlite")
+    scope = Scope(environment="pipefy", version="1", role="ops", task_id="task1")
+
+    class FetchParams(BaseModel):
+        method: str = "GET"
+        url: str
+        params: str = ""
+
+    calls = []
+    tool = Tool(
+        name="api_fetch",
+        description="fetch",
+        parameters=FetchParams,
+        executor=lambda p: calls.append(p) or ToolResult(content=json.dumps({"records": []})),
+    )
+
+    query_args = {
+        "method": "GET",
+        "url": "https://api.pipefy.com/tables/ops_table/records:find",
+        "params": json.dumps({"title": "Forklift Attachment"}),
+    }
+
+    # Record 2 prior empty episodes for this exact query
+    for i in range(2):
+        ep = Episode(
+            task_id="task1",
+            scope=scope,
+            interaction_id=f"int_{i}",
+            operation="api_fetch",
+            arguments=query_args,
+            response={"records": []},
+            outcome="success",
+        )
+        store.append_episode(ep)
+
+    decision = proposal("api_fetch", query_args)
+    audit = []
+    result = asyncio.run(
+        dispatch_decision(
+            decision,
+            tools={"api_fetch": tool},
+            requirements_for=lambda _: ActionRequirements(),
+            store=store,
+            evidence_store=store,
+            scope=scope,
+            live=LiveState("task1"),
+            audit=audit,
+        )
+    )
+
+    # 3rd attempt must be blocked locally by stagnant query guard
+    assert not result.success
+    assert len(calls) == 0  # Environment was never called!
+    feedback = json.loads(result.content)
+    assert feedback["status"] == "blocked"
+    assert "action:stagnant_query" in feedback["gaps"]
+    assert "Do not repeat the same query" in feedback["next_step"]
+    store.close()
+
+
+def test_mutation_on_excluded_entity_is_blocked(tmp_path):
+    from worldmodel_harness.execution_state import EntityTracker, TrackedEntity, ChannelObligation
+
+    store = KnowledgeStore(tmp_path / "excluded.sqlite")
+    scope = Scope(environment="test", version="1", role="ops", task_id="task1")
+
+    class MutateParams(BaseModel):
+        summary: str
+
+    calls = []
+    tool = Tool(
+        name="create_issue",
+        description="create",
+        parameters=MutateParams,
+        executor=lambda p: calls.append(p) or ToolResult(content="ok"),
+    )
+
+    tracker = EntityTracker(required_channels=("action",))
+    tracker.excluded_entities["Database Cluster Failover"] = "duplicate of INC-4921"
+    tracker.entities["API Gateway Timeout"] = TrackedEntity(
+        entity_id="API Gateway Timeout",
+        name="API Gateway Timeout",
+        obligations={"action": ChannelObligation(channel="action", status="pending")},
+    )
+
+    decision = proposal("create_issue", {"summary": "P1 Incident: Database Cluster Failover"})
+    audit = []
+    result = asyncio.run(
+        dispatch_decision(
+            decision,
+            tools={"create_issue": tool},
+            requirements_for=lambda _: ActionRequirements(),
+            store=store,
+            evidence_store=store,
+            scope=scope,
+            live=LiveState("task1"),
+            audit=audit,
+            entity_tracker=tracker,
+        )
+    )
+
+    assert not result.success
+    assert len(calls) == 0  # Environment mutation was prevented!
+    feedback = json.loads(result.content)
+    assert feedback["status"] == "blocked"
+    assert "entity:excluded:Database Cluster Failover" in feedback["gaps"]
+    assert "The active eligible entity to process is 'API Gateway Timeout'" in feedback["next_step"]
+    store.close()
+
+
+
