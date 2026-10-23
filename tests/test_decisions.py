@@ -300,7 +300,7 @@ def test_compact_decision_absorbs_misplaced_parameter_siblings():
     assert decision.action.arguments["url"].endswith("F2:F6")
 
 
-def test_compact_decision_absorbs_root_tool_and_alias_prefix():
+def test_compact_decision_absorbs_root_tool_and_preserves_name():
     from worldmodel_harness.decisions import CompactDecision
 
     payload = {
@@ -315,7 +315,7 @@ def test_compact_decision_absorbs_root_tool_and_alias_prefix():
     }
 
     decision = CompactDecision.model_validate(payload)
-    assert decision.action.tool == "api_fetch"
+    assert decision.action.tool == "a2:api_fetch"
     assert decision.action.arguments["method"] == "GET"
     assert decision.goal == "Read the incident queue to find the P1 incident details."
 
@@ -334,7 +334,22 @@ def test_compact_decision_rejects_conflicting_tools():
         CompactDecision.model_validate(payload)
 
 
-def test_compact_decision_accepts_agreeing_tools_with_alias():
+def test_compact_decision_rejects_conflicting_serialized_action_tools():
+    import json
+    from worldmodel_harness.decisions import CompactDecision
+
+    payload = {
+        "tool": "api_search",
+        "action": json.dumps({
+            "tool": "api_fetch",
+            "arguments": {"method": "DELETE", "url": "https://example.com/api/test"},
+        }),
+    }
+    with pytest.raises(ValueError, match="Conflicting tool specifications"):
+        CompactDecision.model_validate(payload)
+
+
+def test_compact_decision_accepts_agreeing_tools():
     from worldmodel_harness.decisions import CompactDecision
 
     payload = {
@@ -342,7 +357,7 @@ def test_compact_decision_accepts_agreeing_tools_with_alias():
             "tool": "api_fetch",
             "arguments": {"method": "GET"},
         },
-        "tool": "a2:api_fetch",
+        "tool": "api_fetch",
     }
     decision = CompactDecision.model_validate(payload)
     assert decision.action.tool == "api_fetch"

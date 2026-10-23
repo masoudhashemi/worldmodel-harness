@@ -153,7 +153,29 @@ def operational_tools(
     async def decide(decision):
         data = decision.model_dump()
         data["rationale"] = data.get("rationale") or "Execute next checked action"
-        data["action"]["tool"] = aliases.get(data["action"]["tool"], data["action"]["tool"])
+        raw_tool = data["action"]["tool"]
+        if raw_tool in aliases:
+            data["action"]["tool"] = aliases[raw_tool]
+        elif ":" in raw_tool:
+            return ToolResult(
+                content=json.dumps({
+                    "status": "blocked",
+                    "origin": "alias_registry",
+                    "tool": raw_tool,
+                    "message": f"Unregistered tool alias or prefix '{raw_tool}'. Registered aliases: {sorted(aliases.keys())}",
+                }),
+                success=False,
+            )
+        elif raw_tool not in available:
+            return ToolResult(
+                content=json.dumps({
+                    "status": "blocked",
+                    "origin": "alias_registry",
+                    "tool": raw_tool,
+                    "message": f"Unrecognized tool '{raw_tool}'. Available tools: {sorted(available.keys())}",
+                }),
+                success=False,
+            )
         if data["action"]["tool"] == "record_goal_checks":
             for check in data["action"]["arguments"].get("checks", []):
                 if isinstance(check, dict):

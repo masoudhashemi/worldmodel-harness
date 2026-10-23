@@ -89,28 +89,37 @@ class CompactDecision(Record):
         if "arguments" in data and isinstance(data["arguments"], dict) and "tool" in data["arguments"] and not data.get("tool"):
             data["tool"] = data["arguments"].pop("tool")
 
-        def _strip_alias(val: Any) -> str:
-            s = str(val).strip()
-            if ":" in s and not s.startswith("http"):
-                parts = s.split(":", 1)
-                if parts[0].isalnum() and parts[1]:
-                    return parts[1]
-            return s
-
-        root_tool = None
-        if "tool" in data:
-            root_tool = _strip_alias(data.pop("tool"))
+        root_tool = data.pop("tool", None)
+        if root_tool is not None:
+            root_tool = str(root_tool).strip()
 
         action_val = data.get("action")
+        # Check conflict with serialized string action if root_tool was provided
+        if root_tool and isinstance(action_val, str):
+            action_str = action_val.strip()
+            if action_str.startswith("{"):
+                try:
+                    parsed = json.loads(action_str)
+                    if isinstance(parsed, dict):
+                        action_tool = parsed.get("tool")
+                        if (not action_tool) and isinstance(parsed.get("arguments"), dict) and "tool" in parsed["arguments"]:
+                            action_tool = parsed["arguments"].get("tool")
+                        if action_tool and str(action_tool).strip() != root_tool:
+                            raise ValueError(f"Conflicting tool specifications: root '{root_tool}' != action '{action_tool}'")
+                except ValueError:
+                    raise
+                except Exception:
+                    pass
+
         # Only normalize dictionary action payloads emitted by tool calls;
         # leave serialized strings to decode_serialized_action for strict validation.
         if isinstance(action_val, dict):
             action_dict = dict(action_val)
             action_tool = None
             if "tool" in action_dict and action_dict["tool"]:
-                action_tool = _strip_alias(action_dict["tool"])
+                action_tool = str(action_dict["tool"]).strip()
             elif isinstance(action_dict.get("arguments"), dict) and "tool" in action_dict["arguments"]:
-                action_tool = _strip_alias(action_dict["arguments"].pop("tool"))
+                action_tool = str(action_dict["arguments"].pop("tool")).strip()
 
             if root_tool and action_tool and root_tool != action_tool:
                 raise ValueError(f"Conflicting tool specifications: root '{root_tool}' != action '{action_tool}'")
@@ -171,15 +180,11 @@ class CompactDecision(Record):
         # the full schema, arguments, permissions and prerequisites afterward.
         if isinstance(value, str):
             value_str = value.strip()
-            # Coerce short tool aliases (e.g. "a1", "api_search", "a1:api_search")
+            # Preserve tool aliases/names (e.g. "a1", "api_search", "a1:api_search") until registry resolution
             if value_str.lower() not in ("null", "true", "false", "none") and re.fullmatch(
-                r"(?:a\d+:)?(?:a\d+|[a-zA-Z_][a-zA-Z0-9_.]*)", value_str
+                r"(?:[a-zA-Z0-9_-]+:)?[a-zA-Z0-9_-]+", value_str
             ):
-                tool_name = value_str
-                m = re.match(r"^(?:a\d+:)?([a-zA-Z_][a-zA-Z0-9_.]*)$", value_str)
-                if m:
-                    tool_name = m.group(1)
-                return {"tool": tool_name, "arguments": {}}
+                return {"tool": value_str, "arguments": {}}
             try:
                 parsed = json.loads(value_str)
             except (json.JSONDecodeError, ValueError) as exc:
@@ -189,13 +194,9 @@ class CompactDecision(Record):
             if (
                 isinstance(parsed, str)
                 and parsed.strip().lower() not in ("null", "true", "false", "none")
-                and re.fullmatch(r"(?:a\d+:)?(?:a\d+|[a-zA-Z_][a-zA-Z0-9_.]*)", parsed.strip())
+                and re.fullmatch(r"(?:[a-zA-Z0-9_-]+:)?[a-zA-Z0-9_-]+", parsed.strip())
             ):
-                tool_name = parsed.strip()
-                m = re.match(r"^(?:a\d+:)?([a-zA-Z_][a-zA-Z0-9_.]*)$", tool_name)
-                if m:
-                    tool_name = m.group(1)
-                return {"tool": tool_name, "arguments": {}}
+                return {"tool": parsed.strip(), "arguments": {}}
             raise ValueError("Serialized action must be a JSON object")
         return value
 

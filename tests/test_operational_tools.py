@@ -277,5 +277,17 @@ def test_compact_decision_bare_alias_uses_goal_query(tmp_path):
     assert "expected_format" in res_fetch.content
     assert "arguments" in res_fetch.content
 
+    # 4. Unknown prefix is rejected by alias registry
+    cd_unreg = CompactDecision(action={"tool": "notregistered:api_fetch", "arguments": {}})
+    res_unreg = asyncio.run(actor.executor(cd_unreg))
+    assert not res_unreg.success
+    assert json.loads(res_unreg.content)["origin"] == "alias_registry"
+    assert "Unregistered tool alias or prefix" in json.loads(res_unreg.content)["message"]
+
+    cd_a999 = CompactDecision(action={"tool": "a999:api_fetch", "arguments": {}})
+    res_a999 = asyncio.run(actor.executor(cd_a999))
+    assert not res_a999.success
+    assert json.loads(res_a999.content)["origin"] == "alias_registry"
+
     store.close()
 
