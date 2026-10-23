@@ -89,28 +89,35 @@ class CompactDecision(Record):
         if "arguments" in data and isinstance(data["arguments"], dict) and "tool" in data["arguments"] and not data.get("tool"):
             data["tool"] = data["arguments"].pop("tool")
 
+        def _strip_alias(val: Any) -> str:
+            s = str(val).strip()
+            if ":" in s and not s.startswith("http"):
+                parts = s.split(":", 1)
+                if parts[0].isalnum() and parts[1]:
+                    return parts[1]
+            return s
+
+        root_tool = None
         if "tool" in data:
-            tool_val = str(data.pop("tool"))
-            if ":" in tool_val and not tool_val.startswith("http"):
-                tool_val = tool_val.split(":", 1)[1]
-            if "action" not in data:
-                args_val = data.pop("arguments", {})
-                data["action"] = {"tool": tool_val, "arguments": args_val}
-            elif isinstance(data.get("action"), dict):
-                if not data["action"].get("tool"):
-                    data["action"]["tool"] = tool_val
+            root_tool = _strip_alias(data.pop("tool"))
 
         action_val = data.get("action")
         # Only normalize dictionary action payloads emitted by tool calls;
         # leave serialized strings to decode_serialized_action for strict validation.
         if isinstance(action_val, dict):
             action_dict = dict(action_val)
-            # If tool has alias prefix, strip it (e.g. "a2:api_fetch" -> "api_fetch")
-            if isinstance(action_dict.get("tool"), str) and ":" in action_dict["tool"] and not action_dict["tool"].startswith("http"):
-                action_dict["tool"] = action_dict["tool"].split(":", 1)[1]
-            # If tool is nested inside action.arguments, hoist it to action.tool
-            if (not action_dict.get("tool")) and isinstance(action_dict.get("arguments"), dict) and "tool" in action_dict["arguments"]:
-                action_dict["tool"] = action_dict["arguments"].pop("tool")
+            action_tool = None
+            if "tool" in action_dict and action_dict["tool"]:
+                action_tool = _strip_alias(action_dict["tool"])
+            elif isinstance(action_dict.get("arguments"), dict) and "tool" in action_dict["arguments"]:
+                action_tool = _strip_alias(action_dict["arguments"].pop("tool"))
+
+            if root_tool and action_tool and root_tool != action_tool:
+                raise ValueError(f"Conflicting tool specifications: root '{root_tool}' != action '{action_tool}'")
+
+            effective_tool = action_tool or root_tool
+            if effective_tool:
+                action_dict["tool"] = effective_tool
 
             # 1. Hoist goal if nested inside action and not provided at root
             if "goal" in action_dict:
