@@ -508,35 +508,6 @@ class GoalTracker:
                 }
             )
             return result
-        coverage = entity_tracker.coverage_audit() if entity_tracker and hasattr(entity_tracker, "coverage_audit") else {}
-        incomplete = [r for r in coverage.get("records", []) if r["omitted"]]
-        if incomplete and not params.unresolved and not getattr(self, "_coverage_finish_warning_given", False):
-            self._coverage_finish_warning_given = True
-            first_inc = incomplete[0]
-            result = ToolResult(
-                content=json.dumps({
-                    "status": "incomplete_effects",
-                    "entity": first_inc["entity"],
-                    "completed_channels": first_inc["completed"],
-                    "omitted_channels": first_inc["omitted"],
-                    "message": (
-                        f"Record '{first_inc['entity']}' was acted upon on channels {first_inc['completed']}, "
-                        f"but requested channel(s) {first_inc['omitted']} were omitted. "
-                        "Execute the remaining channel action(s) for this record, or finish with unresolved=true if intentionally omitted."
-                    ),
-                    "next_step": f"Dispatch {first_inc['omitted'][0]} for {first_inc['entity']}.",
-                }),
-                success=False,
-            )
-            self.finish_audit.append({
-                "request": params.model_dump(mode="json"),
-                "success": False,
-                "reason": "incomplete_effects",
-                "coverage": coverage,
-                "unsupported_completion_claims": incomplete,
-                **slots,
-            })
-            return result
         if not verified and not params.unresolved:
             result = ToolResult(
                 content=json.dumps(
@@ -569,8 +540,6 @@ class GoalTracker:
                 "request": params.model_dump(mode="json"),
                 "success": result.success,
                 "shadow_unresolved": pending,
-                "coverage": coverage,
-                "unsupported_completion_claims": incomplete,
                 **slots,
             }
         )
