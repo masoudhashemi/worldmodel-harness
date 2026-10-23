@@ -420,3 +420,51 @@ def test_missing_expected_value_is_actionable_schema_error(tmp_path):
             anchor_path=("from",),
             observation={"path": ["from"], "predicate": "equals"},
         )
+
+
+def test_execution_coverage_tracks_omitted_channels_and_warns(tmp_path):
+    adapter = setup_state(tmp_path)
+    state = adapter.entity_tracker
+    state.requested_channels = ["sms", "email", "slack"]
+
+    # Action 1: SMS to Wayne
+    sms_ep = Episode(
+        task_id="task",
+        scope=adapter.scope,
+        origin="environment",
+        operation="api_fetch",
+        arguments={"method": "POST", "url": "https://api.twilio.com/2010-04-01/Accounts/AC1/Messages",
+                   "body": {"To": "+15553001001", "Body": "BDG-3001 renewal"}},
+        response={"sid": "SM1"},
+        outcome="success",
+    )
+    state.record_action(sms_ep)
+
+    # Action 2: Slack post
+    slack_ep = Episode(
+        task_id="task",
+        scope=adapter.scope,
+        origin="environment",
+        operation="api_fetch",
+        arguments={"method": "POST", "url": "https://slack.com/api/chat.postMessage",
+                   "body": {"channel": "+15553001001", "text": "BDG-3001 renewal"}},
+        response={"ok": True},
+        outcome="success",
+    )
+    state.record_action(slack_ep)
+
+    coverage = state.coverage_audit()
+    assert coverage["records"][0]["entity"] == "+15553001001"
+    assert coverage["records"][0]["completed"] == ["slack", "sms"]
+    assert coverage["records"][0]["omitted"] == ["email"]
+
+    # Finish attempt without unresolved should trigger warning
+    result = adapter.goal_tracker.finish(CheckedFinish(summary="All done"))
+    res_data = json.loads(result.content)
+    assert res_data["status"] == "incomplete_effects"
+    assert res_data["omitted_channels"] == ["email"]
+
+    # Subsequent finish with unresolved=True succeeds
+    res_unresolved = adapter.goal_tracker.finish(CheckedFinish(summary="Cannot email", unresolved=True))
+    assert res_unresolved.success
+    adapter.evidence.close()

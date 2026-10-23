@@ -93,6 +93,13 @@ def parse_args():
         help="Skip the baseline cold-start run and only execute WM iterations",
     )
     parser.add_argument(
+        "--no-semantic-learning",
+        dest="semantic_learning",
+        action="store_false",
+        default=True,
+        help="Disable semantic learning consolidation between episodes",
+    )
+    parser.add_argument(
         "--resume",
         action="store_true",
         help="Resume an existing run, reusing completed trials and the carried store",
@@ -109,6 +116,7 @@ async def run_trial(
     max_turns: int,
     max_env_calls: int,
     timeout: int,
+    semantic_learning: bool = False,
 ) -> dict:
     domain = task_name.split(".", 1)[0]
     settings = ExperimentSettings(
@@ -123,8 +131,9 @@ async def run_trial(
         resolve_execution_frontier=True,
         successful_transition_graph=True,
         phase="test",  # Enables learning from trajectories into the store
-        semantic_learning=False,
+        semantic_learning=semantic_learning,
         adaptive=True,
+        retrieval_chars=5000,
     )
     start_time = time.perf_counter()
     report = await run_automationbench(root, settings, store_path)
@@ -253,6 +262,7 @@ async def main():
                     max_turns=args.max_turns,
                     max_env_calls=args.max_env_calls,
                     timeout=args.timeout,
+                    semantic_learning=False,
                 )
                 all_results.append(metrics)
                 completed_trials.add(("baseline", 0, task_name))
@@ -312,6 +322,7 @@ async def main():
                     max_turns=args.max_turns,
                     max_env_calls=args.max_env_calls,
                     timeout=args.timeout,
+                    semantic_learning=args.semantic_learning,
                 )
                 all_results.append(metrics)
                 completed_trials.add(("with_worldmodel", iteration, task_name))

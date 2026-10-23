@@ -89,6 +89,24 @@ class TaskState:
         self.action_evidence = set()
         self._repair_checks = {}
         self._blocked_attempts = {}
+        self.acted_records: dict[str, set[str]] = {}
+        self.requested_channels: list[str] = self._infer_channels()
+
+    def _infer_channels(self) -> list[str]:
+        task = getattr(self.adapter, "task", None)
+        text = " ".join(m.get("content", "") for m in task.prompt).lower() if task and hasattr(task, "prompt") else ""
+        channels = []
+        if any(w in text for w in ("sms", "twilio", "phone", "text them")):
+            channels.append("sms")
+        if any(w in text for w in ("email", "gmail")):
+            channels.append("email")
+        if any(w in text for w in ("slack", "security channel", "#")):
+            channels.append("slack")
+        if "asana" in text or ("task" in text and "project" in text):
+            channels.append("asana")
+        if "jira" in text or "issue" in text:
+            channels.append("jira")
+        return channels
 
     def register_from_read(self, episode, task_text=""):
         if (
@@ -103,7 +121,69 @@ class TaskState:
     def record_action(self, episode):
         if episode.scope == self.adapter.scope and episode.origin == "environment":
             self.action_evidence.add(episode.episode_id)
-        # An acknowledgment is evidence of an attempt, not verified requirement completion.
+            if episode.outcome in ("success", "queued"):
+                args = episode.arguments or {}
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except Exception:
+                        args = {}
+                url = str(args.get("url", "")).lower()
+                op = str(episode.operation).lower()
+                channel = None
+                if "twilio" in url or "sms" in op:
+                    channel = "sms"
+                elif "gmail" in url or "email" in op:
+                    channel = "email"
+                elif "slack" in url or "chat.postmessage" in url:
+                    channel = "slack"
+                elif "asana" in url:
+                    channel = "asana"
+                elif "jira" in url:
+                    channel = "jira"
+
+                if channel:
+                    body = args.get("body", {})
+                    if isinstance(body, str):
+                        try:
+                            body = json.loads(body)
+                        except Exception:
+                            body = {}
+                    entity_key = None
+                    if channel == "sms" and isinstance(body, dict):
+                        entity_key = body.get("To") or body.get("to")
+                    elif channel == "email" and isinstance(body, dict):
+                        entity_key = body.get("To") or body.get("to")
+                        if not entity_key and "raw" in body:
+                            try:
+                                import base64
+                                from email import policy
+                                from email.parser import BytesParser
+                                raw = body["raw"]
+                                decoded = base64.b64decode(raw + "=" * (-len(raw) % 4), altchars=b"-_", validate=True)
+                                msg = BytesParser(policy=policy.default).parsebytes(decoded)
+                                entity_key = msg.get("To")
+                            except Exception:
+                                pass
+                    elif isinstance(body, dict):
+                        entity_key = body.get("name") or body.get("channel") or body.get("summary")
+
+                    if entity_key:
+                        self.acted_records.setdefault(str(entity_key).strip(), set()).add(channel)
+
+    def coverage_audit(self) -> dict:
+        records = []
+        for entity, completed in self.acted_records.items():
+            omitted = [ch for ch in self.requested_channels if ch not in completed]
+            records.append({
+                "entity": entity,
+                "completed": sorted(completed),
+                "omitted": omitted,
+            })
+        return {
+            "requested_channels": self.requested_channels,
+            "records": records,
+        }
 
     def active_entity(self):
         return None

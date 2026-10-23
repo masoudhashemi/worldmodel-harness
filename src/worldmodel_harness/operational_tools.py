@@ -209,6 +209,10 @@ def operational_tools(
                 if paths:
                     suffix += f"\nCheckable paths on {alias}: {json.dumps(paths)}"
                     suffix += "\nFor task effects call check_effect directly with this episode reference, modified field path, exact intended value from task/source, and an exact task quote and identity anchor. Reading a record alone does not register verification."
+            if decision.action.tool == "api_fetch":
+                method = str(decision.action.arguments.get("method", "GET")).upper()
+                if method not in ("GET", "HEAD"):
+                    suffix += "\nNote: API execution confirmed service receipt; it does not verify that the chosen target record or recipient matches all task constraints."
             result = ToolResult(
                 content=result.content + suffix,
                 success=result.success,

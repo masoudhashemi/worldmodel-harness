@@ -61,6 +61,32 @@ def decision_focus(adapter):
             # Error labels are retrieval data, never instructions or proof.
             labels = [feedback.get(key) for key in ("origin", "result", "field")]
             subgoal += " " + " ".join(str(value)[:160] for value in labels if value)
+
+    # Cross-service reference discovery from recent observations
+    evidence = getattr(adapter, "evidence", None)
+    if evidence is not None and hasattr(evidence, "episodes"):
+        scope = getattr(adapter, "scope", None)
+        recent_episodes = evidence.episodes(scope) if scope else []
+        for ep in reversed(recent_episodes[-4:]):
+            if ep.origin == "environment" and ep.outcome == "success" and ep.response:
+                text_content = str(ep.response).lower()
+                if "email" in text_content or "monitoring" in text_content:
+                    entities.append("gmail")
+                if "spreadsheet" in text_content or "sheet" in text_content or "ss_" in text_content or "ws_" in text_content:
+                    entities.append("sheets")
+                if "slack" in text_content or "channel" in text_content:
+                    entities.append("slack")
+                if "jira" in text_content or "ticket" in text_content or "inc-" in text_content:
+                    entities.append("jira")
+                if "confluence" in text_content or "wiki" in text_content:
+                    entities.append("confluence")
+                for pattern in (r"see\s+([^,.;\n]+)", r"duplicate\s+of\s+([A-Za-z0-9_-]+)", r"check\s+([^,.;\n]+)"):
+                    found = re.findall(pattern, text_content)
+                    for f in found[:2]:
+                        f_clean = f.strip()[:80]
+                        if f_clean:
+                            subgoal += f" [Observed reference: '{f_clean}']"
+                break
     return tuple(dict.fromkeys(entities)), subgoal
 
 
@@ -286,15 +312,28 @@ def retrieve(
             by_srv[claim_service(c)].append(c)
 
         balanced_ranked: list[Claim] = []
+        delete_intent = bool(re.search(r"\b(delete|remove|cancel|purge|archive)\b", (query + " " + subgoal).lower()))
         srv_order = [s for s in sorted(active_services) if s in by_srv]
         max_depth = max((len(by_srv[s]) for s in srv_order), default=0)
         for d in range(max_depth):
             for s in srv_order:
                 if d < len(by_srv[s]):
-                    balanced_ranked.append(by_srv[s][d])
+                    c = by_srv[s][d]
+                    method = str(c.payload.get("method", "GET")).upper() if isinstance(c.payload, dict) else "GET"
+                    ep_id = str(c.payload.get("id", "")).lower() if isinstance(c.payload, dict) else ""
+                    if (method == "DELETE" or "delete" in ep_id) and not delete_intent:
+                        continue
+                    balanced_ranked.append(c)
         for s, clist in by_srv.items():
             if s not in active_services:
-                balanced_ranked.extend(clist)
+                for c in clist:
+                    stage = claim_stage(c)
+                    method = str(c.payload.get("method", "GET")).upper() if isinstance(c.payload, dict) else "GET"
+                    ep_id = str(c.payload.get("id", "")).lower() if isinstance(c.payload, dict) else ""
+                    if (method == "DELETE" or "delete" in ep_id) and not delete_intent:
+                        continue
+                    if stage == "lookup" or method in ("GET", "HEAD"):
+                        balanced_ranked.append(c)
         ranked = balanced_ranked
 
     # 3. Reverse Dataflow Prerequisite Resolution (graph-grounded pattern)
