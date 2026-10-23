@@ -758,3 +758,34 @@ def test_suggestion_does_not_guess_missing_values_or_interior_syntax(action):
     from worldmodel_harness.repairing_agent import suggested_arguments
 
     assert suggested_arguments(CompactDecision, json.dumps({"action": action})) is None
+
+
+def test_normalize_assistant_tool_calls_parses_gemma_raw_tokens():
+    from stirrup.core.models import AssistantMessage, TextBlock, ToolCall
+    from worldmodel_harness.repairing_agent import normalize_assistant_tool_calls
+
+    raw_text = (
+        '<|tool_call>call:execute_decision{action:{arguments:{body:<|"|>{"task": "123"}<|"|>,'
+        'method:<|"|>POST<|"|>,url:<|"|>https://app.asana.com/api/1.0/sections/sec_feb/addTask<|"|>},'
+        'goal:<|"|>Add task<|"|>}}<tool_call|>'
+    )
+    msg = AssistantMessage(blocks=[TextBlock(text=raw_text)])
+    normalized = normalize_assistant_tool_calls(msg)
+
+    tool_calls = [b for b in normalized.blocks if isinstance(b, ToolCall)]
+    assert len(tool_calls) == 1
+    assert tool_calls[0].name == "execute_decision"
+    parsed_args = json.loads(tool_calls[0].arguments)
+    assert parsed_args["action"]["arguments"]["url"] == "https://app.asana.com/api/1.0/sections/sec_feb/addTask"
+
+
+def test_compact_decision_truncates_oversized_goal():
+    from worldmodel_harness.decisions import CompactDecision
+
+    d = CompactDecision(
+        action={"tool": "api_fetch", "arguments": {}},
+        goal="A" * 300,
+    )
+    assert len(d.goal) == 240
+    assert d.goal == "A" * 240
+

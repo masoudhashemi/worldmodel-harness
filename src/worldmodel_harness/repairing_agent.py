@@ -72,7 +72,7 @@ def normalize_assistant_tool_calls(msg):
 
     if not existing_calls:
         text = joined_text(blocks) or ""
-        if "<|tool_call|>call:" in text:
+        if any(marker in text for marker in ("<|tool_call>call:", "<|tool_call|>call:", "<tool_call>call:")):
             from .runtime import parse_gemma_calls
 
             _, extracted = parse_gemma_calls(text)

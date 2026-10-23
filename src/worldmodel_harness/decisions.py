@@ -83,6 +83,8 @@ class CompactDecision(Record):
         if not isinstance(data, dict):
             return data
         data = dict(data)
+        if isinstance(data.get("goal"), str) and len(data["goal"]) > 240:
+            data["goal"] = data["goal"][:240]
         if "arguments" in data and isinstance(data["arguments"], dict) and "tool" in data["arguments"] and not data.get("tool"):
             data["tool"] = data["arguments"].pop("tool")
 
