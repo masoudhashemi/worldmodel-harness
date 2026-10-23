@@ -27,6 +27,8 @@ def decision_focus(adapter):
 
     # Condition retrieval on the active entity's next pending requirement
     entity_tracker = getattr(adapter, "entity_tracker", None)
+    if entity_tracker is not None and hasattr(entity_tracker, "focus"):
+        subgoal = entity_tracker.focus() or subgoal
     if entity_tracker is not None:
         active = entity_tracker.active_entity()
         if active is not None:

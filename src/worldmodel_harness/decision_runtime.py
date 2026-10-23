@@ -225,6 +225,7 @@ async def dispatch_decision(
     """
     started = perf_counter()
     repair_details = {}
+    shadow_target_check = None
     tool = tools.get(decision.action.tool)
     if tool is None and not decision.action.tool:
         # Dynamic Schema-Driven Tool Resolution:
@@ -392,6 +393,13 @@ async def dispatch_decision(
                     allowed_tools=set(tools),
                     evidence_store=evidence_store,
                 )
+                if gate.allowed and entity_tracker is not None and hasattr(entity_tracker, "action_error"):
+                    shadow_error = entity_tracker.action_error(decision.action)
+                    shadow_target_check = {
+                        "allowed": shadow_error is None,
+                        "diagnostic": shadow_error,
+                        "action": decision.action.model_dump(mode="json"),
+                    }
                 if gate.allowed and is_query_action(decision.action.tool, decision.action.arguments):
                     empty_count = count_consecutive_empty_queries(
                         evidence_store, scope, decision.action.tool, decision.action.arguments
@@ -465,6 +473,7 @@ async def dispatch_decision(
         "gate_seconds": perf_counter() - started,
         "invoked": False,
         "repair_details": repair_details,
+        "shadow_target_check": shadow_target_check,
     }
     audit.append(row)
     if not gate.allowed:
@@ -491,7 +500,7 @@ async def dispatch_decision(
                             if "requirements:unresolved" in gate.gaps
                             else (
                                 repair_details.get("instruction")
-                                if ("action:stagnant_query" in gate.gaps or any(g.startswith("entity:excluded") for g in gate.gaps))
+                                if ("target:unresolved" in gate.gaps or "action:stagnant_query" in gate.gaps or any(g.startswith("entity:excluded") for g in gate.gaps))
                                 else "Resolve the listed argument, scope, evidence, or freshness gaps before retrying."
                             )
                         )

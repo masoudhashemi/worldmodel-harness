@@ -200,7 +200,9 @@ def render_context(
                     f"Certainty increases continuously as paths are used more with success."
                 )
             payload["workflow_process"] = wf
-        if entity_tracker is not None and getattr(entity_tracker, "entities", None):
+        if entity_tracker is not None and hasattr(entity_tracker, "targets"):
+            payload["task_state"] = entity_tracker.summary()
+        elif entity_tracker is not None and getattr(entity_tracker, "entities", None):
             payload["entity_obligations"] = entity_tracker.summary()
         if contrasts:
             payload["unverified_contrasts"] = contrasts

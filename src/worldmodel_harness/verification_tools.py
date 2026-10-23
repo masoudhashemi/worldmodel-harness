@@ -323,6 +323,8 @@ def verification_tool(adapter):
 
 
 class CheckEffect(Record):
+    source_requirement_id: str | None = None
+    source_identity_path: tuple[str | int, ...] = ()
     requirement_id: str = Field(min_length=1, max_length=80)
     task_quote: str = Field(min_length=1, max_length=1000)
     episode_id: str = Field(min_length=1)
@@ -568,6 +570,8 @@ def simple_check_tool(adapter):
                 resource_url=resolved["resource_url"],
                 source_episode_id=resolved["source_episode_id"],
                 source_path=resolved["source_path"],
+                source_requirement_id=params.source_requirement_id,
+                source_identity_path=params.source_identity_path,
                 identity_path=resolved["identity_path"],
                 identity_anchor=resolved["identity_format"],
             )

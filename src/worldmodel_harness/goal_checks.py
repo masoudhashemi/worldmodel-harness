@@ -23,6 +23,7 @@ class OutcomeContract(Record):
     source_path: tuple[str | int, ...] = ()
     source_requirement_id: str | None = None
     identity_path: tuple[str | int, ...] = ()
+    source_identity_path: tuple[str | int, ...] = ()
     identity_anchor: str | None = None
     derivation: GroundedDerivation | None = None
 
@@ -143,7 +144,14 @@ class GoalTracker:
                     "result": "invalid_target_identity_path",
                     "field": "identity_path",
                 }
-            if not anchored(anchor_text, identity["value"]):
+            if check.outcome.source_identity_path and check.outcome.source_requirement_id:
+                source_event = self.adapter.evidence.episode(source_check.episode_id)
+                source_identity = inspect_path(source_event, check.outcome.source_identity_path)
+                if (source_identity["result"] != "observed"
+                        or not (source_identity["value"] == identity["value"]
+                                or anchored(identity["value"], source_identity["value"]))):
+                    return "target_identity_mismatch"
+            elif not anchored(anchor_text, identity["value"]):
                 return "target_identity_mismatch"
         if check.evidence_mode == "historical_observation":
             # Past reads can establish what was observed, never a present-state effect.
@@ -267,10 +275,24 @@ class GoalTracker:
 
     def tool(self):
         async def update(params):
+            aliases = getattr(self.adapter, "evidence_aliases", {})
+            normalized = []
+            for check in params.checks:
+                changes = {"episode_id": aliases.get(check.episode_id, check.episode_id)}
+                if check.outcome:
+                    changes["outcome"] = check.outcome.model_copy(update={
+                        "source_episode_id": aliases.get(check.outcome.source_episode_id, check.outcome.source_episode_id)})
+                normalized.append(check.model_copy(update=changes))
+            params = params.model_copy(update={"checks": tuple(normalized)})
             if len({c.requirement_id for c in params.checks}) != len(params.checks):
                 return ToolResult(content="Duplicate requirement IDs in update.", success=False)
             task = " ".join(m["content"] for m in self.adapter.task.prompt)
             for check in params.checks:
+                state = getattr(self.adapter, "entity_tracker", None)
+                if state is not None and hasattr(state, "effect_update_error"):
+                    error = state.effect_update_error(check)
+                    if error:
+                        return ToolResult(content=error, success=False)
                 if check.task_quote not in task:
                     return ToolResult(
                         content=json.dumps({"result": "invalid_task_quote", "field": "task_quote",
@@ -452,6 +474,11 @@ class GoalTracker:
             slots["unverified_written_fields"] = unverified_written
 
         entity_tracker = getattr(self.adapter, "entity_tracker", None)
+        pending = (
+            entity_tracker.unresolved()
+            if entity_tracker is not None and hasattr(entity_tracker, "unresolved")
+            else []
+        )
         pending_entities = entity_tracker.pending_entities() if entity_tracker is not None else []
         if pending_entities and not getattr(self, "_entity_finish_warning_given", False):
             self._entity_finish_warning_given = True
@@ -512,6 +539,7 @@ class GoalTracker:
             {
                 "request": params.model_dump(mode="json"),
                 "success": result.success,
+                "shadow_unresolved": pending,
                 **slots,
             }
         )

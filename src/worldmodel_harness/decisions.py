@@ -37,6 +37,7 @@ class ActionRequirements(Record):
 
 
 class ProposedAction(Record):
+    target_id: str | None = None
     tool: str = Field(default="", min_length=0)
     arguments: dict[str, Any]
     requirements: ActionRequirements = Field(default_factory=ActionRequirements)
