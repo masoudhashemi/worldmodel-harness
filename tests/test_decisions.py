@@ -298,3 +298,24 @@ def test_compact_decision_absorbs_misplaced_parameter_siblings():
     assert decision.action.arguments["method"] == "PUT"
     assert decision.action.arguments["body"] == '{"values": [["Duplicate"]]}'
     assert decision.action.arguments["url"].endswith("F2:F6")
+
+
+def test_compact_decision_absorbs_root_tool_and_alias_prefix():
+    from worldmodel_harness.decisions import CompactDecision
+
+    payload = {
+        "action": {
+            "arguments": {
+                "method": "GET",
+                "url": "https://sheets.googleapis.com/v4/spreadsheets/ss_incident_queue/values/ws_queue!A1:Z100",
+            },
+            "goal": "Read the incident queue to find the P1 incident details.",
+        },
+        "tool": "a2:api_fetch",
+    }
+
+    decision = CompactDecision.model_validate(payload)
+    assert decision.action.tool == "api_fetch"
+    assert decision.action.arguments["method"] == "GET"
+    assert decision.goal == "Read the incident queue to find the P1 incident details."
+
