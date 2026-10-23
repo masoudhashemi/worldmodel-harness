@@ -320,46 +320,38 @@ def test_compact_decision_absorbs_root_tool_and_preserves_name():
     assert decision.goal == "Read the incident queue to find the P1 incident details."
 
 
-def test_compact_decision_rejects_conflicting_tools():
-    from worldmodel_harness.decisions import CompactDecision
-
-    payload = {
-        "action": {
-            "tool": "api_search",
-            "arguments": {"query": "test"},
-        },
-        "tool": "api_fetch",
-    }
-    with pytest.raises(ValueError, match="Conflicting tool specifications"):
-        CompactDecision.model_validate(payload)
-
-
-def test_compact_decision_rejects_conflicting_serialized_action_tools():
+def test_compact_decision_preserves_both_tool_declarations_for_registry():
     import json
     from worldmodel_harness.decisions import CompactDecision
 
-    payload = {
-        "tool": "api_search",
-        "action": json.dumps({
-            "tool": "api_fetch",
-            "arguments": {"method": "DELETE", "url": "https://example.com/api/test"},
-        }),
-    }
-    with pytest.raises(ValueError, match="Conflicting tool specifications"):
-        CompactDecision.model_validate(payload)
+    # 1. Bare string action preserves root_tool and action.tool
+    cd1 = CompactDecision.model_validate({"tool": "api_fetch", "action": "api_search"})
+    assert cd1.root_tool == "api_fetch"
+    assert cd1.action.tool == "api_search"
 
-
-def test_compact_decision_accepts_agreeing_tools():
-    from worldmodel_harness.decisions import CompactDecision
-
-    payload = {
-        "action": {
-            "tool": "api_fetch",
-            "arguments": {"method": "GET"},
-        },
+    # 2. Serialized arguments-only action inherits root_tool
+    cd2 = CompactDecision.model_validate({
         "tool": "api_fetch",
-    }
-    decision = CompactDecision.model_validate(payload)
-    assert decision.action.tool == "api_fetch"
+        "action": json.dumps({"arguments": {"method": "GET"}}),
+    })
+    assert cd2.root_tool == "api_fetch"
+    assert cd2.action.tool == "api_fetch"
+    assert cd2.action.arguments["method"] == "GET"
+
+    # 3. Serialized action with conflicting tool preserves both
+    cd3 = CompactDecision.model_validate({
+        "tool": "api_search",
+        "action": json.dumps({"tool": "api_fetch", "arguments": {"method": "DELETE"}}),
+    })
+    assert cd3.root_tool == "api_search"
+    assert cd3.action.tool == "api_fetch"
+
+    # 4. Equivalent alias preserves both declarations
+    cd4 = CompactDecision.model_validate({
+        "tool": "a2:api_fetch",
+        "action": {"tool": "api_fetch", "arguments": {}},
+    })
+    assert cd4.root_tool == "a2:api_fetch"
+    assert cd4.action.tool == "api_fetch"
 
 

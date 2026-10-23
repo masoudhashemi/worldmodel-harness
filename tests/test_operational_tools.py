@@ -289,5 +289,38 @@ def test_compact_decision_bare_alias_uses_goal_query(tmp_path):
     assert not res_a999.success
     assert json.loads(res_a999.content)["origin"] == "alias_registry"
 
+    # 5. Conflicting root vs action tools are rejected after canonical resolution
+    cd_conflict_bare = CompactDecision(tool="api_fetch", action="api_search")
+    res_conflict_bare = asyncio.run(actor.executor(cd_conflict_bare))
+    assert not res_conflict_bare.success
+    assert json.loads(res_conflict_bare.content)["origin"] == "tool_conflict"
+
+    cd_conflict_serialized = CompactDecision(
+        tool="api_search",
+        action=json.dumps({"tool": "api_fetch", "arguments": {"method": "DELETE"}}),
+    )
+    res_conflict_serialized = asyncio.run(actor.executor(cd_conflict_serialized))
+    assert not res_conflict_serialized.success
+    assert json.loads(res_conflict_serialized.content)["origin"] == "tool_conflict"
+
+    # 6. Equivalent registered aliases match canonically without conflict
+    cd_equiv = CompactDecision(
+        tool="a2:api_fetch",
+        action={"tool": "api_fetch", "arguments": {}},
+    )
+    res_equiv = asyncio.run(actor.executor(cd_equiv))
+    # It attempts api_fetch (missing arguments guidance), NOT tool_conflict
+    assert json.loads(res_equiv.content).get("origin") != "tool_conflict"
+    assert json.loads(res_equiv.content).get("origin") != "alias_registry"
+
+    # 7. Serialized arguments-only action inherits root tool without losing it
+    cd_inherited = CompactDecision(
+        tool="api_fetch",
+        action=json.dumps({"arguments": {}}),
+    )
+    res_inherited = asyncio.run(actor.executor(cd_inherited))
+    assert json.loads(res_inherited.content).get("origin") != "tool_conflict"
+    assert "arguments" in res_inherited.content
+
     store.close()
 

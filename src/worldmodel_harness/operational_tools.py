@@ -150,32 +150,59 @@ def operational_tools(
         aliases[f"a{i + 1}:{name}"] = name
         aliases[f"{name}:{name}"] = name
 
+    def resolve_tool(name: str) -> tuple[str | None, str | None]:
+        if name in aliases:
+            return aliases[name], None
+        if ":" in name:
+            return None, f"Unregistered tool alias or prefix '{name}'. Registered aliases: {sorted(aliases.keys())}"
+        if name in available:
+            return name, None
+        return None, f"Unrecognized tool '{name}'. Available tools: {sorted(available.keys())}"
+
     async def decide(decision):
         data = decision.model_dump()
         data["rationale"] = data.get("rationale") or "Execute next checked action"
-        raw_tool = data["action"]["tool"]
-        if raw_tool in aliases:
-            data["action"]["tool"] = aliases[raw_tool]
-        elif ":" in raw_tool:
+        action_tool = data["action"].get("tool", "")
+        canonical_action, err_action = resolve_tool(action_tool)
+        if err_action:
             return ToolResult(
                 content=json.dumps({
                     "status": "blocked",
                     "origin": "alias_registry",
-                    "tool": raw_tool,
-                    "message": f"Unregistered tool alias or prefix '{raw_tool}'. Registered aliases: {sorted(aliases.keys())}",
+                    "tool": action_tool,
+                    "message": err_action,
                 }),
                 success=False,
             )
-        elif raw_tool not in available:
-            return ToolResult(
-                content=json.dumps({
-                    "status": "blocked",
-                    "origin": "alias_registry",
-                    "tool": raw_tool,
-                    "message": f"Unrecognized tool '{raw_tool}'. Available tools: {sorted(available.keys())}",
-                }),
-                success=False,
-            )
+
+        root_tool = getattr(decision, "root_tool", None)
+        if root_tool:
+            canonical_root, err_root = resolve_tool(root_tool)
+            if err_root:
+                return ToolResult(
+                    content=json.dumps({
+                        "status": "blocked",
+                        "origin": "alias_registry",
+                        "tool": root_tool,
+                        "message": err_root,
+                    }),
+                    success=False,
+                )
+            if canonical_root != canonical_action:
+                return ToolResult(
+                    content=json.dumps({
+                        "status": "blocked",
+                        "origin": "tool_conflict",
+                        "message": (
+                            f"Conflicting tool specifications: root '{root_tool}' "
+                            f"(canonical: '{canonical_root}') != action '{action_tool}' "
+                            f"(canonical: '{canonical_action}')"
+                        ),
+                    }),
+                    success=False,
+                )
+
+        data["action"]["tool"] = canonical_action
         if data["action"]["tool"] == "record_goal_checks":
             for check in data["action"]["arguments"].get("checks", []):
                 if isinstance(check, dict):
@@ -191,6 +218,7 @@ def operational_tools(
         data["evidence_ids"] = tuple(
             adapter.evidence_aliases.get(e, e) for e in data.get("evidence_ids", ())
         )
+        data.pop("root_tool", None)
         decision = Decision.model_validate(data)
         adapter.active_decision = decision
         result = await dispatch(decision, available)

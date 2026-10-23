@@ -77,6 +77,7 @@ class CompactDecision(Record):
         description="Retrieved claims or hypotheses considered for this decision; not prerequisites or proof.",
     )
     output_expectations: tuple[OutputExpectation, ...] = Field(default=(), max_length=4)
+    root_tool: str | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -92,41 +93,39 @@ class CompactDecision(Record):
         root_tool = data.pop("tool", None)
         if root_tool is not None:
             root_tool = str(root_tool).strip()
+            data["root_tool"] = root_tool
 
         action_val = data.get("action")
-        # Check conflict with serialized string action if root_tool was provided
-        if root_tool and isinstance(action_val, str):
+        was_string = isinstance(action_val, str)
+        action_dict = None
+
+        if "action" not in data:
+            action_dict = {"tool": root_tool or "", "arguments": data.pop("arguments", {})}
+        elif isinstance(action_val, dict):
+            action_dict = dict(action_val)
+        elif was_string:
             action_str = action_val.strip()
             if action_str.startswith("{"):
                 try:
                     parsed = json.loads(action_str)
                     if isinstance(parsed, dict):
-                        action_tool = parsed.get("tool")
-                        if (not action_tool) and isinstance(parsed.get("arguments"), dict) and "tool" in parsed["arguments"]:
-                            action_tool = parsed["arguments"].get("tool")
-                        if action_tool and str(action_tool).strip() != root_tool:
-                            raise ValueError(f"Conflicting tool specifications: root '{root_tool}' != action '{action_tool}'")
-                except ValueError:
-                    raise
+                        action_dict = dict(parsed)
                 except Exception:
                     pass
+            if action_dict is None:
+                if action_str.lower() not in ("null", "true", "false", "none") and re.fullmatch(
+                    r"(?:[a-zA-Z0-9_-]+:)?[a-zA-Z0-9_-]+", action_str
+                ):
+                    action_dict = {"tool": action_str, "arguments": {}}
 
-        # Only normalize dictionary action payloads emitted by tool calls;
-        # leave serialized strings to decode_serialized_action for strict validation.
-        if isinstance(action_val, dict):
-            action_dict = dict(action_val)
-            action_tool = None
-            if "tool" in action_dict and action_dict["tool"]:
-                action_tool = str(action_dict["tool"]).strip()
-            elif isinstance(action_dict.get("arguments"), dict) and "tool" in action_dict["arguments"]:
-                action_tool = str(action_dict["arguments"].pop("tool")).strip()
+        if action_dict is not None:
+            # If tool is nested inside action.arguments, hoist it to action.tool
+            if (not action_dict.get("tool")) and isinstance(action_dict.get("arguments"), dict) and "tool" in action_dict["arguments"]:
+                action_dict["tool"] = action_dict["arguments"].pop("tool")
 
-            if root_tool and action_tool and root_tool != action_tool:
-                raise ValueError(f"Conflicting tool specifications: root '{root_tool}' != action '{action_tool}'")
-
-            effective_tool = action_tool or root_tool
-            if effective_tool:
-                action_dict["tool"] = effective_tool
+            # If action had no tool declared, supply root_tool
+            if root_tool and not action_dict.get("tool"):
+                action_dict["tool"] = root_tool
 
             # 1. Hoist goal if nested inside action and not provided at root
             if "goal" in action_dict:
@@ -156,16 +155,17 @@ class CompactDecision(Record):
                 if ("considered_claim_ids" not in data or not data["considered_claim_ids"]) and nested_cc:
                     data["considered_claim_ids"] = nested_cc
 
-            # 3. Consolidate parameter fields into arguments
-            known_action_fields = {"tool", "requirements"}
-            extra_keys = set(action_dict.keys()) - known_action_fields - {"arguments"}
-            if extra_keys:
-                if "arguments" not in action_dict or not isinstance(action_dict["arguments"], dict):
-                    action_dict["arguments"] = {}
-                else:
-                    action_dict["arguments"] = dict(action_dict["arguments"])
-                for k in extra_keys:
-                    action_dict["arguments"][k] = action_dict.pop(k)
+            # 3. Consolidate parameter fields into arguments for dictionary payloads emitted by tool calls
+            if not was_string:
+                known_action_fields = {"tool", "requirements"}
+                extra_keys = set(action_dict.keys()) - known_action_fields - {"arguments"}
+                if extra_keys:
+                    if "arguments" not in action_dict or not isinstance(action_dict["arguments"], dict):
+                        action_dict["arguments"] = {}
+                    else:
+                        action_dict["arguments"] = dict(action_dict["arguments"])
+                    for k in extra_keys:
+                        action_dict["arguments"][k] = action_dict.pop(k)
 
             data["action"] = action_dict
 
