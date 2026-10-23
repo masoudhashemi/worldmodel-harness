@@ -13,34 +13,12 @@ from typing import Any
 from .knowledge import Episode
 
 
-
-
-TERMINAL_STATUSES = {
-    "terminated",
-    "deactivated",
-    "void",
-    "archived",
-}
-
-EXCLUDED_NOTE_PATTERNS = (
-    "duplicate of",
-    "already resolved",
-    "not applicable",
-    "n/a",
-    "no action required",
-    "superseded by",
-    "merged with",
-    "closed as duplicate",
-)
-
-
 def extract_task_exclusions(task_text: str) -> list[str]:
     """Extract negative constraints / entity exclusions from task prompt."""
     if not task_text:
         return []
     patterns = [
-        r"(?:except|excluding|skip|ignore|do not process|do not notify|other than|don't bother with|dont bother with|do not bother with)\s+(?:for\s+)?(?:the\s+)?(?:contractors who've been\s+|badges that were\s+|tickets that are\s+)?([A-Za-z0-9_-]+)",
-        r"(?:already|previously)\s+([A-Za-z0-9_-]+)",
+        r"(?:except|excluding|skip|ignore|do not process|do not notify|other than|don't bother with|dont bother with|do not bother with)\s+(?:for\s+)?(?:the\s+)?(?:contractors who've been\s+|badges that were\s+|tickets that are\s+)?(?:(?:already|previously)\s+)?([A-Za-z0-9_-]+)",
     ]
     exclusions = []
     for pat in patterns:
@@ -78,18 +56,9 @@ def check_exclusion_reason(
         if full_text_lower and ex in full_text_lower:
             return f"matches task exclusion: '{ex}'"
 
-    # Environment policy patterns from notes (e.g. duplicate or superseded records)
-    for p in EXCLUDED_NOTE_PATTERNS:
-        if p in notes_lower:
-            return f"notes indicate: '{p}'"
-
-    # Terminal employee/account statuses are inactive
-    if status_lower in TERMINAL_STATUSES:
-        return f"status is '{status}'"
-
-    if name and any(k in name.lower() for k in ("carried over", "routine entry", "archived", "historical")):
-        return "marked historical/routine"
-
+    # Raw statuses, names and notes are observations, not universal business policies.
+    # Only explicit task exclusions are enforced here; policy inference belongs to
+    # the evidence-backed learning layer.
     return None
 
 
@@ -391,23 +360,52 @@ class EntityTracker:
         if not channel:
             return None
 
-        matched_entity: TrackedEntity | None = None
-        for entity in self.entities.values():
-            if entity.phone and entity.phone in body_text:
-                matched_entity = entity
-                break
-            if entity.email and entity.email in body_text:
-                matched_entity = entity
-                break
-            if entity.badge_id and entity.badge_id in body_text:
-                matched_entity = entity
-                break
-            if entity.name and entity.name.lower() in body_text.lower():
-                matched_entity = entity
-                break
-
-        if not matched_entity:
+        body = args.get("body", {})
+        if isinstance(body, str):
+            try:
+                body = json.loads(body)
+            except (ValueError, TypeError):
+                return None
+        if not isinstance(body, dict):
             return None
+
+        if channel in ("sms", "email"):
+            # Destination fields establish recipients; names mentioned in prose do not.
+            recipient = body.get("To", body.get("to"))
+            if channel == "email":
+                from email.utils import getaddresses
+
+                if recipient is None and isinstance(body.get("raw"), str):
+                    import base64
+                    from email import policy
+                    from email.parser import BytesParser
+
+                    try:
+                        raw = body["raw"]
+                        decoded = base64.b64decode(raw + "=" * (-len(raw) % 4),
+                                                   altchars=b"-_", validate=True)
+                        message = BytesParser(policy=policy.default).parsebytes(decoded)
+                        recipient = message.get_all("To", [])
+                    except (ValueError, TypeError):
+                        return None
+                headers = recipient if isinstance(recipient, list) else [recipient]
+                if not all(isinstance(value, str) for value in headers):
+                    return None
+                destinations = {address.casefold() for _, address in getaddresses(headers)}
+                matches = [entity for entity in self.entities.values()
+                           if entity.email and entity.email.casefold() in destinations]
+            else:
+                matches = [entity for entity in self.entities.values()
+                           if entity.phone and entity.phone == recipient]
+        else:
+            matches = [entity for entity in self.entities.values()
+                       if ((entity.badge_id and entity.badge_id in body_text)
+                           or (entity.name and entity.name.lower() in body_text.lower()))]
+
+        # Shared addresses and ambiguous mentions cannot establish an entity binding.
+        if len(matches) != 1:
+            return None
+        matched_entity = matches[0]
 
         if matched_entity and channel in matched_entity.obligations:
             # Preserve status semantics: queued is accepted by API, not confirmed delivered

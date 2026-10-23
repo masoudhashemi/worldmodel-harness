@@ -287,8 +287,8 @@ class TrajectoryGraph:
                 if v_node and allowed_services is not None:
                     if v_node.service not in allowed_services and v_node.node_id != "base64_encode":
                         continue
-                if v != target and authorized_mutations is not None:
-                    # An intermediate node must not perform an unrequested/unauthorized mutation
+                if authorized_mutations is not None:
+                    # Every mutation, including a fallback target, needs authorization
                     if v_node and v_node.action_type == "mutate":
                         is_auth = v in authorized_mutations
                         is_prereq = v in self.prerequisites.get(target, set())
@@ -407,7 +407,10 @@ class TrajectoryGraph:
             # Fallback: try individual shortest paths to any reachable target
             for s in valid_starts:
                 for tgt in valid_targets:
-                    res = self.shortest_path(s, tgt, allowed_services=allowed_services)
+                    res = self.shortest_path(
+                        s, tgt, allowed_services=allowed_services,
+                        authorized_mutations=authorized_mutations,
+                    )
                     if res is not None:
                         seg_path, seg_cost = res
                         t_path = tuple(seg_path)
@@ -535,10 +538,22 @@ def compile_trajectory_graph(
 
     graph.compiled_matchers = compiled_matchers
 
+    # Structural evidence may guide routing, but value reuse is not causal authorization.
+    from .knowledge import utc_now
+
+    now = utc_now()
+
+    def applicable_structure(claim):
+        return (
+            claim.status == "supported"
+            and not claim.needs_review
+            and (claim.valid_until is None or claim.valid_until > now)
+        )
+
     # 3. Collect value flows
     value_flows_by_endpoints: dict[tuple[str, str], list[ValueFlowInfo]] = defaultdict(list)
     for c in claims:
-        if c.relation == "observed_value_flow":
+        if c.relation == "observed_value_flow" and applicable_structure(c):
             src = c.payload.get("source_endpoint", "")
             tgt = c.payload.get("target_endpoint", "")
             if src and tgt:
@@ -694,21 +709,15 @@ def compile_trajectory_graph(
     for (src, tgt), flows in value_flows_by_endpoints.items():
         if src in graph.nodes and tgt in graph.nodes:
             structural_edges.add((src, tgt))
-            graph.prerequisites[tgt].add(src)
 
     # Generic contrastive preconditions: ONLY supported/verified claims establish structural prerequisite edges
     for c in claims:
-        if c.relation == "contrastive_precondition" and getattr(c, "status", "supported") in ("supported", "verified"):
+        if c.relation == "contrastive_precondition" and applicable_structure(c):
             src = c.payload.get("source_operation") or (c.participants[0] if len(c.participants) >= 1 else None)
             tgt = c.payload.get("target_operation") or (c.participants[1] if len(c.participants) >= 2 else None)
             if src and tgt and src in graph.nodes and tgt in graph.nodes:
                 structural_edges.add((src, tgt))
                 graph.prerequisites[tgt].add(src)
-            elif "base64_encode" in c.statement:
-                for nid in graph.nodes:
-                    if "send" in nid:
-                        structural_edges.add(("base64_encode", nid))
-                        graph.prerequisites[nid].add("base64_encode")
 
     # All candidate graph edges: union of empirical observations and structural prerequisite edges
     all_edge_pairs = set(empirical_transitions.keys()) | structural_edges

@@ -190,7 +190,7 @@ def test_entity_tracker_obligation_lifecycle_and_retrieval(tmp_path):
         response=read_resp,
         outcome="success",
     )
-    new_ents = tracker.register_from_read(read_ep, task_text="send sms, email company contact, post slack")
+    new_ents = tracker.register_from_read(read_ep, task_text="send sms, email company contact, post slack; skip terminated contractors")
     assert "BDG-3001" in tracker.entities
     assert "BDG-3003" in tracker.entities
     assert "BDG-3002" not in tracker.entities  # Terminated was filtered out!
@@ -321,7 +321,7 @@ def test_predicate_filtering_resolved_duplicates_and_task_exclusions():
         outcome="success",
     )
 
-    task_prompt = "Handle the after-hours P1 incident and process drill alarms for all facilities except the Annex."
+    task_prompt = "Handle the after-hours P1 incident and process drill alarms for all facilities except the Annex. Skip duplicate records."
     new_ents = tracker.register_from_read(ep, task_text=task_prompt)
 
     # 1. INC-4920 must be filtered out (Status: Resolved, Notes: duplicate of INC-4921)
@@ -382,7 +382,7 @@ def test_json_record_list_registration():
         response=jira_resp,
         outcome="success",
     )
-    tracker.register_from_read(ep, task_text="dispatch urgent alerts via sms")
+    tracker.register_from_read(ep, task_text="dispatch urgent alerts via sms; skip already resolved incidents")
 
     assert "OPS-101" not in tracker.entities  # Closed & already resolved
     assert "OPS-102" in tracker.entities
@@ -451,3 +451,49 @@ def test_explicit_task_intent_allows_closed_ticket_reopening():
 
 
 
+
+
+def test_positive_state_change_requests_do_not_create_exclusions():
+    from worldmodel_harness.execution_state import EntityTracker, extract_task_exclusions
+
+    scope = Scope(environment="test", version="1")
+    for text, status, notes in [
+        ("Reopen already closed ticket ticket-123", "closed", "already resolved"),
+        ("Reactivate previously deactivated account ticket-123", "deactivated", ""),
+        ("Restore archived ticket ticket-123", "archived", "no action required"),
+    ]:
+        tracker = EntityTracker()
+        assert extract_task_exclusions(text) == []
+        episode = Episode(task_id="t", scope=scope, operation="api_fetch", arguments={},
+                          response={"items": [{"id": "ticket-123", "name": "Restore access",
+                                               "status": status, "notes": notes}]},
+                          outcome="success")
+        assert tracker.register_from_read(episode, task_text=text) == ["ticket-123"]
+    assert extract_task_exclusions("Skip already closed tickets") == ["closed"]
+
+
+def test_recipient_fields_override_mentions_and_shared_addresses_remain_pending():
+    import base64
+    import json
+
+    from worldmodel_harness.execution_state import ChannelObligation, EntityTracker, TrackedEntity
+
+    scope = Scope(environment="test", version="1")
+    tracker = EntityTracker()
+    tracker.entities["alice"] = TrackedEntity(
+        entity_id="alice", name="Alice", phone="+15551111111", email="alice@example.com",
+        obligations={ch: ChannelObligation(ch) for ch in ("sms", "email")})
+    def action(channel, body):
+        return Episode(task_id="t", scope=scope, operation="api_fetch", outcome="success",
+                       arguments={"method": "POST", "url": f"https://{channel}.example.com/send",
+                                  "body": json.dumps(body)}, response={"status": "queued"})
+    assert tracker.record_action(action("twilio", {"To": "+15552222222", "Body": "Contact Alice"})) is None
+    assert tracker.record_action(action("gmail", {"to": "bob@example.com", "body": "Alice: alice@example.com"})) is None
+    assert all(ob.status == "pending" for ob in tracker.entities["alice"].obligations.values())
+    assert tracker.record_action(action("twilio", {"To": "+15551111111", "Body": "Hello Bob"})) == "alice"
+    raw = base64.urlsafe_b64encode(b'To: Alice <alice@example.com>\r\nSubject: Notice\r\n\r\nHello').decode()
+    assert tracker.record_action(action("gmail", {"raw": raw})) == "alice"
+    tracker.entities["other"] = TrackedEntity(entity_id="other", email="alice@example.com",
+                                              obligations={"email": ChannelObligation("email")})
+    assert tracker.record_action(action("gmail", {"to": "alice@example.com"})) is None
+    assert tracker.entities["other"].obligations["email"].status == "pending"

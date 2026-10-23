@@ -404,3 +404,45 @@ def test_bayesian_confidence_does_not_count_invented_successes(tmp_path):
     assert pytest.approx(edge.posterior_variance(), 0.001) == 0.0833
     assert edge.certainty() == 0.0  # Zero empirical certainty
 
+
+
+def test_candidate_path_fallback_preserves_mutation_authorization():
+    graph = TrajectoryGraph()
+    for name, action in (("slack.history", "read"), ("crm.delete", "mutate"), ("slack.post", "mutate")):
+        graph.add_node(OperationNode(node_id=name, operation="api_fetch", action_type=action))
+    graph.add_edge(TransitionEdge("slack.history", "crm.delete"))
+    graph.add_edge(TransitionEdge("crm.delete", "slack.post"))
+    assert graph.find_all_candidate_paths(["slack.history"], ["slack.post"],
+                                         authorized_mutations={"slack.post"}) == []
+    assert graph.shortest_path("slack.history", "crm.delete", authorized_mutations=set()) is None
+    graph.prerequisites["slack.post"].add("crm.delete")
+    assert graph.find_all_candidate_paths(["slack.history"], ["slack.post"],
+                                         authorized_mutations={"slack.post"})
+
+
+@pytest.mark.parametrize("status,review", [("hypothesis", False), ("supported", True), ("supported", False)])
+def test_value_flows_never_authorize_mutations(tmp_path, status, review):
+    store = KnowledgeStore(tmp_path / "flows.sqlite")
+    scope = Scope(environment="test", version="1")
+    evidence = Episode(task_id="t", scope=scope, operation="api_search", arguments={}, response={}, outcome="success")
+    store.append_episode(evidence)
+    for name, method in (("crm.delete", "DELETE"), ("slack.post", "POST")):
+        store.put_claim(Claim(claim_id=name, version=1, layer=Layer.INTERFACE,
+                              relation="endpoint_contract", participants=(name,), scope=scope,
+                              statement=name, status="supported", supporting_episodes=(evidence.episode_id,),
+                              payload={"id": name, "method": method, "url": "https://example.com/" + name}))
+    store.put_claim(Claim(claim_id="flow", version=1, layer=Layer.BEHAVIOR,
+                          relation="observed_value_flow", participants=("crm.delete", "slack.post"),
+                          scope=scope, statement="Value reuse", status=status, needs_review=review,
+                          supporting_episodes=(evidence.episode_id,),
+                          payload={"source_endpoint": "crm.delete", "target_endpoint": "slack.post",
+                                   "output_path": "id", "input_path": "text"}))
+    graph = compile_trajectory_graph(store, scope, successful_transitions_only=True)
+    assert "crm.delete" not in graph.prerequisites["slack.post"]
+    edges = graph.edges.get("crm.delete", {})
+    if status == "supported" and not review:
+        assert edges["slack.post"].success_count == 0
+        assert edges["slack.post"].posterior_mean() == 0.5
+    else:
+        assert "slack.post" not in edges
+    store.close()
