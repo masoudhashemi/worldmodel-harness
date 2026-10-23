@@ -324,3 +324,65 @@ def test_compact_decision_bare_alias_uses_goal_query(tmp_path):
 
     store.close()
 
+
+def test_omitted_tool_payload_resolves_dynamically_end_to_end(tmp_path):
+    from worldmodel_harness.decisions import CompactDecision
+
+    store = KnowledgeStore(tmp_path / "knowledge.sqlite")
+    adapter = AutomationBenchAdapter(
+        dataset("simple")[0], "simple", store, Ledger(), Learner(store)
+    )
+    audit = []
+    tools = operational_tools(
+        adapter,
+        adapter.tools(),
+        adaptive=False,
+        allow_experimental=False,
+        audit=audit,
+        refresh_audit=[],
+    )
+    actor = tools[0]
+    assert actor.name == "execute_decision"
+
+    # Exact omitted-tool payload from Badge Iter 3:
+    omitted_payload = {
+        "action": {
+            "arguments": {
+                "method": "GET",
+                "url": "https://sheets.googleapis.com/v4/spreadsheets/ss_badges?includeGridData=true",
+            }
+        },
+        "goal": "Retrieve badge data",
+    }
+    cd_omitted = CompactDecision.model_validate(omitted_payload)
+    assert cd_omitted.action.tool == ""
+    assert cd_omitted.root_tool is None
+
+    result = asyncio.run(actor.executor(cd_omitted))
+    # Must NOT be blocked by alias_registry or tool_conflict
+    content = json.loads(result.content) if result.content.startswith("{") else {}
+    assert content.get("origin") != "alias_registry"
+    assert content.get("origin") != "tool_conflict"
+    assert audit[-1]["decision"]["action"]["tool"] == "api_fetch"
+
+    # Exact root_tool payload from Twilio Iter 1:
+    root_tool_payload = {
+        "root_tool": "api_fetch",
+        "action": {
+            "arguments": {
+                "method": "GET",
+                "url": "https://sheets.googleapis.com/v4/spreadsheets/ss_incident_queue/values/ws_queue",
+            }
+        },
+        "goal": "Read incident queue",
+    }
+    cd_root = CompactDecision.model_validate(root_tool_payload)
+    result_root = asyncio.run(actor.executor(cd_root))
+    content_root = json.loads(result_root.content) if result_root.content.startswith("{") else {}
+    assert content_root.get("origin") != "alias_registry"
+    assert content_root.get("origin") != "tool_conflict"
+    assert audit[-1]["decision"]["action"]["tool"] == "api_fetch"
+
+    store.close()
+
+

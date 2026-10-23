@@ -162,20 +162,24 @@ def operational_tools(
     async def decide(decision):
         data = decision.model_dump()
         data["rationale"] = data.get("rationale") or "Execute next checked action"
-        action_tool = data["action"].get("tool", "")
-        canonical_action, err_action = resolve_tool(action_tool)
-        if err_action:
-            return ToolResult(
-                content=json.dumps({
-                    "status": "blocked",
-                    "origin": "alias_registry",
-                    "tool": action_tool,
-                    "message": err_action,
-                }),
-                success=False,
-            )
+        action_tool = (data["action"].get("tool") or "").strip()
+        root_tool = (getattr(decision, "root_tool", None) or "").strip()
 
-        root_tool = getattr(decision, "root_tool", None)
+        canonical_action = None
+        if action_tool:
+            canonical_action, err_action = resolve_tool(action_tool)
+            if err_action:
+                return ToolResult(
+                    content=json.dumps({
+                        "status": "blocked",
+                        "origin": "alias_registry",
+                        "tool": action_tool,
+                        "message": err_action,
+                    }),
+                    success=False,
+                )
+
+        canonical_root = None
         if root_tool:
             canonical_root, err_root = resolve_tool(root_tool)
             if err_root:
@@ -188,21 +192,22 @@ def operational_tools(
                     }),
                     success=False,
                 )
-            if canonical_root != canonical_action:
-                return ToolResult(
-                    content=json.dumps({
-                        "status": "blocked",
-                        "origin": "tool_conflict",
-                        "message": (
-                            f"Conflicting tool specifications: root '{root_tool}' "
-                            f"(canonical: '{canonical_root}') != action '{action_tool}' "
-                            f"(canonical: '{canonical_action}')"
-                        ),
-                    }),
-                    success=False,
-                )
 
-        data["action"]["tool"] = canonical_action
+        if canonical_root and canonical_action and canonical_root != canonical_action:
+            return ToolResult(
+                content=json.dumps({
+                    "status": "blocked",
+                    "origin": "tool_conflict",
+                    "message": (
+                        f"Conflicting tool specifications: root '{root_tool}' "
+                        f"(canonical: '{canonical_root}') != action '{action_tool}' "
+                        f"(canonical: '{canonical_action}')"
+                    ),
+                }),
+                success=False,
+            )
+
+        data["action"]["tool"] = canonical_action or canonical_root or ""
         if data["action"]["tool"] == "record_goal_checks":
             for check in data["action"]["arguments"].get("checks", []):
                 if isinstance(check, dict):

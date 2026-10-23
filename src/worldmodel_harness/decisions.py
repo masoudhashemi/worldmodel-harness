@@ -91,6 +91,8 @@ class CompactDecision(Record):
             data["tool"] = data["arguments"].pop("tool")
 
         root_tool = data.pop("tool", None)
+        if root_tool is None:
+            root_tool = data.get("root_tool")
         if root_tool is not None:
             root_tool = str(root_tool).strip()
             data["root_tool"] = root_tool
