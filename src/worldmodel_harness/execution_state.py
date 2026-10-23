@@ -13,20 +13,13 @@ from typing import Any
 from .knowledge import Episode
 
 
-EXCLUDED_STATUSES = {
+
+
+TERMINAL_STATUSES = {
     "terminated",
-    "renewed",
-    "inactive",
-    "archived",
-    "void",
-    "cancelled",
-    "superseded",
     "deactivated",
-    "resolved",
-    "closed",
-    "duplicate",
-    "done",
-    "completed",
+    "void",
+    "archived",
 }
 
 EXCLUDED_NOTE_PATTERNS = (
@@ -46,7 +39,8 @@ def extract_task_exclusions(task_text: str) -> list[str]:
     if not task_text:
         return []
     patterns = [
-        r"(?:except|excluding|skip|ignore|do not process|do not notify|other than)\s+(?:for\s+)?(?:the\s+)?([A-Za-z0-9_-]+)",
+        r"(?:except|excluding|skip|ignore|do not process|do not notify|other than|don't bother with|dont bother with|do not bother with)\s+(?:for\s+)?(?:the\s+)?(?:contractors who've been\s+|badges that were\s+|tickets that are\s+)?([A-Za-z0-9_-]+)",
+        r"(?:already|previously)\s+([A-Za-z0-9_-]+)",
     ]
     exclusions = []
     for pat in patterns:
@@ -66,25 +60,36 @@ def check_exclusion_reason(
     task_exclusions: list[str],
     full_text: str = "",
 ) -> str | None:
-    """Check why an entity record should be excluded, returning the reason or None."""
-    if status and status.lower() in EXCLUDED_STATUSES:
-        return f"status is '{status}'"
+    """Check why an entity record should be excluded based on task intent and applicable policy."""
+    status_lower = (status or "").lower()
     notes_lower = (notes or "").lower()
-    for p in EXCLUDED_NOTE_PATTERNS:
-        if p in notes_lower:
-            return f"notes indicate: '{p}'"
-    if name and any(k in name.lower() for k in ("carried over", "routine entry", "archived", "historical")):
-        return "marked historical/routine"
     full_text_lower = (full_text or "").lower()
+
+    # Exclusions must come from explicit task constraints or applicable environment policy
     for ex in task_exclusions:
+        if status_lower and (ex == status_lower or ex in status_lower):
+            return f"status '{status}' matches task exclusion: '{ex}'"
         if name and ex in name.lower():
             return f"matches task exclusion: '{ex}'"
         if badge and ex in badge.lower():
             return f"matches task exclusion: '{ex}'"
-        if notes and ex in notes_lower:
+        if notes_lower and ex in notes_lower:
             return f"matches task exclusion: '{ex}'"
         if full_text_lower and ex in full_text_lower:
             return f"matches task exclusion: '{ex}'"
+
+    # Environment policy patterns from notes (e.g. duplicate or superseded records)
+    for p in EXCLUDED_NOTE_PATTERNS:
+        if p in notes_lower:
+            return f"notes indicate: '{p}'"
+
+    # Terminal employee/account statuses are inactive
+    if status_lower in TERMINAL_STATUSES:
+        return f"status is '{status}'"
+
+    if name and any(k in name.lower() for k in ("carried over", "routine entry", "archived", "historical")):
+        return "marked historical/routine"
+
     return None
 
 
@@ -402,9 +407,7 @@ class EntityTracker:
                 break
 
         if not matched_entity:
-            active = self.active_entity()
-            if active and channel in active.obligations:
-                matched_entity = active
+            return None
 
         if matched_entity and channel in matched_entity.obligations:
             # Preserve status semantics: queued is accepted by API, not confirmed delivered

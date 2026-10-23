@@ -300,3 +300,107 @@ def test_candidate_path_rich_attributes_and_tuple_unpacking():
     assert cand.posterior_variance == 0.015
     assert cand.sample_score == 0.89
     assert cand.path == ["node1", "node2"]
+
+
+def test_pathfinding_excludes_unauthorized_destructive_mutations():
+    graph = TrajectoryGraph()
+    n_read = OperationNode(node_id="slack.history", operation="api_fetch", method="GET", action_type="read")
+    n_delete = OperationNode(node_id="crm.delete", operation="api_fetch", method="DELETE", action_type="mutate")
+    n_post = OperationNode(node_id="slack.post", operation="api_fetch", method="POST", action_type="mutate")
+
+    for n in (n_read, n_delete, n_post):
+        graph.add_node(n)
+
+    graph.add_edge(TransitionEdge(source="slack.history", target="crm.delete", count=1, cost=0.1))
+    graph.add_edge(TransitionEdge(source="crm.delete", target="slack.post", count=1, cost=0.1))
+
+    # Authorized mutations only includes slack.post (not crm.delete)
+    res = graph.shortest_path("slack.history", "slack.post", authorized_mutations={"slack.post"})
+    assert res is None  # crm.delete is an unauthorized destructive intermediate step and must be rejected!
+
+    # When crm.delete is authorized or a verified prerequisite, it is permitted
+    graph.prerequisites["slack.post"].add("crm.delete")
+    res_prereq = graph.shortest_path("slack.history", "slack.post", authorized_mutations={"slack.post"})
+    assert res_prereq is not None
+    assert res_prereq[0] == ["slack.history", "crm.delete", "slack.post"]
+
+
+def test_bayesian_confidence_does_not_count_invented_successes(tmp_path):
+    from worldmodel_harness.knowledge import Claim, Episode, Layer, Scope
+    from worldmodel_harness.store import KnowledgeStore
+    from worldmodel_harness.trajectory_graph import compile_trajectory_graph
+
+    store = KnowledgeStore(tmp_path / "test_bayes.sqlite")
+    scope = Scope(environment="test", version="1", role="ops", task_id="task")
+
+    # Add discovery/evidence episode
+    store.append_episode(
+        Episode(
+            episode_id="ep_contract_discovery",
+            task_id="task",
+            scope=scope,
+            operation="api_search",
+            arguments={"query": "gmail send"},
+            response={"results": []},
+            outcome="success",
+        )
+    )
+
+    # Single verified contract
+    c_contract = Claim(
+        claim_id="claim_send",
+        version=1,
+        layer=Layer.INTERFACE,
+        relation="endpoint_contract",
+        participants=("gmail.messages.send",),
+        statement="Send email endpoint",
+        scope=scope,
+        status="supported",
+        supporting_episodes=("ep_contract_discovery",),
+        payload={"id": "gmail.messages.send", "method": "POST", "url": "https://gmail.googleapis.com/v1/users/me/messages/send"},
+    )
+    # Verified contrastive precondition with ZERO execution episodes
+    c_prereq = Claim(
+        claim_id="claim_prereq",
+        version=1,
+        layer=Layer.BEHAVIOR,
+        relation="contrastive_precondition",
+        participants=("base64_encode", "gmail.messages.send"),
+        statement="base64_encode required before gmail.messages.send",
+        scope=scope,
+        status="supported",
+        supporting_episodes=("ep_contract_discovery",),
+        payload={"source_operation": "base64_encode", "target_operation": "gmail.messages.send"},
+    )
+    # Hypothetical prerequisite that must be ignored
+    c_hypo = Claim(
+        claim_id="claim_hypo",
+        version=1,
+        layer=Layer.BEHAVIOR,
+        relation="contrastive_precondition",
+        participants=("random_op", "gmail.messages.send"),
+        statement="hypothetical prerequisite",
+        scope=scope,
+        status="hypothesis",
+        payload={"source_operation": "random_op", "target_operation": "gmail.messages.send"},
+    )
+
+    store.put_claim(c_contract)
+    store.put_claim(c_prereq)
+    store.put_claim(c_hypo)
+
+    graph = compile_trajectory_graph(store, scope)
+
+    # Hypothesis claim must NOT create an edge
+    assert "random_op" not in graph.edges
+
+    # Verified precondition edge exists for structural routing, but has ZERO empirical observations
+    edge = graph.edges["base64_encode"]["gmail.messages.send"]
+    assert edge.success_count == 0  # Does NOT invent 5 successes!
+    assert edge.failure_count == 0
+    assert edge.alpha == 1.0
+    assert edge.beta == 1.0
+    assert edge.posterior_mean() == 0.5  # Neutral uniform prior, NOT 0.857!
+    assert pytest.approx(edge.posterior_variance(), 0.001) == 0.0833
+    assert edge.certainty() == 0.0  # Zero empirical certainty
+

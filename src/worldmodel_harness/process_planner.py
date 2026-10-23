@@ -225,11 +225,12 @@ def extract_workflow_plan(
     path_updated = False
     candidate_paths: list[tuple[list[str], float, float, int]] = []
 
+    auth_mutations = set(best_targets)
     if current_node and current_node in graph.nodes:
         remaining_targets = [t for t in best_targets if t not in completed and t != current_node]
         if remaining_targets:
             candidate_paths = graph.find_all_candidate_paths(
-                [current_node], remaining_targets, max_paths=3
+                [current_node], remaining_targets, authorized_mutations=auth_mutations, max_paths=3
             )
             path_updated = True
         else:
@@ -237,7 +238,7 @@ def extract_workflow_plan(
 
     if not candidate_paths:
         candidate_paths = graph.find_all_candidate_paths(
-            top_starts, best_targets, max_paths=3
+            top_starts, best_targets, authorized_mutations=auth_mutations, max_paths=3
         )
 
     if not candidate_paths:
@@ -245,7 +246,7 @@ def extract_workflow_plan(
         import math
         for s in top_starts:
             for _, t, _ in target_candidates:
-                res = graph.shortest_path(s, t)
+                res = graph.shortest_path(s, t, authorized_mutations=auth_mutations)
                 if res:
                     seg_path, seg_cost = res
                     conf = max(0.05, min(1.0, math.exp(-seg_cost)))

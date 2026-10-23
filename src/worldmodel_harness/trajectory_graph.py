@@ -226,6 +226,7 @@ class TrajectoryGraph:
         self.reverse_value_flows: dict[str, list[ValueFlowInfo]] = defaultdict(list)
         self.node_attempts: dict[str, list[NodeAttempt]] = defaultdict(list)
         self.compiled_matchers: list[tuple[str, re.Pattern, Claim]] = []
+        self.prerequisites: dict[str, set[str]] = defaultdict(set)
 
     def match_episode_to_node_id(self, episode: Episode | None) -> str | None:
         """Resolve an execution episode to a canonical node_id in this graph."""
@@ -253,7 +254,11 @@ class TrajectoryGraph:
         return list(self.edges.get(node_id, {}).keys())
 
     def shortest_path(
-        self, start: str, target: str, allowed_services: set[str] | None = None
+        self,
+        start: str,
+        target: str,
+        allowed_services: set[str] | None = None,
+        authorized_mutations: set[str] | None = None,
     ) -> tuple[list[str], float] | None:
         """Dijkstra shortest path minimizing cumulative transition cost (-ln P)."""
         if start == target:
@@ -282,6 +287,13 @@ class TrajectoryGraph:
                 if v_node and allowed_services is not None:
                     if v_node.service not in allowed_services and v_node.node_id != "base64_encode":
                         continue
+                if v != target and authorized_mutations is not None:
+                    # An intermediate node must not perform an unrequested/unauthorized mutation
+                    if v_node and v_node.action_type == "mutate":
+                        is_auth = v in authorized_mutations
+                        is_prereq = v in self.prerequisites.get(target, set())
+                        if not (is_auth or is_prereq):
+                            continue
                 new_d = d + edge.cost
                 if new_d < dist.get(v, float("inf")):
                     dist[v] = new_d
@@ -295,6 +307,7 @@ class TrajectoryGraph:
         starts: list[str],
         targets: list[str],
         allowed_services: set[str] | None = None,
+        authorized_mutations: set[str] | None = None,
         max_paths: int = 3,
     ) -> list[tuple[list[str], float, float, int]]:
         """Find up to `max_paths` distinct valid paths from starts covering targets.
@@ -313,6 +326,7 @@ class TrajectoryGraph:
 
         if not valid_starts:
             valid_starts = [valid_targets[0]]
+
 
         import itertools
 
@@ -336,7 +350,9 @@ class TrajectoryGraph:
                 for tgt in ordered_targets:
                     if curr == tgt:
                         continue
-                    segment = self.shortest_path(curr, tgt, allowed_services=allowed_services)
+                    segment = self.shortest_path(
+                        curr, tgt, allowed_services=allowed_services, authorized_mutations=authorized_mutations
+                    )
                     if segment is None:
                         possible = False
                         break
@@ -661,62 +677,79 @@ def compile_trajectory_graph(
             continue
         by_task[e.task_id].append(e)
 
-    transitions: Counter[tuple[str, str]] = Counter()
+    empirical_transitions: Counter[tuple[str, str]] = Counter()
     for task_eps in by_task.values():
         collapsed: list[str] = []
         for e in task_eps:
-            nid = match_episode_to_node_id(e)
-            if not collapsed or collapsed[-1] != nid:
-                collapsed.append(nid)
+            if getattr(e, "outcome", "success") in ("success", None):
+                nid = match_episode_to_node_id(e)
+                if nid and (not collapsed or collapsed[-1] != nid):
+                    collapsed.append(nid)
         for i in range(len(collapsed) - 1):
             u, v = collapsed[i], collapsed[i + 1]
-            transitions[(u, v)] += 1
+            empirical_transitions[(u, v)] += 1
 
-    # 5. Reinforce with observed value flows and contrastive prerequisites
+    # 5. Track structural prerequisite edges for reachability and causal dependencies
+    structural_edges: set[tuple[str, str]] = set()
     for (src, tgt), flows in value_flows_by_endpoints.items():
         if src in graph.nodes and tgt in graph.nodes:
-            transitions[(src, tgt)] += len(flows)
+            structural_edges.add((src, tgt))
+            graph.prerequisites[tgt].add(src)
 
-    # Generic contrastive preconditions: prerequisite operation precedes target operation
+    # Generic contrastive preconditions: ONLY supported/verified claims establish structural prerequisite edges
     for c in claims:
-        if c.relation == "contrastive_precondition":
+        if c.relation == "contrastive_precondition" and getattr(c, "status", "supported") in ("supported", "verified"):
             src = c.payload.get("source_operation") or (c.participants[0] if len(c.participants) >= 1 else None)
             tgt = c.payload.get("target_operation") or (c.participants[1] if len(c.participants) >= 2 else None)
             if src and tgt and src in graph.nodes and tgt in graph.nodes:
-                transitions[(src, tgt)] += 5
+                structural_edges.add((src, tgt))
+                graph.prerequisites[tgt].add(src)
             elif "base64_encode" in c.statement:
                 for nid in graph.nodes:
                     if "send" in nid:
-                        transitions[("base64_encode", nid)] += 5
+                        structural_edges.add(("base64_encode", nid))
+                        graph.prerequisites[nid].add("base64_encode")
 
-    # 6. Build transition edges with normalized probabilities and costs
+    # All candidate graph edges: union of empirical observations and structural prerequisite edges
+    all_edge_pairs = set(empirical_transitions.keys()) | structural_edges
+
+    # 6. Build transition edges with normalized probabilities, costs, and pure empirical Beta posteriors
     out_degree: Counter[str] = Counter()
-    for (u, v), cnt in transitions.items():
+    for (u, v) in all_edge_pairs:
         if u in graph.nodes and v in graph.nodes:
-            out_degree[u] += cnt
+            # Dijkstra routing weight: observed successes + structural connectivity prior (1)
+            w = empirical_transitions.get((u, v), 0) + (1 if (u, v) in structural_edges else 0)
+            out_degree[u] += w
 
-    for (u, v), cnt in transitions.items():
+    for (u, v) in all_edge_pairs:
         if u not in graph.nodes or v not in graph.nodes:
             continue
-        total = out_degree[u]
-        p = cnt / total if total > 0 else 0.5
-        cost = -math.log(max(p, 1e-4))
-        flows = value_flows_by_endpoints.get((u, v), [])
-
-        # Empirical failure count from attempts
+        succ_cnt = empirical_transitions.get((u, v), 0)
         failed_cnt = sum(
             att.count
             for att in graph.node_attempts.get(u, [])
             if att.target_node == v and att.outcome in ("error", "blocked")
         )
+        w = succ_cnt + (1 if (u, v) in structural_edges else 0)
+        total = out_degree[u]
+        p = w / total if total > 0 else 0.5
+        cost = -math.log(max(p, 1e-4))
+        flows = value_flows_by_endpoints.get((u, v), [])
+
+        # Empirical Beta-Binomial posterior:
+        # success_count and failure_count reflect ONLY actual observed execution episodes.
+        # Zero execution episodes = alpha=1.0, beta=1.0 (uniform prior, posterior_mean=0.5, variance=0.0833).
+        alpha = 1.0 + float(succ_cnt)
+        beta = 1.0 + float(failed_cnt)
+
         edge = TransitionEdge(
             source=u,
             target=v,
-            count=cnt,
-            success_count=cnt,
+            count=succ_cnt,
+            success_count=succ_cnt,
             failure_count=failed_cnt,
-            alpha=1.0 + float(cnt),
-            beta=1.0 + float(failed_cnt),
+            alpha=alpha,
+            beta=beta,
             probability=p,
             cost=cost,
             value_flows=flows,

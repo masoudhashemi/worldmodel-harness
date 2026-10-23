@@ -389,3 +389,65 @@ def test_json_record_list_registration():
     assert tracker.entities["OPS-102"].phone == "+15551234567"
 
 
+def test_record_action_unmatched_recipient_remains_unbound():
+    from worldmodel_harness.execution_state import ChannelObligation, EntityTracker, TrackedEntity
+
+    tracker = EntityTracker()
+    tracker.entities["alice_id"] = TrackedEntity(
+        entity_id="alice_id",
+        name="Alice",
+        phone="+15551111111",
+        obligations={"sms": ChannelObligation(channel="sms", status="pending")},
+    )
+    scope = Scope(environment="test", version="1", role="ops", task_id="task")
+    # SMS sent to Bob (+15552222222)
+    sms_bob = Episode(
+        episode_id="ep_bob",
+        task_id="task",
+        scope=scope,
+        interaction_id="int_bob",
+        operation="api_fetch",
+        arguments={"method": "POST", "url": "https://api.twilio.com/2010-04-01/Accounts/AC1/Messages.json", "body": '{"To": "+15552222222", "Body": "Hi Bob"}'},
+        response={"sid": "msg_bob", "status": "queued"},
+        outcome="success",
+    )
+    res = tracker.record_action(sms_bob)
+    # Must remain unbound and NOT complete Alice's obligation
+    assert res is None
+    assert tracker.entities["alice_id"].obligations["sms"].status == "pending"
+
+
+def test_explicit_task_intent_allows_closed_ticket_reopening():
+    from worldmodel_harness.execution_state import EntityTracker
+
+    scope = Scope(environment="test", version="1", role="ops", task_id="task")
+    tracker = EntityTracker()
+    jira_resp = {
+        "issues": [
+            {
+                "key": "ticket-123",
+                "fields": {
+                    "summary": "Database Crash",
+                    "status": {"name": "Closed"},
+                    "phone": "+15550001111",
+                },
+            }
+        ]
+    }
+    ep = Episode(
+        episode_id="ep_read",
+        task_id="task",
+        scope=scope,
+        interaction_id="call1",
+        operation="api_fetch",
+        arguments={"method": "GET", "url": "https://jira.example.com/rest/api/2/issue/ticket-123"},
+        response=jira_resp,
+        outcome="success",
+    )
+    # The task explicitly asks to reopen closed ticket-123
+    tracker.register_from_read(ep, task_text="Reopen closed ticket ticket-123 and notify via sms")
+    assert "ticket-123" in tracker.entities
+    assert tracker.entities["ticket-123"].entity_id == "ticket-123"
+
+
+
