@@ -220,7 +220,8 @@ class GemmaLiteLLMClient(LiteLLMClient):
         from stirrup.core.exceptions import ContextOverflowError, OutputTokenLimitError
         from stirrup.core.models import AssistantMessage, ReasoningBlock, TextBlock, TokenUsage, ToolCall
 
-        for attempt in range(3):
+        max_attempts = 30
+        for attempt in range(max_attempts):
             try:
                 r = await acompletion(
                     model=self.model_slug,
@@ -237,8 +238,14 @@ class GemmaLiteLLMClient(LiteLLMClient):
                 raise ContextOverflowError(str(e)) from e
             except Exception as e:
                 err_str = f"{type(e).__name__} {e}".lower()
-                if attempt < 2 and any(t in err_str for t in ("internalservererror", "servererror", "500", "502", "503", "504", "connection", "timeout")):
-                    await asyncio.sleep(2 * (attempt + 1))
+                is_queue_wait = any(q in err_str for q in ("queuing", "waiting for requested resources", "preemptable job", "not running"))
+                is_transient = any(t in err_str for t in ("internalservererror", "servererror", "500", "502", "503", "504", "connection", "timeout"))
+                if attempt < max_attempts - 1 and (is_queue_wait or is_transient):
+                    sleep_time = 10 if is_queue_wait else (2 * (attempt + 1))
+                    if is_queue_wait and attempt % 3 == 0:
+                        import sys
+                        print(f"\n[GemmaLiteLLMClient] Cluster job is QUEUING for GPU resources. Polling attempt {attempt + 1}/{max_attempts}...", file=sys.stderr)
+                    await asyncio.sleep(sleep_time)
                     continue
                 raise
 
