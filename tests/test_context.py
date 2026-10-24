@@ -142,3 +142,139 @@ def test_historical_episode_retrieval_is_not_live_state(tmp_path):
     different = current.model_copy(update={"version": "2"})
     assert render_episodes(store, different, "lookup", max_chars=2000)[1]["injected_episodes"] == []
     store.close()
+
+
+def test_workflow_plan_json_serializable_and_markdown_formatting():
+    from worldmodel_harness.context import _format_workflow_process_markdown
+    from worldmodel_harness.process_planner import (
+        DownstreamConsequence,
+        SolutionPath,
+        TriedActionSummary,
+        WorkflowProcess,
+        WorkflowStep,
+    )
+
+    plan = WorkflowProcess(
+        goal="Resolve incident",
+        estimated_steps=2,
+        steps=[
+            WorkflowStep(
+                step=1,
+                operation="gmail.users.messages.get",
+                status="pending",
+                description="Inspect message",
+            )
+        ],
+        tried_from_this_state=[
+            TriedActionSummary(
+                action="datadog.incidents.list",
+                outcome="success",
+                count=2,
+                result="Found 2 incidents",
+                lesson="Incident 202 is duplicate of 101",
+                next_state="datadog.incidents.get",
+                downstream_consequences=[
+                    DownstreamConsequence(
+                        action="pagerduty.incidents.create",
+                        outcome="error",
+                        result="Paged duplicate",
+                        lesson="Paging duplicate ticket leads to downstream failure",
+                    )
+                ],
+            )
+        ],
+        potential_solution_paths=[
+            SolutionPath(
+                path_id="path_best",
+                steps=["gmail.users.messages.get", "sheets.spreadsheets.values.get"],
+                confidence=0.9,
+                certainty=0.85,
+                posterior_variance=0.05,
+                estimated_steps=2,
+                strategy_description="Inspect email first",
+            )
+        ],
+    )
+
+    scope = Scope(environment="test", version="1")
+    working = WorkingGraph(scope=scope)
+
+    # 1. Render context with plan
+    content, report = render_context(working, [], max_chars=5000, plan=plan)
+    assert report["workflow_plan"] is not None
+    assert isinstance(report["workflow_plan"], dict)
+
+    # 2. Must be JSON serializable without TypeError
+    dumped = json.dumps(report)
+    assert "gmail.users.messages.get" in dumped
+
+    # 3. _format_workflow_process_markdown must work with both Pydantic model and dict
+    md_from_model = _format_workflow_process_markdown(plan)
+    md_from_dict = _format_workflow_process_markdown(report["workflow_plan"])
+    assert "Empirical World Model" in md_from_model
+    assert "Empirical World Model" in md_from_dict
+    assert "duplicate of 101" in md_from_model
+    assert "duplicate of 101" in md_from_dict
+
+
+def test_workflow_plan_compacts_under_tight_budget():
+    from worldmodel_harness.process_planner import (
+        DownstreamConsequence,
+        SolutionPath,
+        TriedActionSummary,
+        WorkflowProcess,
+        WorkflowStep,
+    )
+
+    long_summary = [
+        TriedActionSummary(
+            action=f"action_{i}",
+            outcome="error",
+            count=i + 1,
+            result="a" * 200,
+            lesson="b" * 200,
+            next_state=f"state_{i}",
+            downstream_consequences=[
+                DownstreamConsequence(
+                    action=f"sub_action_{i}",
+                    outcome="error",
+                    result="c" * 200,
+                    lesson="d" * 200,
+                )
+            ],
+        )
+        for i in range(10)
+    ]
+    paths = [
+        SolutionPath(
+            path_id=f"path_{i}",
+            steps=[f"step_{j}" for j in range(10)],
+            confidence=0.8,
+            certainty=0.7,
+            posterior_variance=0.1,
+            estimated_steps=10,
+            strategy_description="s" * 150,
+        )
+        for i in range(5)
+    ]
+    plan = WorkflowProcess(
+        goal="Test heavy plan",
+        estimated_steps=5,
+        steps=[
+            WorkflowStep(step=i, operation=f"op_{i}", status="pending", description="d")
+            for i in range(5)
+        ],
+        tried_from_this_state=long_summary,
+        potential_solution_paths=paths,
+    )
+
+    scope = Scope(environment="test", version="1")
+    working = WorkingGraph(scope=scope)
+
+    # With a 1500 char budget, heavy plan would exceed uncompacted (>4000 chars),
+    # but with graceful compaction it should compact and fit without dropping to empty.
+    content, report = render_context(working, [], max_chars=1500, plan=plan)
+    assert content != ""
+    assert len(content) <= 1500
+    assert report["workflow_plan"] is not None
+

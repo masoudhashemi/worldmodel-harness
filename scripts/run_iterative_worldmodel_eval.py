@@ -100,6 +100,12 @@ def parse_args():
         help="Disable semantic learning consolidation between episodes",
     )
     parser.add_argument(
+        "--retrieval-chars",
+        type=int,
+        default=12000,
+        help="Maximum character budget for injected operational memory",
+    )
+    parser.add_argument(
         "--resume",
         action="store_true",
         help="Resume an existing run, reusing completed trials and the carried store",
@@ -117,6 +123,7 @@ async def run_trial(
     max_env_calls: int,
     timeout: int,
     semantic_learning: bool = False,
+    retrieval_chars: int = 12000,
 ) -> dict:
     domain = task_name.split(".", 1)[0]
     settings = ExperimentSettings(
@@ -133,7 +140,7 @@ async def run_trial(
         phase="test",  # Enables learning from trajectories into the store
         semantic_learning=semantic_learning,
         adaptive=True,
-        retrieval_chars=5000,
+        retrieval_chars=retrieval_chars,
     )
     start_time = time.perf_counter()
     report = await run_automationbench(root, settings, store_path)
@@ -263,6 +270,7 @@ async def main():
                     max_env_calls=args.max_env_calls,
                     timeout=args.timeout,
                     semantic_learning=False,
+                    retrieval_chars=args.retrieval_chars,
                 )
                 all_results.append(metrics)
                 completed_trials.add(("baseline", 0, task_name))
@@ -323,6 +331,7 @@ async def main():
                     max_env_calls=args.max_env_calls,
                     timeout=args.timeout,
                     semantic_learning=args.semantic_learning,
+                    retrieval_chars=args.retrieval_chars,
                 )
                 all_results.append(metrics)
                 completed_trials.add(("with_worldmodel", iteration, task_name))

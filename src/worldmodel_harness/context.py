@@ -67,36 +67,60 @@ def _format_workflow_process_markdown(plan, current_node: str | None = None) -> 
     """Format an empirical, graph-grounded state transition view for the agent."""
     if not plan:
         return ""
+
+    def _get(obj, key, default=None):
+        if isinstance(obj, dict):
+            return obj.get(key, default)
+        return getattr(obj, key, default)
+
+    goal = _get(plan, "goal") or "operational objective"
     lines = [
         "### 🗺️ Empirical World Model — State Graph & Historical Transitions",
         f"**Current State**: `{current_node or 'initial_state'}`",
-        f"**Active Objective**: `{plan.goal}`",
+        f"**Active Objective**: `{goal}`",
     ]
-    if plan.tried_from_this_state:
+    tried_list = _get(plan, "tried_from_this_state") or []
+    if tried_list:
         lines.append("\n**Past Action Attempts & Observed Consequences from this State**:")
-        for t in plan.tried_from_this_state[:4]:
-            icon = "✅" if t.outcome == "success" else "❌"
-            action_desc = f"{icon} Action: `{t.action}` (observed {t.count}x)"
+        for t in tried_list[:4]:
+            outcome = _get(t, "outcome")
+            icon = "✅" if outcome == "success" else "❌"
+            action = _get(t, "action")
+            count = _get(t, "count") or _get(t, "observed_count") or 1
+            action_desc = f"{icon} Action: `{action}` (observed {count}x)"
             lines.append(f"• {action_desc}")
-            lines.append(f"  - Outcome: **{t.outcome}** — {t.result}")
-            if t.lesson:
-                lines.append(f"  - Lesson / Error: {t.lesson}")
-            if t.next_state:
-                lines.append(f"  - Reached Next State: `[{t.next_state}]`")
-            if getattr(t, "downstream_consequences", None):
-                lines.append(f"  - Downstream Possibilities from `[{t.next_state or 'next_state'}]`:")
-                for dc in t.downstream_consequences[:3]:
-                    d_icon = "✅" if dc.outcome == "success" else "❌"
-                    lines.append(f"    * {d_icon} Action `{dc.action}` -> **{dc.outcome}** ({dc.result})")
-                    if dc.lesson:
-                        lines.append(f"      Feedback: {dc.lesson}")
-    if plan.potential_solution_paths:
-        rec_path = plan.potential_solution_paths[0]
-        lines.append(f"\n**Recommended Transition Path** (Bayesian Thompson Certainty: {rec_path.certainty:.2f}):")
-        lines.append(f"• `{' -> '.join(rec_path.steps)}`")
-        if len(plan.potential_solution_paths) > 1:
-            alt = plan.potential_solution_paths[1]
-            lines.append(f"• Alternative ({alt.path_id}): `{' -> '.join(alt.steps)}`")
+            result = _get(t, "result")
+            lines.append(f"  - Outcome: **{outcome}** — {result}")
+            lesson = _get(t, "lesson")
+            if lesson:
+                lines.append(f"  - Lesson / Error: {lesson}")
+            next_state = _get(t, "next_state")
+            if next_state:
+                lines.append(f"  - Reached Next State: `[{next_state}]`")
+            downstream = _get(t, "downstream_consequences")
+            if downstream:
+                lines.append(f"  - Downstream Possibilities from `[{next_state or 'next_state'}]`:")
+                for dc in downstream[:3]:
+                    dc_outcome = _get(dc, "outcome")
+                    d_icon = "✅" if dc_outcome == "success" else "❌"
+                    dc_action = _get(dc, "action")
+                    dc_result = _get(dc, "result")
+                    lines.append(f"    * {d_icon} Action `{dc_action}` -> **{dc_outcome}** ({dc_result})")
+                    dc_lesson = _get(dc, "lesson")
+                    if dc_lesson:
+                        lines.append(f"      Feedback: {dc_lesson}")
+    paths = _get(plan, "potential_solution_paths") or []
+    if paths:
+        rec_path = paths[0]
+        rec_cert = _get(rec_path, "certainty", 0.0)
+        rec_steps = _get(rec_path, "steps", [])
+        lines.append(f"\n**Recommended Transition Path** (Bayesian Thompson Certainty: {rec_cert:.2f}):")
+        lines.append(f"• `{' -> '.join(rec_steps)}`")
+        if len(paths) > 1:
+            alt = paths[1]
+            alt_id = _get(alt, "path_id", "alt")
+            alt_steps = _get(alt, "steps", [])
+            lines.append(f"• Alternative ({alt_id}): `{' -> '.join(alt_steps)}`")
     return "\n".join(lines)
 
 
@@ -111,6 +135,7 @@ def render_context(
     completed_nodes: set[str] | None = None,
     successful_transition_graph: bool = False,
     entity_tracker=None,
+    plan=None,
 ) -> tuple[str, dict]:
     """Count the entire injected message, including metadata and artifact menus.
 
@@ -122,8 +147,7 @@ def render_context(
 
     from .process_planner import extract_workflow_plan
 
-    plan = None
-    if store is not None and query:
+    if plan is None and store is not None and query:
         try:
             plan = extract_workflow_plan(
                 store,
@@ -140,7 +164,7 @@ def render_context(
     selected = {}
     menu = []
 
-    def encode():
+    def encode(compact_wf: int = 0) -> str:
         claims = []
         for claim in selected.values():
             record = claim.model_dump(
@@ -206,34 +230,37 @@ def render_context(
                     for s in plan.steps
                 ],
             }
-            if plan.tried_from_this_state:
-                wf["tried_from_this_state"] = [
-                    {
+            if plan.tried_from_this_state and compact_wf < 3:
+                max_tried = 2 if compact_wf >= 2 else (4 if compact_wf == 1 else len(plan.tried_from_this_state))
+                max_str_len = 100 if compact_wf >= 1 else 300
+                tried_entries = []
+                for t in plan.tried_from_this_state[:max_tried]:
+                    res = t.result[:max_str_len] if t.result else ""
+                    les = t.lesson[:max_str_len] if t.lesson else ""
+                    entry = {
                         "action": t.action,
                         "outcome": t.outcome,
-                        "result": t.result,
-                        "lesson": t.lesson,
+                        "result": res,
+                        "lesson": les,
                         "observed_count": t.count,
                         **({"next_state": t.next_state} if t.next_state else {}),
-                        **(
-                            {
-                                "downstream_consequences": [
-                                    {
-                                        "action": dc.action,
-                                        "outcome": dc.outcome,
-                                        "result": dc.result,
-                                        "lesson": dc.lesson,
-                                    }
-                                    for dc in t.downstream_consequences
-                                ]
-                            }
-                            if getattr(t, "downstream_consequences", None)
-                            else {}
-                        ),
                     }
-                    for t in plan.tried_from_this_state
-                ]
-            if plan.potential_solution_paths:
+                    if compact_wf < 2 and getattr(t, "downstream_consequences", None):
+                        max_dc = 2 if compact_wf == 1 else len(t.downstream_consequences)
+                        entry["downstream_consequences"] = [
+                            {
+                                "action": dc.action,
+                                "outcome": dc.outcome,
+                                "result": dc.result[:max_str_len] if dc.result else "",
+                                "lesson": dc.lesson[:max_str_len] if dc.lesson else "",
+                            }
+                            for dc in t.downstream_consequences[:max_dc]
+                        ]
+                    tried_entries.append(entry)
+                wf["tried_from_this_state"] = tried_entries
+
+            if plan.potential_solution_paths and compact_wf < 3:
+                max_paths = 1 if compact_wf >= 2 else (2 if compact_wf == 1 else len(plan.potential_solution_paths))
                 wf["potential_solution_paths"] = [
                     {
                         "path": p.path_id,
@@ -244,7 +271,7 @@ def render_context(
                         "turns": p.estimated_steps,
                         "strategy": p.strategy_description,
                     }
-                    for p in plan.potential_solution_paths
+                    for p in plan.potential_solution_paths[:max_paths]
                 ]
                 rec_path = plan.potential_solution_paths[0]
                 wf["exploration_guidance"] = (
@@ -265,6 +292,10 @@ def render_context(
             payload["retrieval_reasons"] = {cid: list(r) for cid, r in working.reasons.items()}
         return PREFIX + json.dumps(payload, separators=(",", ":"))
 
+    compact_level = 0
+    while compact_level < 3 and len(encode(compact_level)) > max_chars:
+        compact_level += 1
+
     for procedure in procedures:
         entry = {
             "procedure_id": procedure.procedure_id,
@@ -278,7 +309,7 @@ def render_context(
         }
         menu.append(entry)
         # Don't let artifact advertising consume the entire knowledge budget.
-        if len(encode()) > max_chars // 2:
+        if len(encode(compact_level)) > max_chars // 2:
             menu.pop()
 
     claim_order = list(working.claims)
@@ -319,9 +350,12 @@ def render_context(
                     valid = False
                     break
                 pending.append(other)
-        if not valid or len(encode()) > max_chars:
+        if not valid or len(encode(compact_level)) > max_chars:
             selected = before
-    content = encode()
+    content = encode(compact_level)
+    while len(content) > max_chars and compact_level < 3:
+        compact_level += 1
+        content = encode(compact_level)
     if len(content) > max_chars:
         content = ""  # No partial instructions, claims, or prerequisites.
     return content, {
@@ -333,7 +367,7 @@ def render_context(
         "workflow_plan_active_step": plan.active_step_index if plan and content else 0,
         "workflow_plan_updated": plan.path_updated if plan and content else False,
         "workflow_plan_goal": plan.goal if plan and content else None,
-        "workflow_plan": plan if plan and content else None,
+        "workflow_plan": plan.model_dump(mode="json") if plan and content else None,
     }
 
 
