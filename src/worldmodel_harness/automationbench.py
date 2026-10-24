@@ -88,6 +88,7 @@ class AutomationBenchAdapter:
         self.learner = learner
         self.knowledge = knowledge or (learner.store if learner else evidence)
         self.prediction_assessments: list[dict] = []
+        self.interaction_history: list[Any] = []
         self.purpose_override = purpose_override
         self.retain_interactions = retain_interactions
         self.shift = ShiftController(shift) if shift is not None else None

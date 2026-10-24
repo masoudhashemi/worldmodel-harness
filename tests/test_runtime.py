@@ -133,3 +133,12 @@ def test_gemma_json_arguments_preserve_escaped_values():
     text = '<|tool_call>call:api_search{"query":"line one\\nline two"}<tool_call|>'
     _, calls = runtime.parse_gemma_calls(text)
     assert calls == [("api_search", {"query": "line one\nline two"})]
+
+
+def test_parse_gemma_calls_handles_unclosed_braces():
+    text = '<|tool_call>call:execute_decision{action:{arguments:{summary:<|"|>Task finished<|"|>},tool:<|"|>finish<|"|>}'
+    _, calls = runtime.parse_gemma_calls(text)
+    assert len(calls) == 1
+    assert calls[0][0] == "execute_decision"
+    assert calls[0][1]["action"]["tool"] == "finish"
+    assert calls[0][1]["action"]["arguments"]["summary"] == "Task finished"

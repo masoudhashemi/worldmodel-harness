@@ -164,19 +164,39 @@ def extract_unresolved_references(adapter: Any) -> list[dict[str, str]]:
             (i for i, h in enumerate(headers) if "note" in h or "comment" in h or "rule" in h),
             None,
         )
+        status_idx = next(
+            (i for i, h in enumerate(headers) if "status" in h or "state" in h),
+            None,
+        )
         title_idx = next(
             (i for i, h in enumerate(headers) if any(k in h for k in ("title", "contractor", "name", "id"))),
             0,
         )
-        if notes_idx is None:
+        if notes_idx is None and status_idx is None:
             continue
 
         source_ep_id = getattr(ep, "episode_id", None)
         for row in values[1:]:
-            if not isinstance(row, list) or len(row) <= notes_idx:
+            if not isinstance(row, list):
+                continue
+            item_name = str(row[title_idx]).strip() if len(row) > title_idx else "Record"
+
+            # Check status exclusion (e.g. Acknowledged, Resolved, Closed records)
+            if status_idx is not None and len(row) > status_idx:
+                status_val = str(row[status_idx]).strip().lower()
+                if status_val in ("acknowledged", "resolved", "closed"):
+                    key = f"status_{item_name}_{status_val}"
+                    if key not in seen_keys:
+                        seen_keys.add(key)
+                        unresolved.append({
+                            "category": "status_exclusion",
+                            "target": item_name,
+                            "advice": f"Record '{item_name}' status is already '{row[status_idx]}' — do not page or act on already handled records.",
+                        })
+
+            if notes_idx is None or len(row) <= notes_idx:
                 continue
             note = str(row[notes_idx]).strip()
-            item_name = str(row[title_idx]).strip() if len(row) > title_idx else "Record"
             if not note:
                 continue
 

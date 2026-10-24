@@ -81,10 +81,11 @@ def _format_workflow_process_markdown(plan, current_node: str | None = None) -> 
     ]
     unresolved_refs = _get(plan, "unresolved_references") or []
     if unresolved_refs:
-        lines.append("\n⚠️ **Active Evidence References & Disambiguation Constraints**:")
-        for ref in unresolved_refs[:4]:
+        lines.append("\n⚠️ **Active Evidence References & Disambiguation Constraints (MANDATORY BEFORE COMMITTING MUTATIONS)**:")
+        for ref in unresolved_refs[:6]:
             adv = _get(ref, "advice") or _get(ref, "target")
             lines.append(f"• {adv}")
+        lines.append("• Do NOT dispatch notifications, page on-call, or create external records until all unresolved investigations above are completed.")
     tried_list = _get(plan, "tried_from_this_state") or []
     if tried_list:
         lines.append("\n**Past Action Attempts & Observed Consequences from this State**:")

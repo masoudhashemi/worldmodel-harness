@@ -72,8 +72,12 @@ def parse_gemma_calls(text: str) -> tuple[str, list[tuple[str, dict]]]:
                         break
             i += 1
         if end == -1:
-            clean_text_parts.append(text[start:])
-            break
+            if depth > 0:
+                text = text + ("}" * depth)
+                end = len(text) - 1
+            else:
+                clean_text_parts.append(text[start:])
+                break
         args_raw = text[brace_open : end + 1]
         close_tag = "<tool_call|>"
         tag_end = end + 1

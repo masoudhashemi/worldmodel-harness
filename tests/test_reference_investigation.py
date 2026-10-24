@@ -130,6 +130,31 @@ def test_empty_search_does_not_resolve_reference():
     assert len(unresolved2) == 0
 
 
+def test_status_exclusion_reference_detected():
+    scope = Scope(environment="operations", task_id="test_twilio", version="1")
+    queue_ep = Episode(
+        episode_id="e1",
+        task_id=scope.task_id,
+        scope=scope,
+        operation="api_fetch",
+        arguments={"method": "GET", "url": "https://sheets.googleapis.com/v4/spreadsheets/ss_incident_queue/values/ws_queue"},
+        response={
+            "values": [
+                ["Incident Title", "Severity", "Status", "Notes"],
+                ["Auth Service Down", "P1", "Acknowledged", ""],
+            ]
+        },
+        outcome="success",
+    )
+    adapter = make_mock_adapter("Handle incident.", [queue_ep])
+    unresolved = extract_unresolved_references(adapter)
+    assert len(unresolved) == 1
+    assert unresolved[0]["category"] == "status_exclusion"
+    assert "Auth Service Down" in unresolved[0]["advice"]
+    assert "Acknowledged" in unresolved[0]["advice"]
+    assert "do not page" in unresolved[0]["advice"]
+
+
 def test_badge_policy_and_review_hold_detected():
     scope = Scope(environment="operations", task_id="test_badge", version="1")
     meta_ep = Episode(
