@@ -43,6 +43,59 @@ For our current stage, prioritize **environment prediction, explicit unknown sta
 
 This distinction also preserves the design goal: learning reusable environmental knowledge from interactions, rather than hardcoding benchmark-specific identities, exclusions, or business rules.
 
+## Initial offline implementation
+
+`src/worldmodel_harness/experience.py` implements the evidence and structural
+retrieval foundation. `scripts/replay_experience.py` evaluates it using separate
+training and test evidence databases. Neither is connected to actor prompts,
+execution gates, or the online knowledge store.
+
+- Failed and successful environment calls both supply transitions. Harness
+  rejections do not become observations about environment dynamics.
+- Literal scalar instances become variables; repeated values share variables,
+  while distinct badges and array positions remain distinct. Schema field names
+  remain visible. This is not a privacy filter for arbitrary dynamic object keys.
+- State is a bounded history of observations, not a claim that old observations
+  are still current. Omitted history and truncated structures are explicit.
+- REST capability links use endpoint templates from preceding discovery
+  responses. Ambiguous or undiscovered routes abstain. Native tool operations
+  remain separate from REST endpoints.
+- Retrieval separates matching observed structure from mere capability matches.
+  Neither establishes semantic equivalence. Opposite status values can have the
+  same structure; this version does not infer eligibility or encoding rules.
+- Duplicate events do not add support. Conflicting outcomes remain visible even
+  when the returned example count is limited. Counts are observations, not
+  calibrated probabilities or independent causal experiments.
+- Replay builds each query before observing its response, excludes overlapping
+  train/test task instances and events, and never trains on test transitions.
+  It reads only episode records, with input hashes checked afterward.
+
+Example:
+
+```bash
+.venv/bin/python scripts/replay_experience.py \
+  --train runs/<training-run>/evidence.sqlite \
+  --test runs/<held-out-run>/evidence.sqlite \
+  --output runs/<new-output>/replay.json
+```
+
+The first three-task replay used baseline and iteration 1 episodes as training
+and iteration 3 as held-out episodes from `iterative-eval-post-shadow`. It stored
+90 transitions; 51 of 55 test calls could be represented and 50 retrieved
+historical examples. Only 7 calls had matching observed structure with support
+from at least two training task instances (4 searches and 3 fetches). Their
+API-outcome Brier score was zero, which does **not** demonstrate semantic state
+prediction, task improvement, or general calibration. The artifact is
+`runs/offline-experience-three-task/replay.json`.
+
+Next: extract evidence-linked semantic predicates, retain unknown and conflicting
+conditions, and measure whether those predicates distinguish outcome-relevant
+states on held-out trajectories. Preconditions inferred from recovery remain
+hypotheses until evidence distinguishes competing explanations. Policy content
+reuse additionally needs scope and freshness checks. CQL/IQL-style policy
+optimization remains deferred because this implementation has no trustworthy
+task-reward signal.
+
 ## Evidence from the current harness
 
 In the staged completion-auditor retry recorded in `runs/shadow-staged-completion-retry`, **0/3 audits completed validation**, and semantic misses persisted. Those outputs should remain noisy candidate labels, not the reward authority for the next learning loop.

@@ -371,6 +371,13 @@ class KnowledgeClient:
                 active_st = selection["workflow_plan_active_step"]
                 frontier_note = f"\n[State Frontier: Active step {active_st}. Dynamic frontier updated with {len(newly_injected)} contracts.]"
                 content += frontier_note
+            if self.settings.operational or self.settings.semantic_learning:
+                from .reference_investigation import advisory_reference_context
+
+                ref_guidance = advisory_reference_context(self.adapter, max_chars=1200)
+                if ref_guidance:
+                    content += "\n\n" + ref_guidance
+                    selection["reference_guidance_chars"] = len(ref_guidance)
             selection["injected_chars"] = len(content)
             self.adapter.ledger.compute_seconds += perf_counter() - started
             self.retrievals.append(
