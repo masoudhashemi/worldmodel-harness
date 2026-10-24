@@ -22,12 +22,30 @@ def _is_read(episode: Any) -> bool:
     )
 
 
+def _is_empty_response(resp: Any) -> bool:
+    if not resp:
+        return True
+    if isinstance(resp, dict):
+        if "messages" in resp and not resp["messages"]:
+            return True
+        if resp.get("resultSizeEstimate") == 0:
+            return True
+        if "values" in resp and len(resp.get("values", [])) <= 1:
+            return True
+        if "items" in resp and not resp["items"]:
+            return True
+    elif isinstance(resp, list) and not resp:
+        return True
+    return False
+
+
 def _already_inspected(
     target_terms: set[str],
     episodes: list[Any],
     *,
     exclude_episode_id: str | None = None,
     require_in_arguments: bool = False,
+    require_in_response: bool = False,
 ) -> bool:
     """Check if any successful read episode already inspected the target terms."""
     for ep in episodes:
@@ -35,12 +53,18 @@ def _already_inspected(
             continue
         if getattr(ep, "outcome", "") != "success" or not _is_read(ep):
             continue
+        resp = getattr(ep, "response", {}) or {}
+        if _is_empty_response(resp):
+            continue
         args_text = json.dumps(getattr(ep, "arguments", {})).lower()
+        resp_text = json.dumps(resp).lower()
         if require_in_arguments:
             if any(term in args_text for term in target_terms if len(term) >= 3):
                 return True
+        elif require_in_response:
+            if any(term in resp_text for term in target_terms if len(term) >= 3):
+                return True
         else:
-            resp_text = json.dumps(getattr(ep, "response", {})).lower()
             combined = args_text + " " + resp_text
             if any(term in combined for term in target_terms if len(term) >= 3):
                 return True
@@ -182,6 +206,10 @@ def extract_unresolved_references(adapter: Any) -> list[dict[str, str]]:
             )
             if m_see:
                 ext_target = m_see.group(1).strip()
+                is_email = any(
+                    k in ext_target.lower() or k in note.lower()
+                    for k in ("email", "mail", "inbox", "message")
+                )
                 target_words = set(re.findall(r"\b[A-Za-z0-9_-]+\b", ext_target.lower())) - {
                     "the", "a", "an", "and", "or", "for", "to", "in", "at", "see", "check"
                 }
@@ -189,15 +217,30 @@ def extract_unresolved_references(adapter: Any) -> list[dict[str, str]]:
                     w for w in target_words
                     if len(w) >= 5 and w not in {"email", "emails", "message", "messages", "team", "inbox"}
                 }
-                check_terms = {ext_target.lower()} | distinctive_words
-                if not _already_inspected(check_terms, all_episodes, exclude_episode_id=source_ep_id):
+                check_terms = {ext_target.lower(), item_name.lower()} | distinctive_words
+                if not _already_inspected(
+                    check_terms,
+                    all_episodes,
+                    exclude_episode_id=source_ep_id,
+                    require_in_response=is_email,
+                ):
                     key = f"see_{item_name}_{ext_target}"
                     if key not in seen_keys:
                         seen_keys.add(key)
+                        if is_email:
+                            advice = (
+                                f"Record '{item_name}' notes '{note}' — search Gmail for '{item_name}' "
+                                f"or check unread inbox messages to determine true status/severity before committing."
+                            )
+                        else:
+                            advice = (
+                                f"Record '{item_name}' notes '{note}' — inspect {ext_target} "
+                                f"to determine true status/severity before committing."
+                            )
                         unresolved.append({
                             "category": "external_investigation",
                             "target": item_name,
-                            "advice": f"Record '{item_name}' notes '{note}' — inspect {ext_target} to determine true status/severity before committing.",
+                            "advice": advice,
                         })
 
             # Check review hold / reference code (e.g. SEC-2026-015 review)

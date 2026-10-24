@@ -74,6 +74,62 @@ def test_twilio_incident_references_detected_and_resolved():
     assert "Database Cluster Failover" in advice2
 
 
+def test_empty_search_does_not_resolve_reference():
+    scope = Scope(environment="operations", task_id="test_twilio", version="1")
+    queue_ep = Episode(
+        episode_id="e1",
+        task_id=scope.task_id,
+        scope=scope,
+        operation="api_fetch",
+        arguments={"method": "GET", "url": "https://sheets.googleapis.com/v4/spreadsheets/ss_incident_queue/values/ws_queue"},
+        response={
+            "values": [
+                ["Incident Title", "Severity", "Status", "Notes"],
+                ["API Gateway Timeout", "P2", "New", "see monitoring team email"],
+            ]
+        },
+        outcome="success",
+    )
+
+    # Simulate an empty search (e.g. query returned no messages)
+    empty_search_ep = Episode(
+        episode_id="e2",
+        task_id=scope.task_id,
+        scope=scope,
+        operation="api_search",
+        arguments={"query": "from:monitoring team"},
+        response={"messages": [], "resultSizeEstimate": 0},
+        outcome="success",
+    )
+
+    adapter = make_mock_adapter("Handle incident.", [queue_ep, empty_search_ep])
+    unresolved = extract_unresolved_references(adapter)
+
+    # Empty search MUST NOT resolve the reference
+    assert len(unresolved) == 1
+    assert unresolved[0]["category"] == "external_investigation"
+    assert "API Gateway Timeout" in unresolved[0]["advice"]
+    assert "search Gmail for 'API Gateway Timeout'" in unresolved[0]["advice"]
+
+    # Now simulate finding the message and fetching its body
+    detail_ep = Episode(
+        episode_id="e3",
+        task_id=scope.task_id,
+        scope=scope,
+        operation="api_fetch",
+        arguments={"method": "GET", "url": "https://gmail.googleapis.com/gmail/v1/users/me/messages/msg_001"},
+        response={
+            "id": "msg_001",
+            "from": "monitoring@company.example.com",
+            "body_plain": "Severity upgrade: API Gateway Timeout -> P1",
+        },
+        outcome="success",
+    )
+    adapter2 = make_mock_adapter("Handle incident.", [queue_ep, empty_search_ep, detail_ep])
+    unresolved2 = extract_unresolved_references(adapter2)
+    assert len(unresolved2) == 0
+
+
 def test_badge_policy_and_review_hold_detected():
     scope = Scope(environment="operations", task_id="test_badge", version="1")
     meta_ep = Episode(
