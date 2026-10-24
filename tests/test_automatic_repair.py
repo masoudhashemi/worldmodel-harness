@@ -263,3 +263,22 @@ def test_normalize_assistant_tool_calls_repairs_jira_confluence_gmail():
     gmail_body = json.loads(json.loads(norm_gmail.blocks[0].arguments)["action"]["arguments"]["body"])
     decoded = base64.urlsafe_b64decode(gmail_body["raw"].encode()).decode()
     assert "Alex Rivera" in decoded
+
+    # 4. Twilio SMS timestamp preservation
+    sms_call = ToolCall(
+        tool_call_id="c_sms",
+        name="execute_decision",
+        arguments=json.dumps({
+            "action": {
+                "tool": "api_fetch",
+                "arguments": {
+                    "method": "POST",
+                    "url": "https://api.twilio.com/2010-04-01/Accounts/AC_ACCOUNT_SID/Messages.json",
+                    "body": json.dumps({"To": "+15557778888", "From": "+15550001111", "Body": "P1 Incident Alert: API Gateway Timeout."}),
+                }
+            }
+        })
+    )
+    norm_sms = normalize_assistant_tool_calls(AssistantMessage(blocks=[sms_call]))
+    sms_body = json.loads(json.loads(norm_sms.blocks[0].arguments)["action"]["arguments"]["body"])
+    assert "2026-01-29T03:30:00Z" in sms_body["Body"]
