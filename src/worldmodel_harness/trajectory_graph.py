@@ -89,6 +89,8 @@ SERVICE_SYNONYMS = {
     "quickbooks": "quickbooks",
     "docusign": "docusign",
     "envelope": "docusign",
+    "jira": "jira",
+    "confluence": "confluence",
 }
 
 

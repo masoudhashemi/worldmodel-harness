@@ -178,3 +178,21 @@ def test_normalize_assistant_tool_calls_repairs_split_url_and_body():
     assert action["arguments"]["url"] == "https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
     assert action["arguments"]["body"] == '{"raw": "RnJvbTog..."}'
     assert "https" not in parsed
+
+    # Test body directly on action with },tool:
+    args2 = {
+        "action": {
+            "arguments": {
+                "method": "POST",
+                "url": "https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
+            },
+            "body": '{"raw": "RnJvbTog..."},tool:'
+        }
+    }
+    tc2 = ToolCall(tool_call_id="c2", name="execute_decision", arguments=json.dumps(args2))
+    normalized2 = normalize_assistant_tool_calls(AssistantMessage(blocks=[tc2]))
+    repaired_tc2 = normalized2.blocks[0]
+    parsed2 = json.loads(repaired_tc2.arguments)
+    action2 = parsed2["action"]
+    assert action2["arguments"]["body"] == '{"raw": "RnJvbTog..."}'
+    assert "body" not in action2

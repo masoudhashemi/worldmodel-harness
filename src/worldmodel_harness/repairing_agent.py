@@ -111,15 +111,17 @@ def normalize_assistant_tool_calls(msg):
                             if "method" not in action_args:
                                 action_args["method"] = "POST"
 
-                    # Repair malformed body with trailing delimiter
-                    if isinstance(action_args, dict) and "body" in action_args:
-                        body_val = str(action_args["body"])
-                        for marker in ("},method:", "},url:", "},params:"):
-                            if marker in body_val:
-                                action_args["body"] = body_val.split(marker)[0] + "}"
-                                key = marker[2:-1]
-                                if key == "method" and "method" not in action_args:
-                                    action_args["method"] = "POST"
+                    # Repair misplaced body on action or malformed trailing delimiter
+                    for k in ("body",):
+                        target = action_args if k in action_args else action
+                        if k in target:
+                            val = str(target[k])
+                            for marker in ("},tool:", "},method:", "},url:", "},params:", "},headers:"):
+                                if marker in val:
+                                    val = val.split(marker)[0] + "}"
+                            action_args[k] = val
+                            if target is action:
+                                action.pop(k, None)
 
                     if action.get("tool") in ("finish", "finish_task"):
                         finish_args = action.get("arguments") or {}
