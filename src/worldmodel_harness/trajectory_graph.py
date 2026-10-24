@@ -596,9 +596,19 @@ def compile_trajectory_graph(
 
             param_summary = ""
             if isinstance(args, dict):
+                from .experience import Symbolizer
+                sym = Symbolizer()
                 for p_key in ("params", "body", "query", "ranges"):
                     if p_key in args and args[p_key]:
-                        param_summary = str(args[p_key])[:100]
+                        try:
+                            val = args[p_key]
+                            if isinstance(val, str) and (val.startswith("{") or val.startswith("[")):
+                                import json
+                                val = json.loads(val)
+                            snap = sym.snapshot(val)
+                            param_summary = json.dumps(snap.structure)[:120]
+                        except Exception:
+                            param_summary = str(args[p_key])[:100]
                         break
 
             outcome = ep.outcome

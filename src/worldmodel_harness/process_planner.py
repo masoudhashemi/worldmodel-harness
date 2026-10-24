@@ -48,6 +48,15 @@ class WorkflowStep(BaseModel):
     status: str = "pending"  # "completed", "active", "pending"
 
 
+class DownstreamConsequence(BaseModel):
+    """Downstream consequence or error from reaching this state in previous trials."""
+    action: str
+    outcome: str
+    result: str
+    lesson: str
+    next_state: str | None = None
+
+
 class TriedActionSummary(BaseModel):
     """Summary of an action previously attempted from this state and its outcome."""
     action: str
@@ -55,6 +64,8 @@ class TriedActionSummary(BaseModel):
     result: str
     lesson: str
     count: int = 1
+    next_state: str | None = None
+    downstream_consequences: list[DownstreamConsequence] = Field(default_factory=list)
 
 
 class SolutionPath(BaseModel):
@@ -121,7 +132,7 @@ def extract_workflow_plan(
     trajectory_graph: TrajectoryGraph | None = None,
     current_node: str | None = None,
     completed_nodes: set[str] | None = None,
-    successful_transition_graph: bool = False,
+    successful_transition_graph: bool = True,
 ) -> WorkflowProcess | None:
     """Extract an operational workflow process plan covering task intent from the trajectory graph."""
     if not query or not query.strip():
@@ -309,6 +320,27 @@ def extract_workflow_plan(
             act_label += f" {att.url}"
         if att.parameters_summary:
             act_label += f" ({att.parameters_summary})"
+
+        downstream: list[DownstreamConsequence] = []
+        if att.target_node and att.outcome == "success":
+            for d_att in graph.node_attempts.get(att.target_node, [])[:3]:
+                d_label = d_att.action_type
+                if d_att.method:
+                    d_label += f" {d_att.method}"
+                if d_att.url:
+                    d_label += f" {d_att.url}"
+                if d_att.parameters_summary:
+                    d_label += f" ({d_att.parameters_summary})"
+                downstream.append(
+                    DownstreamConsequence(
+                        action=d_label.strip(),
+                        outcome=d_att.outcome,
+                        result=d_att.result_summary,
+                        lesson=d_att.lesson,
+                        next_state=d_att.target_node,
+                    )
+                )
+
         tried_summaries.append(
             TriedActionSummary(
                 action=act_label.strip(),
@@ -316,6 +348,8 @@ def extract_workflow_plan(
                 result=att.result_summary,
                 lesson=att.lesson,
                 count=att.count,
+                next_state=att.target_node if att.outcome == "success" else None,
+                downstream_consequences=downstream,
             )
         )
 

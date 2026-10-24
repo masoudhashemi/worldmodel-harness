@@ -277,3 +277,29 @@ def test_workflow_plan_includes_tried_actions_and_potential_solution_paths(plan_
     assert "exploration_guidance" in wf
 
 
+def test_state_transition_memory_and_downstream_branching(plan_store):
+    store, scope = plan_store
+    query = "Check the spreadsheet for bounces, remove subscribers from Mailchimp, and email ops."
+
+    # Add an error episode from sheets.spreadsheets.values.get to test downstream branching
+    err_ep = Episode(
+        task_id="task_beta",
+        scope=scope,
+        operation="api_fetch",
+        arguments={"method": "GET", "url": "https://sheets.googleapis.com/v4/spreadsheets/ss_bounces/values/invalid!range"},
+        response={"error": {"message": "Unable to parse range: invalid!range"}},
+        outcome="error",
+    )
+    store.append_episode(err_ep)
+
+    plan = extract_workflow_plan(store, scope, query, current_node="google_drive.files.list")
+    assert plan is not None
+
+    from worldmodel_harness.context import _format_workflow_process_markdown
+    md = _format_workflow_process_markdown(plan, current_node="google_drive.files.list")
+    assert "### 🗺️ Empirical World Model — State Graph & Historical Transitions" in md
+    assert "google_drive.files.list" in md
+    assert "Recommended Transition Path" in md
+
+
+

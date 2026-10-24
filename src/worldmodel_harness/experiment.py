@@ -371,6 +371,15 @@ class KnowledgeClient:
                 active_st = selection["workflow_plan_active_step"]
                 frontier_note = f"\n[State Frontier: Active step {active_st}. Dynamic frontier updated with {len(newly_injected)} contracts.]"
                 content += frontier_note
+            if selection.get("workflow_plan"):
+                from .context import _format_workflow_process_markdown
+
+                md_transitions = _format_workflow_process_markdown(
+                    selection["workflow_plan"], current_node=current_node
+                )
+                if md_transitions:
+                    content += "\n\n" + md_transitions
+                    selection["workflow_plan_md_chars"] = len(md_transitions)
             if self.settings.operational or self.settings.semantic_learning:
                 from .reference_investigation import advisory_reference_context
 

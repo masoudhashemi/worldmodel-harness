@@ -63,6 +63,43 @@ def select_procedures(
     ], rejected
 
 
+def _format_workflow_process_markdown(plan, current_node: str | None = None) -> str:
+    """Format an empirical, graph-grounded state transition view for the agent."""
+    if not plan:
+        return ""
+    lines = [
+        "### 🗺️ Empirical World Model — State Graph & Historical Transitions",
+        f"**Current State**: `{current_node or 'initial_state'}`",
+        f"**Active Objective**: `{plan.goal}`",
+    ]
+    if plan.tried_from_this_state:
+        lines.append("\n**Past Action Attempts & Observed Consequences from this State**:")
+        for t in plan.tried_from_this_state[:4]:
+            icon = "✅" if t.outcome == "success" else "❌"
+            action_desc = f"{icon} Action: `{t.action}` (observed {t.count}x)"
+            lines.append(f"• {action_desc}")
+            lines.append(f"  - Outcome: **{t.outcome}** — {t.result}")
+            if t.lesson:
+                lines.append(f"  - Lesson / Error: {t.lesson}")
+            if t.next_state:
+                lines.append(f"  - Reached Next State: `[{t.next_state}]`")
+            if getattr(t, "downstream_consequences", None):
+                lines.append(f"  - Downstream Possibilities from `[{t.next_state or 'next_state'}]`:")
+                for dc in t.downstream_consequences[:3]:
+                    d_icon = "✅" if dc.outcome == "success" else "❌"
+                    lines.append(f"    * {d_icon} Action `{dc.action}` -> **{dc.outcome}** ({dc.result})")
+                    if dc.lesson:
+                        lines.append(f"      Feedback: {dc.lesson}")
+    if plan.potential_solution_paths:
+        rec_path = plan.potential_solution_paths[0]
+        lines.append(f"\n**Recommended Transition Path** (Bayesian Thompson Certainty: {rec_path.certainty:.2f}):")
+        lines.append(f"• `{' -> '.join(rec_path.steps)}`")
+        if len(plan.potential_solution_paths) > 1:
+            alt = plan.potential_solution_paths[1]
+            lines.append(f"• Alternative ({alt.path_id}): `{' -> '.join(alt.steps)}`")
+    return "\n".join(lines)
+
+
 def render_context(
     working: WorkingGraph,
     procedures: list,
@@ -177,6 +214,22 @@ def render_context(
                         "result": t.result,
                         "lesson": t.lesson,
                         "observed_count": t.count,
+                        **({"next_state": t.next_state} if t.next_state else {}),
+                        **(
+                            {
+                                "downstream_consequences": [
+                                    {
+                                        "action": dc.action,
+                                        "outcome": dc.outcome,
+                                        "result": dc.result,
+                                        "lesson": dc.lesson,
+                                    }
+                                    for dc in t.downstream_consequences
+                                ]
+                            }
+                            if getattr(t, "downstream_consequences", None)
+                            else {}
+                        ),
                     }
                     for t in plan.tried_from_this_state
                 ]
@@ -280,6 +333,7 @@ def render_context(
         "workflow_plan_active_step": plan.active_step_index if plan and content else 0,
         "workflow_plan_updated": plan.path_updated if plan and content else False,
         "workflow_plan_goal": plan.goal if plan and content else None,
+        "workflow_plan": plan if plan and content else None,
     }
 
 
