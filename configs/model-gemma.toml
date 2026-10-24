@@ -6,4 +6,4 @@ api_key_env = "TOOLKIT_TOKEN"
 max_tokens = 12000
 context_window_tokens = 262144
 temperature = 0.0
-timeout_seconds = 120.0
+timeout_seconds = 600.0

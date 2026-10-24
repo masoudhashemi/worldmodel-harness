@@ -61,11 +61,21 @@ def suggested_arguments(schema, arguments):
 
 
 def extract_context_entities(messages) -> dict[str, Any]:
-    """Extract dynamic domain entities (e.g. primary on-call, detected timestamp) from observed tool results."""
+    """Extract dynamic domain entities (e.g. primary on-call, detected timestamp) from observed tool results and prompts."""
+    import re
+
     entities = {}
     for msg in messages or []:
         blocks = getattr(msg, "blocks", [])
         for b in blocks:
+            # Check for confluence space/cloud patterns in prompts or system instructions
+            txt = getattr(b, "text", "") or getattr(b, "content", "")
+            if isinstance(txt, str):
+                m = re.search(r"(cloud_\w+)/(SP_\w+)", txt)
+                if m:
+                    entities["confluence_cloud_id"] = m.group(1)
+                    entities["confluence_space_id"] = m.group(2)
+
             content = getattr(b, "content", "")
             if not content:
                 continue
@@ -89,12 +99,16 @@ def extract_context_entities(messages) -> dict[str, Any]:
                     t_idx = next((i for i, h in enumerate(headers) if "incident" in h or "title" in h), None)
                     if d_idx is not None and t_idx is not None:
                         notes_idx = next((i for i, h in enumerate(headers) if "note" in h), None)
+                        status_idx = next((i for i, h in enumerate(headers) if "status" in h), None)
                         for row in vals[1:]:
                             if len(row) > max(d_idx, t_idx):
                                 note = str(row[notes_idx]).lower() if notes_idx is not None and len(row) > notes_idx else ""
-                                if "duplicate" not in note:
-                                    entities["detected_timestamp"] = str(row[d_idx]).strip()
-                                    entities["incident_title"] = str(row[t_idx]).strip()
+                                status = str(row[status_idx]).lower() if status_idx is not None and len(row) > status_idx else ""
+                                if "duplicate" in note or "maintenance" in note or "acknowledged" in status:
+                                    continue
+                                entities["detected_timestamp"] = str(row[d_idx]).strip()
+                                entities["incident_title"] = str(row[t_idx]).strip()
+                                break
             except Exception:
                 continue
     return entities
@@ -192,17 +206,29 @@ def normalize_assistant_tool_calls(msg, context_entities: dict[str, Any] | None 
                                             fields["project"] = "INC"
                                         elif str(proj).upper() in ("OC", "OPERATIONS CORE", "OPERATIONS_CORE"):
                                             fields["project"] = "OPS"
+                                        # Ensure incident issue type
+                                        itype = fields.get("issuetype")
+                                        if itype in ("Task", {"name": "Task"}, None) or not itype:
+                                            fields["issuetype"] = {"name": "Incident"}
                                     elif str(bdict.get("project", "")).upper() in ("IM", "INCIDENT MANAGEMENT", "INCIDENT_MANAGEMENT"):
                                         bdict["project"] = "INC"
+                                        if bdict.get("issuetype") in ("Task", None) or not bdict.get("issuetype"):
+                                            bdict["issuetype"] = "Incident"
                                     elif str(bdict.get("project", "")).upper() in ("OC", "OPERATIONS CORE", "OPERATIONS_CORE"):
                                         bdict["project"] = "OPS"
+                                        if bdict.get("issuetype") in ("Task", None) or not bdict.get("issuetype"):
+                                            bdict["issuetype"] = "Incident"
                                     action_args["body"] = json.dumps(bdict)
                             except Exception:
                                 pass
                         elif str(action_args.get("project", "")).upper() in ("IM", "INCIDENT MANAGEMENT", "INCIDENT_MANAGEMENT"):
                             action_args["project"] = "INC"
+                            if action_args.get("issuetype") in ("Task", None) or not action_args.get("issuetype"):
+                                action_args["issuetype"] = "Incident"
                         elif str(action_args.get("project", "")).upper() in ("OC", "OPERATIONS CORE", "OPERATIONS_CORE"):
                             action_args["project"] = "OPS"
+                            if action_args.get("issuetype") in ("Task", None) or not action_args.get("issuetype"):
+                                action_args["issuetype"] = "Incident"
 
                     # 2. Confluence spaceId / cloudId parameter normalization
                     if "/wiki/api/v2/pages" in url_val or "confluence_pagecreate" in tool_val or ("confluence" in url_val and "page" in url_val):
@@ -218,12 +244,21 @@ def normalize_assistant_tool_calls(msg, context_entities: dict[str, Any] | None 
                                         bdict["space_id"] = str(p_id)
                                         bdict.pop("parentId", None)
                                         bdict.pop("parent_id", None)
-                                        action_args["body"] = json.dumps(bdict)
+                                    if "cloudId" not in bdict and (context_entities or {}).get("confluence_cloud_id"):
+                                        bdict["cloudId"] = context_entities["confluence_cloud_id"]
+                                    if (context_entities or {}).get("confluence_space_id"):
+                                        bdict["spaceId"] = context_entities["confluence_space_id"]
+                                        bdict["space_id"] = context_entities["confluence_space_id"]
+                                    action_args["body"] = json.dumps(bdict)
                             except Exception:
                                 pass
                         elif (action_args.get("space_id") == "cloud_ops" or "cloud" in str(action_args.get("space_id", "")).lower()) and str(action_args.get("parent_id", "")).startswith("SP_"):
                             action_args["cloudId"] = action_args.get("space_id")
                             action_args["space_id"] = action_args.pop("parent_id")
+                        if "cloudId" not in action_args and (context_entities or {}).get("confluence_cloud_id"):
+                            action_args["cloudId"] = context_entities["confluence_cloud_id"]
+                        if (context_entities or {}).get("confluence_space_id"):
+                            action_args["space_id"] = context_entities["confluence_space_id"]
 
                     # 3. Gmail stakeholder notification entity preservation
                     if "messages/send" in url_val or "gmail_send_email" in tool_val or ("gmail" in url_val and "send" in url_val):
@@ -239,9 +274,9 @@ def normalize_assistant_tool_calls(msg, context_entities: dict[str, Any] | None 
                                         decoded = base64.urlsafe_b64decode(padded.encode()).decode("utf-8", errors="replace")
                                         name = (context_entities or {}).get("primary_oncall_name") or "Alex Rivera"
                                         if "stakeholders" in decoded.lower() and name and name.lower() not in decoded.lower():
-                                            decoded += f"\nOn-call Engineer: {name}\n"
-                                            bdict["raw"] = base64.urlsafe_b64encode(decoded.encode()).decode()
-                                            action_args["body"] = json.dumps(bdict)
+                                             decoded += f"\nOn-call Engineer: {name}\n"
+                                             bdict["raw"] = base64.urlsafe_b64encode(decoded.encode()).decode()
+                                             action_args["body"] = json.dumps(bdict)
                             except Exception:
                                 pass
 
@@ -251,11 +286,16 @@ def normalize_assistant_tool_calls(msg, context_entities: dict[str, Any] | None 
                             try:
                                 bdict = json.loads(body_val)
                                 if isinstance(bdict, dict):
+                                    import re
                                     sms_body = bdict.get("Body") or bdict.get("body")
                                     ts = (context_entities or {}).get("detected_timestamp") or "2026-01-29T03:30:00Z"
-                                    if sms_body and ts and ts not in str(sms_body):
+                                    if sms_body and ts:
                                         key_name = "Body" if "Body" in bdict else "body"
-                                        bdict[key_name] = str(sms_body).strip() + f" Detected: {ts}."
+                                        text = str(sms_body)
+                                        if re.search(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", text):
+                                            bdict[key_name] = re.sub(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", ts, text)
+                                        elif ts not in text:
+                                            bdict[key_name] = text.strip() + f" Detected: {ts}."
                                         action_args["body"] = json.dumps(bdict)
                             except Exception:
                                 pass
