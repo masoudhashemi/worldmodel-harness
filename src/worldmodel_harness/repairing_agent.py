@@ -86,7 +86,8 @@ def extract_context_entities(messages) -> dict[str, Any]:
                 entities["confluence_space_id"] = m.group(2)
 
             try:
-                data = json.loads(txt)
+                json_txt = txt.split("\nTask evidence references:")[0].strip()
+                data = json.loads(json_txt)
                 if not isinstance(data, dict):
                     continue
                 vals = data.get("values", [])
@@ -264,10 +265,26 @@ def normalize_assistant_tool_calls(msg, context_entities: dict[str, Any] | None 
                         elif (action_args.get("space_id") == "cloud_ops" or "cloud" in str(action_args.get("space_id", "")).lower()) and str(action_args.get("parent_id", "")).startswith("SP_"):
                             action_args["cloudId"] = action_args.get("space_id")
                             action_args["space_id"] = action_args.pop("parent_id")
-                        if "cloudId" not in action_args and (context_entities or {}).get("confluence_cloud_id"):
-                            action_args["cloudId"] = context_entities["confluence_cloud_id"]
-                        if (context_entities or {}).get("confluence_space_id"):
-                            action_args["space_id"] = context_entities["confluence_space_id"]
+                        # Strip extra inputs from api_fetch action_args and preserve in body
+                        if "cloudId" in action_args:
+                            c_id = action_args.pop("cloudId")
+                            try:
+                                bdict = json.loads(action_args.get("body", "{}"))
+                                if isinstance(bdict, dict):
+                                    bdict.setdefault("cloudId", c_id)
+                                    action_args["body"] = json.dumps(bdict)
+                            except Exception:
+                                pass
+                        if "space_id" in action_args:
+                            s_id = action_args.pop("space_id")
+                            try:
+                                bdict = json.loads(action_args.get("body", "{}"))
+                                if isinstance(bdict, dict):
+                                    bdict.setdefault("spaceId", s_id)
+                                    bdict.setdefault("space_id", s_id)
+                                    action_args["body"] = json.dumps(bdict)
+                            except Exception:
+                                pass
 
                     # 3. Gmail stakeholder notification entity preservation
                     if "messages/send" in url_val or "gmail_send_email" in tool_val or ("gmail" in url_val and "send" in url_val):
