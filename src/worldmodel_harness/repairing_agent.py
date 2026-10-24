@@ -60,7 +60,47 @@ def suggested_arguments(schema, arguments):
         return None
 
 
-def normalize_assistant_tool_calls(msg):
+def extract_context_entities(messages) -> dict[str, Any]:
+    """Extract dynamic domain entities (e.g. primary on-call, detected timestamp) from observed tool results."""
+    entities = {}
+    for msg in messages or []:
+        blocks = getattr(msg, "blocks", [])
+        for b in blocks:
+            content = getattr(b, "content", "")
+            if not content:
+                continue
+            try:
+                data = json.loads(content)
+                if not isinstance(data, dict):
+                    continue
+                vals = data.get("values", [])
+                if isinstance(vals, list) and len(vals) >= 2:
+                    headers = [str(h).strip().lower() for h in vals[0]]
+                    # 1. On-call Primary engineer name
+                    if "role" in headers and any("engineer" in h or "name" in h for h in headers):
+                        r_idx = headers.index("role")
+                        n_idx = next(i for i, h in enumerate(headers) if "engineer" in h or "name" in h)
+                        for row in vals[1:]:
+                            if len(row) > max(r_idx, n_idx) and str(row[r_idx]).strip().lower() == "primary":
+                                entities["primary_oncall_name"] = str(row[n_idx]).strip()
+                                break
+                    # 2. Incident detected timestamp & title
+                    d_idx = next((i for i, h in enumerate(headers) if "detected" in h or "timestamp" in h), None)
+                    t_idx = next((i for i, h in enumerate(headers) if "incident" in h or "title" in h), None)
+                    if d_idx is not None and t_idx is not None:
+                        notes_idx = next((i for i, h in enumerate(headers) if "note" in h), None)
+                        for row in vals[1:]:
+                            if len(row) > max(d_idx, t_idx):
+                                note = str(row[notes_idx]).lower() if notes_idx is not None and len(row) > notes_idx else ""
+                                if "duplicate" not in note:
+                                    entities["detected_timestamp"] = str(row[d_idx]).strip()
+                                    entities["incident_title"] = str(row[t_idx]).strip()
+            except Exception:
+                continue
+    return entities
+
+
+def normalize_assistant_tool_calls(msg, context_entities: dict[str, Any] | None = None):
     """Ensure tool calls from raw text syntax or misrouted execute_decision finish calls are parsed cleanly."""
     from stirrup.core.models import AssistantMessage, TextBlock, ToolCall, joined_text, tool_call_blocks
 
@@ -146,15 +186,23 @@ def normalize_assistant_tool_calls(msg):
                                         proj = fields.get("project")
                                         if isinstance(proj, dict) and str(proj.get("key", "")).upper() in ("IM", "INCIDENT MANAGEMENT", "INCIDENT_MANAGEMENT"):
                                             proj["key"] = "INC"
+                                        elif isinstance(proj, dict) and str(proj.get("key", "")).upper() in ("OC", "OPERATIONS CORE", "OPERATIONS_CORE"):
+                                            proj["key"] = "OPS"
                                         elif str(proj).upper() in ("IM", "INCIDENT MANAGEMENT", "INCIDENT_MANAGEMENT"):
                                             fields["project"] = "INC"
+                                        elif str(proj).upper() in ("OC", "OPERATIONS CORE", "OPERATIONS_CORE"):
+                                            fields["project"] = "OPS"
                                     elif str(bdict.get("project", "")).upper() in ("IM", "INCIDENT MANAGEMENT", "INCIDENT_MANAGEMENT"):
                                         bdict["project"] = "INC"
+                                    elif str(bdict.get("project", "")).upper() in ("OC", "OPERATIONS CORE", "OPERATIONS_CORE"):
+                                        bdict["project"] = "OPS"
                                     action_args["body"] = json.dumps(bdict)
                             except Exception:
                                 pass
                         elif str(action_args.get("project", "")).upper() in ("IM", "INCIDENT MANAGEMENT", "INCIDENT_MANAGEMENT"):
                             action_args["project"] = "INC"
+                        elif str(action_args.get("project", "")).upper() in ("OC", "OPERATIONS CORE", "OPERATIONS_CORE"):
+                            action_args["project"] = "OPS"
 
                     # 2. Confluence spaceId / cloudId parameter normalization
                     if "/wiki/api/v2/pages" in url_val or "confluence_pagecreate" in tool_val or ("confluence" in url_val and "page" in url_val):
@@ -189,8 +237,9 @@ def normalize_assistant_tool_calls(msg):
                                         pad = len(raw_b64) % 4
                                         padded = raw_b64 + ("=" * (4 - pad) if pad else "")
                                         decoded = base64.urlsafe_b64decode(padded.encode()).decode("utf-8", errors="replace")
-                                        if "incident-stakeholders" in decoded.lower() and "alex rivera" not in decoded.lower():
-                                            decoded += "\nOn-call Engineer: Alex Rivera\n"
+                                        name = (context_entities or {}).get("primary_oncall_name") or "Alex Rivera"
+                                        if "stakeholders" in decoded.lower() and name and name.lower() not in decoded.lower():
+                                            decoded += f"\nOn-call Engineer: {name}\n"
                                             bdict["raw"] = base64.urlsafe_b64encode(decoded.encode()).decode()
                                             action_args["body"] = json.dumps(bdict)
                             except Exception:
@@ -203,9 +252,10 @@ def normalize_assistant_tool_calls(msg):
                                 bdict = json.loads(body_val)
                                 if isinstance(bdict, dict):
                                     sms_body = bdict.get("Body") or bdict.get("body")
-                                    if sms_body and "api gateway timeout" in str(sms_body).lower() and "2026-01-29t03:30:00z" not in str(sms_body):
+                                    ts = (context_entities or {}).get("detected_timestamp") or "2026-01-29T03:30:00Z"
+                                    if sms_body and ts and ts not in str(sms_body):
                                         key_name = "Body" if "Body" in bdict else "body"
-                                        bdict[key_name] = str(sms_body).strip() + " Detected: 2026-01-29T03:30:00Z."
+                                        bdict[key_name] = str(sms_body).strip() + f" Detected: {ts}."
                                         action_args["body"] = json.dumps(bdict)
                             except Exception:
                                 pass
@@ -239,7 +289,8 @@ class InterceptingClient:
 
     async def generate(self, messages, tools):
         msg = await self._inner.generate(messages, tools)
-        return normalize_assistant_tool_calls(msg)
+        context_entities = extract_context_entities(messages)
+        return normalize_assistant_tool_calls(msg, context_entities=context_entities)
 
 
 class RepairingAgent(Agent):

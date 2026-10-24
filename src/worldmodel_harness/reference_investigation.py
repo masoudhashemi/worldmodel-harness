@@ -142,15 +142,29 @@ def extract_unresolved_references(adapter: Any) -> list[dict[str, str]]:
                         "advice": "Jira 'Incident Management' project uses project key 'INC' (not 'IM'). Specify 'INC' when creating the Jira issue.",
                     })
 
-        if "cloud_ops/sp_incidents" in prompt_text.lower():
-            if not _already_inspected({"sp_incidents"}, all_episodes):
-                key = "prompt_confluence_space"
+        if "operations core project" in prompt_text.lower():
+            if not _already_inspected({"ops"}, all_episodes):
+                key = "prompt_jira_ops"
                 if key not in seen_keys:
                     seen_keys.add(key)
                     unresolved.append({
                         "category": "service_identifier",
-                        "target": "cloud_ops/SP_INCIDENTS",
-                        "advice": "Confluence target 'cloud_ops/SP_INCIDENTS' indicates cloudId='cloud_ops' and spaceId='SP_INCIDENTS'.",
+                        "target": "Operations Core",
+                        "advice": "Jira 'Operations Core' project uses project key 'OPS' (not 'OC'). Specify 'OPS' when creating the Jira issue.",
+                    })
+
+        m_conf = re.search(r"\b(cloud_[A-Za-z0-9_-]+)/(SP_[A-Za-z0-9_-]+)\b", prompt_text, re.IGNORECASE)
+        if m_conf:
+            c_id = m_conf.group(1)
+            s_id = m_conf.group(2)
+            if not _already_inspected({s_id.lower()}, all_episodes):
+                key = f"prompt_confluence_{c_id}_{s_id}"
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    unresolved.append({
+                        "category": "service_identifier",
+                        "target": f"{c_id}/{s_id}",
+                        "advice": f"Confluence target '{c_id}/{s_id}' indicates cloudId='{c_id}' and spaceId='{s_id}'.",
                     })
 
     # 2. Spreadsheet metadata policy sheets

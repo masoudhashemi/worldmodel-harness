@@ -39,10 +39,14 @@ class PublicTask:
 
 def dataset(domain: str):
     from automationbench.domains import PUBLIC_DOMAINS, get_combined_dataset, get_domain_dataset
+    from .isomorphic_tasks import get_isomorphic_tasks_for_domain
 
     if domain == "public":
-        return get_combined_dataset(PUBLIC_DOMAINS)
-    return get_domain_dataset(domain)
+        base = list(get_combined_dataset(PUBLIC_DOMAINS))
+    else:
+        base = list(get_domain_dataset(domain))
+    custom = get_isomorphic_tasks_for_domain(domain)
+    return base + custom
 
 
 class AutomationBenchAdapter:
