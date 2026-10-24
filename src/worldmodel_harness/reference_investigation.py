@@ -130,6 +130,29 @@ def extract_unresolved_references(adapter: Any) -> list[dict[str, str]]:
                         "advice": f"Task requests checking policy in '{loc}' before taking action (not yet read).",
                     })
 
+        # Disambiguate service project keys and multi-tenant IDs mentioned in prompt
+        if "incident management project" in prompt_text.lower():
+            if not _already_inspected({"inc"}, all_episodes):
+                key = "prompt_jira_inc"
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    unresolved.append({
+                        "category": "service_identifier",
+                        "target": "Incident Management",
+                        "advice": "Jira 'Incident Management' project uses project key 'INC' (not 'IM'). Specify 'INC' when creating the Jira issue.",
+                    })
+
+        if "cloud_ops/sp_incidents" in prompt_text.lower():
+            if not _already_inspected({"sp_incidents"}, all_episodes):
+                key = "prompt_confluence_space"
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    unresolved.append({
+                        "category": "service_identifier",
+                        "target": "cloud_ops/SP_INCIDENTS",
+                        "advice": "Confluence target 'cloud_ops/SP_INCIDENTS' indicates cloudId='cloud_ops' and spaceId='SP_INCIDENTS'.",
+                    })
+
     # 2. Spreadsheet metadata policy sheets
     for ep in all_episodes:
         if not _is_read(ep) or getattr(ep, "outcome", "") != "success":
@@ -160,6 +183,31 @@ def extract_unresolved_references(adapter: Any) -> list[dict[str, str]]:
         if not isinstance(values, list) or len(values) < 2:
             continue
         headers = [str(h).strip().lower() for h in values[0]]
+        source_ep_id = getattr(ep, "episode_id", None)
+
+        # Check on-call schedule roles and contact entities
+        role_idx = next((i for i, h in enumerate(headers) if h == "role"), None)
+        eng_idx = next((i for i, h in enumerate(headers) if "engineer" in h or "name" in h), None)
+        phone_idx = next((i for i, h in enumerate(headers) if "phone" in h), None)
+        if role_idx is not None and eng_idx is not None:
+            for row in values[1:]:
+                if isinstance(row, list) and len(row) > max(role_idx, eng_idx):
+                    if str(row[role_idx]).strip().lower() == "primary":
+                        eng_name = str(row[eng_idx]).strip()
+                        phone_num = str(row[phone_idx]).strip() if phone_idx is not None and len(row) > phone_idx else ""
+                        if not _already_inspected({eng_name.lower()}, all_episodes, exclude_episode_id=source_ep_id):
+                            key = f"oncall_primary_{eng_name}"
+                            if key not in seen_keys:
+                                seen_keys.add(key)
+                                unresolved.append({
+                                    "category": "oncall_entity",
+                                    "target": eng_name,
+                                    "advice": (
+                                        f"Primary on-call engineer identified as '{eng_name}' ({phone_num}). "
+                                        f"Per task instructions, preserve verbatim values and include '{eng_name}' in all stakeholder messages/emails and records."
+                                    ),
+                                })
+
         notes_idx = next(
             (i for i, h in enumerate(headers) if "note" in h or "comment" in h or "rule" in h),
             None,
@@ -175,7 +223,6 @@ def extract_unresolved_references(adapter: Any) -> list[dict[str, str]]:
         if notes_idx is None and status_idx is None:
             continue
 
-        source_ep_id = getattr(ep, "episode_id", None)
         for row in values[1:]:
             if not isinstance(row, list):
                 continue

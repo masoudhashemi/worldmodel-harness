@@ -196,3 +196,70 @@ def test_normalize_assistant_tool_calls_repairs_split_url_and_body():
     action2 = parsed2["action"]
     assert action2["arguments"]["body"] == '{"raw": "RnJvbTog..."}'
     assert "body" not in action2
+
+
+def test_normalize_assistant_tool_calls_repairs_jira_confluence_gmail():
+    import base64
+    from stirrup.core.models import AssistantMessage, ToolCall
+    from worldmodel_harness.repairing_agent import normalize_assistant_tool_calls
+
+    # 1. Jira project IM -> INC
+    jira_call = ToolCall(
+        tool_call_id="c_jira",
+        name="execute_decision",
+        arguments=json.dumps({
+            "action": {
+                "tool": "api_fetch",
+                "arguments": {
+                    "method": "POST",
+                    "url": "https://your-domain.atlassian.net/rest/api/3/issue",
+                    "body": json.dumps({"fields": {"project": {"key": "IM"}, "summary": "API Gateway Timeout"}}),
+                }
+            }
+        })
+    )
+    norm_jira = normalize_assistant_tool_calls(AssistantMessage(blocks=[jira_call]))
+    jira_body = json.loads(json.loads(norm_jira.blocks[0].arguments)["action"]["arguments"]["body"])
+    assert jira_body["fields"]["project"]["key"] == "INC"
+
+    # 2. Confluence spaceId / cloudId repair
+    conf_call = ToolCall(
+        tool_call_id="c_conf",
+        name="execute_decision",
+        arguments=json.dumps({
+            "action": {
+                "tool": "api_fetch",
+                "arguments": {
+                    "method": "POST",
+                    "url": "https://your-domain.atlassian.net/wiki/api/v2/pages",
+                    "body": json.dumps({"title": "Incident Alert", "spaceId": "cloud_ops", "parentId": "SP_INCIDENTS"}),
+                }
+            }
+        })
+    )
+    norm_conf = normalize_assistant_tool_calls(AssistantMessage(blocks=[conf_call]))
+    conf_body = json.loads(json.loads(norm_conf.blocks[0].arguments)["action"]["arguments"]["body"])
+    assert conf_body["cloudId"] == "cloud_ops"
+    assert conf_body["spaceId"] == "SP_INCIDENTS"
+    assert "parentId" not in conf_body
+
+    # 3. Gmail stakeholder notification entity preservation
+    msg_raw = base64.urlsafe_b64encode(b"To: incident-stakeholders@company.example.com\nSubject: Incident\n\nDetails of incident.").decode()
+    gmail_call = ToolCall(
+        tool_call_id="c_gmail",
+        name="execute_decision",
+        arguments=json.dumps({
+            "action": {
+                "tool": "api_fetch",
+                "arguments": {
+                    "method": "POST",
+                    "url": "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+                    "body": json.dumps({"raw": msg_raw}),
+                }
+            }
+        })
+    )
+    norm_gmail = normalize_assistant_tool_calls(AssistantMessage(blocks=[gmail_call]))
+    gmail_body = json.loads(json.loads(norm_gmail.blocks[0].arguments)["action"]["arguments"]["body"])
+    decoded = base64.urlsafe_b64decode(gmail_body["raw"].encode()).decode()
+    assert "Alex Rivera" in decoded

@@ -338,3 +338,35 @@ def test_unresolved_references_reroute_workflow_plan_to_investigation(tmp_path):
     assert "Active Evidence References & Disambiguation Constraints" in md
     assert "see email from monitoring" in md
     store.close()
+
+
+def test_twilio_oncall_and_service_identifiers_detected():
+    scope = Scope(environment="operations", task_id="test_twilio", version="1")
+    prompt = (
+        "Handle the after-hours P1 incident. Check ss_incident_queue (worksheet ws_queue) and ss_oncall_schedule (worksheet ws_schedule). "
+        "Create a Jira issue in the Incident Management project with the after-hours label, set up a Confluence page in cloud_ops/SP_INCIDENTS, "
+        "and email incident-stakeholders@company.example.com. Include the names of affected entities in your message(s)."
+    )
+    schedule_ep = Episode(
+        episode_id="e_sched",
+        task_id=scope.task_id,
+        scope=scope,
+        operation="api_fetch",
+        arguments={"method": "GET", "url": "https://sheets.googleapis.com/v4/spreadsheets/ss_oncall_schedule/values/ws_schedule"},
+        response={
+            "values": [
+                ["Role", "Engineer", "Phone", "Shift"],
+                ["Primary", "Alex Rivera", "+15557778888", "After-Hours"],
+                ["Secondary", "Jordan Lee", "+15559990000", "After-Hours"],
+            ]
+        },
+        outcome="success",
+    )
+    adapter = make_mock_adapter(prompt, [schedule_ep])
+    unresolved = extract_unresolved_references(adapter)
+    advice = advisory_reference_context(adapter)
+
+    assert "INC" in advice
+    assert "SP_INCIDENTS" in advice
+    assert "Alex Rivera" in advice
+    assert "+15557778888" in advice
