@@ -66,21 +66,28 @@ def extract_context_entities(messages) -> dict[str, Any]:
 
     entities = {}
     for msg in messages or []:
-        blocks = getattr(msg, "blocks", [])
-        for b in blocks:
-            # Check for confluence space/cloud patterns in prompts or system instructions
-            txt = getattr(b, "text", "") or getattr(b, "content", "")
-            if isinstance(txt, str):
-                m = re.search(r"(cloud_\w+)/(SP_\w+)", txt)
-                if m:
-                    entities["confluence_cloud_id"] = m.group(1)
-                    entities["confluence_space_id"] = m.group(2)
+        texts_to_check = []
+        # UserMessage / ToolResult direct content
+        from stirrup.core.models import AssistantMessage
+        if not isinstance(msg, AssistantMessage):
+            direct_content = getattr(msg, "content", None)
+            if isinstance(direct_content, str) and direct_content:
+                texts_to_check.append(direct_content)
+        # AssistantMessage blocks
+        for b in getattr(msg, "blocks", []) or []:
+            b_txt = getattr(b, "text", "") or getattr(b, "content", "")
+            if isinstance(b_txt, str) and b_txt:
+                texts_to_check.append(b_txt)
 
-            content = getattr(b, "content", "")
-            if not content:
-                continue
+        for txt in texts_to_check:
+            # Check for confluence space/cloud patterns in prompts or system instructions
+            m = re.search(r"(cloud_\w+)/(SP_\w+)", txt)
+            if m:
+                entities["confluence_cloud_id"] = m.group(1)
+                entities["confluence_space_id"] = m.group(2)
+
             try:
-                data = json.loads(content)
+                data = json.loads(txt)
                 if not isinstance(data, dict):
                     continue
                 vals = data.get("values", [])
