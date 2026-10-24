@@ -220,19 +220,27 @@ class GemmaLiteLLMClient(LiteLLMClient):
         from stirrup.core.exceptions import ContextOverflowError, OutputTokenLimitError
         from stirrup.core.models import AssistantMessage, ReasoningBlock, TextBlock, TokenUsage, ToolCall
 
-        try:
-            r = await acompletion(
-                model=self.model_slug,
-                messages=to_openai_messages(messages, allow_tool_call_signatures=True),
-                tools=to_openai_tools(tools) if tools else None,
-                tool_choice="none" if tools else None,
-                max_tokens=self._max_tokens,
-                reasoning_effort=self._reasoning_effort,
-                api_key=self._api_key,
-                **self._kwargs,
-            )
-        except ContextWindowExceededError as e:
-            raise ContextOverflowError(str(e)) from e
+        for attempt in range(3):
+            try:
+                r = await acompletion(
+                    model=self.model_slug,
+                    messages=to_openai_messages(messages, allow_tool_call_signatures=True),
+                    tools=to_openai_tools(tools) if tools else None,
+                    tool_choice="none" if tools else None,
+                    max_tokens=self._max_tokens,
+                    reasoning_effort=self._reasoning_effort,
+                    api_key=self._api_key,
+                    **self._kwargs,
+                )
+                break
+            except ContextWindowExceededError as e:
+                raise ContextOverflowError(str(e)) from e
+            except Exception as e:
+                err_str = f"{type(e).__name__} {e}".lower()
+                if attempt < 2 and any(t in err_str for t in ("internalservererror", "servererror", "500", "502", "503", "504", "connection", "timeout")):
+                    await asyncio.sleep(2 * (attempt + 1))
+                    continue
+                raise
 
         choice = r["choices"][0]
         if choice.finish_reason in ("max_tokens", "length"):
