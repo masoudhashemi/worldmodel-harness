@@ -94,6 +94,7 @@ class WorkflowProcess(BaseModel):
     current_node: str | None = None
     tried_from_this_state: list[TriedActionSummary] = Field(default_factory=list)
     potential_solution_paths: list[SolutionPath] = Field(default_factory=list)
+    unresolved_references: list[dict[str, str]] = Field(default_factory=list)
 
 
 def _generate_step_description(node: OperationNode, next_node: OperationNode | None = None) -> str:
@@ -133,6 +134,7 @@ def extract_workflow_plan(
     current_node: str | None = None,
     completed_nodes: set[str] | None = None,
     successful_transition_graph: bool = True,
+    unresolved_references: list[dict[str, str]] | None = None,
 ) -> WorkflowProcess | None:
     """Extract an operational workflow process plan covering task intent from the trajectory graph."""
     if not query or not query.strip():
@@ -232,13 +234,35 @@ def extract_workflow_plan(
     if not top_starts and best_targets:
         top_starts = [best_targets[0]]
 
+    # Identify intermediate investigation waypoints from unresolved references (e.g. check email, check policy sheet)
+    investigation_targets: list[str] = []
+    if unresolved_references:
+        for ref in unresolved_references:
+            adv = ref.get("advice", "").lower()
+            cat = ref.get("category", "")
+            target_str = ref.get("target", "").lower()
+            if any(k in adv or k in target_str for k in ("email", "gmail", "inbox", "monitoring")):
+                for nid, n in graph.nodes.items():
+                    if n.service == "gmail" and n.action_type == "read" and nid not in completed:
+                        if nid not in investigation_targets:
+                            investigation_targets.append(nid)
+            if "policy" in adv or "policy" in cat:
+                for nid, n in graph.nodes.items():
+                    if n.service == "sheets" and n.action_type == "read" and nid not in completed:
+                        if nid not in investigation_targets and nid != current_node:
+                            investigation_targets.append(nid)
+
+    search_targets = [t for t in investigation_targets if t not in completed] + [t for t in best_targets if t not in completed]
+    if not search_targets:
+        search_targets = best_targets
+
     # 3. Find candidate solution paths covering the start and target nodes
     path_updated = False
     candidate_paths: list[tuple[list[str], float, float, int]] = []
 
     auth_mutations = set(best_targets)
     if current_node and current_node in graph.nodes:
-        remaining_targets = [t for t in best_targets if t not in completed and t != current_node]
+        remaining_targets = [t for t in search_targets if t != current_node]
         if remaining_targets:
             candidate_paths = graph.find_all_candidate_paths(
                 [current_node], remaining_targets, authorized_mutations=auth_mutations, max_paths=3
@@ -249,7 +273,7 @@ def extract_workflow_plan(
 
     if not candidate_paths:
         candidate_paths = graph.find_all_candidate_paths(
-            top_starts, best_targets, authorized_mutations=auth_mutations, max_paths=3
+            top_starts, search_targets, authorized_mutations=auth_mutations, max_paths=3
         )
 
     if not candidate_paths:
@@ -418,7 +442,11 @@ def extract_workflow_plan(
     confidence = max(0.2, min(1.0, 1.0 / (1.0 + cost * 0.2)))
 
     # Synthesize concise goal statement
-    goal = f"Execute multi-step workflow: {' -> '.join(s.operation for s in steps[:-1])}"
+    if investigation_targets and any(t not in completed for t in investigation_targets):
+        inv_str = ", ".join(investigation_targets)
+        goal = f"Investigate referenced evidence ({inv_str}) before mutating actions"
+    else:
+        goal = f"Execute multi-step workflow: {' -> '.join(s.operation for s in steps[:-1])}"
 
     return WorkflowProcess(
         goal=goal,
@@ -431,4 +459,5 @@ def extract_workflow_plan(
         current_node=current_node,
         tried_from_this_state=tried_summaries,
         potential_solution_paths=potential_solution_paths,
+        unresolved_references=unresolved_references or [],
     )

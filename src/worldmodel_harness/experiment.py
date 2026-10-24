@@ -338,6 +338,12 @@ class KnowledgeClient:
                     "Complete compressed task state exceeds the context allowance; "
                     "increase the declared allowance. No requirement was silently omitted."
                 )
+            unresolved_refs = []
+            if self.settings.operational or self.settings.semantic_learning:
+                from .reference_investigation import extract_unresolved_references
+
+                unresolved_refs = extract_unresolved_references(self.adapter)
+
             content, selection = render_context(
                 working,
                 procedures,
@@ -348,6 +354,7 @@ class KnowledgeClient:
                 completed_nodes=set(self._completed_operations),
                 successful_transition_graph=self.settings.successful_transition_graph or self.settings.operational,
                 entity_tracker=getattr(self.adapter, "entity_tracker", None),
+                unresolved_references=unresolved_refs,
             )
             current_claim_ids = {c.claim_id for c in working.claims}
             newly_injected = current_claim_ids - self._last_working_claims
@@ -384,7 +391,8 @@ class KnowledgeClient:
                 from .reference_investigation import advisory_reference_context
 
                 ref_guidance = advisory_reference_context(self.adapter, max_chars=1200)
-                if ref_guidance:
+                plan_has_refs = bool(selection.get("workflow_plan") and selection["workflow_plan"].get("unresolved_references"))
+                if ref_guidance and not plan_has_refs:
                     content += "\n\n" + ref_guidance
                     selection["reference_guidance_chars"] = len(ref_guidance)
             selection["injected_chars"] = len(content)

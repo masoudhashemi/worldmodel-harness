@@ -156,3 +156,104 @@ def test_asana_prompt_policy_detected():
     adapter2 = make_mock_adapter(prompt, [policy_ep])
     advice2 = advisory_reference_context(adapter2)
     assert advice2 == ""
+
+
+def test_unresolved_references_reroute_workflow_plan_to_investigation(tmp_path):
+    from worldmodel_harness.context import _format_workflow_process_markdown
+    from worldmodel_harness.knowledge import Claim, Dependency, Layer
+    from worldmodel_harness.process_planner import extract_workflow_plan
+    from worldmodel_harness.store import KnowledgeStore
+
+    store = KnowledgeStore(tmp_path / "plan.sqlite")
+    scope = Scope(environment="test", version="1", role="agent")
+
+    # Add claims for sheets, gmail, and twilio
+    c_sheets = Claim(
+        claim_id="sheets.spreadsheets.values.get",
+        layer=Layer.INTERFACE,
+        relation="endpoint_contract",
+        participants=("sheets",),
+        statement="Get sheet values",
+        scope=scope,
+        payload={"method": "GET", "url": "https://sheets.googleapis.com/v4/spreadsheets/{id}/values/{range}", "endpoint_id": "sheets.spreadsheets.values.get"},
+    )
+    c_gmail_list = Claim(
+        claim_id="gmail.users.messages.list",
+        layer=Layer.INTERFACE,
+        relation="endpoint_contract",
+        participants=("gmail",),
+        statement="List gmail messages",
+        scope=scope,
+        payload={"method": "GET", "url": "https://gmail.googleapis.com/gmail/v1/users/me/messages", "endpoint_id": "gmail.users.messages.list"},
+    )
+    c_twilio = Claim(
+        claim_id="twilio.messages.create",
+        layer=Layer.INTERFACE,
+        relation="endpoint_contract",
+        participants=("twilio",),
+        statement="Create twilio message",
+        scope=scope,
+        payload={"method": "POST", "url": "https://api.twilio.com/2010-04-01/Accounts/{AccountSid}/Messages.json", "endpoint_id": "twilio.messages.create"},
+    )
+    store.put_claim(c_sheets)
+    store.put_claim(c_gmail_list)
+    store.put_claim(c_twilio)
+
+    # Add transitions: sheets -> gmail.list, gmail.list -> twilio
+    e1 = Episode(
+        episode_id="e1",
+        task_id="t1",
+        scope=scope,
+        operation="api_fetch",
+        arguments={"method": "GET", "url": "https://sheets.googleapis.com/v4/spreadsheets/ss_q/values/A:Z"},
+        response={"values": [["Title", "Notes"], ["Task 1", "see email from monitoring"]]},
+        outcome="success",
+        origin="environment",
+    )
+    e2 = Episode(
+        episode_id="e2",
+        task_id="t1",
+        scope=scope,
+        operation="api_fetch",
+        arguments={"method": "GET", "url": "https://gmail.googleapis.com/gmail/v1/users/me/messages"},
+        response={"messages": [{"id": "m1"}]},
+        outcome="success",
+        origin="environment",
+    )
+    e3 = Episode(
+        episode_id="e3",
+        task_id="t1",
+        scope=scope,
+        operation="api_fetch",
+        arguments={"method": "POST", "url": "https://api.twilio.com/2010-04-01/Accounts/AC/Messages.json"},
+        response={"sid": "SM1"},
+        outcome="success",
+        origin="environment",
+    )
+    store.append_episode(e1)
+    store.append_episode(e2)
+    store.append_episode(e3)
+
+    unresolved = [
+        {
+            "category": "external_investigation",
+            "target": "Task 1",
+            "advice": "Record 'Task 1' notes 'see email from monitoring' — inspect email before committing.",
+        }
+    ]
+
+    plan = extract_workflow_plan(
+        store,
+        scope,
+        "Handle P1 incident via twilio SMS",
+        current_node="sheets.spreadsheets.values.get",
+        unresolved_references=unresolved,
+    )
+    assert plan is not None
+    assert "Investigate referenced evidence" in plan.goal
+    assert "gmail.users.messages.list" in [s.operation for s in plan.steps]
+
+    md = _format_workflow_process_markdown(plan, current_node="sheets.spreadsheets.values.get")
+    assert "Active Evidence References & Disambiguation Constraints" in md
+    assert "see email from monitoring" in md
+    store.close()

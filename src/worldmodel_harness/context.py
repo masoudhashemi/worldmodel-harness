@@ -79,6 +79,12 @@ def _format_workflow_process_markdown(plan, current_node: str | None = None) -> 
         f"**Current State**: `{current_node or 'initial_state'}`",
         f"**Active Objective**: `{goal}`",
     ]
+    unresolved_refs = _get(plan, "unresolved_references") or []
+    if unresolved_refs:
+        lines.append("\n⚠️ **Active Evidence References & Disambiguation Constraints**:")
+        for ref in unresolved_refs[:4]:
+            adv = _get(ref, "advice") or _get(ref, "target")
+            lines.append(f"• {adv}")
     tried_list = _get(plan, "tried_from_this_state") or []
     if tried_list:
         lines.append("\n**Past Action Attempts & Observed Consequences from this State**:")
@@ -136,6 +142,7 @@ def render_context(
     successful_transition_graph: bool = False,
     entity_tracker=None,
     plan=None,
+    unresolved_references: list[dict[str, str]] | None = None,
 ) -> tuple[str, dict]:
     """Count the entire injected message, including metadata and artifact menus.
 
@@ -156,6 +163,7 @@ def render_context(
                 current_node=current_node,
                 completed_nodes=completed_nodes,
                 successful_transition_graph=successful_transition_graph,
+                unresolved_references=unresolved_references,
             )
         except Exception:
             plan = None
@@ -279,6 +287,8 @@ def render_context(
                     f"Recommended path certainty: {rec_path.certainty:.2f}. "
                     f"Certainty increases continuously as paths are used more with success."
                 )
+            if getattr(plan, "unresolved_references", None) and compact_wf < 2:
+                wf["unresolved_references"] = plan.unresolved_references
             payload["workflow_process"] = wf
         if entity_tracker is not None and hasattr(entity_tracker, "targets"):
             payload["task_state"] = entity_tracker.summary()

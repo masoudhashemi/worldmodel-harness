@@ -330,11 +330,19 @@ class TrajectoryGraph:
 
         import itertools
 
-        target_permutations = (
-            list(itertools.permutations(valid_targets))
-            if len(valid_targets) <= 4
-            else [valid_targets]
-        )
+        read_targets = [t for t in valid_targets if self.nodes[t].action_type == "read"]
+        mutate_targets = [t for t in valid_targets if self.nodes[t].action_type != "read"]
+
+        if read_targets and mutate_targets:
+            r_perms = list(itertools.permutations(read_targets)) if len(read_targets) <= 2 else [read_targets]
+            m_perms = list(itertools.permutations(mutate_targets)) if len(mutate_targets) <= 4 else [mutate_targets]
+            target_permutations = [list(rp) + list(mp) for rp in r_perms for mp in m_perms]
+        else:
+            target_permutations = (
+                list(itertools.permutations(valid_targets))
+                if len(valid_targets) <= 4
+                else [valid_targets]
+            )
 
         candidates: list[tuple[list[str], float, float, int]] = []
         seen_paths: set[tuple[str, ...]] = set()
