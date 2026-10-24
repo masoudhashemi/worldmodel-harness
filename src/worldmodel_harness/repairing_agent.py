@@ -99,6 +99,13 @@ def normalize_assistant_tool_calls(msg):
                     except Exception:
                         pass
                 if isinstance(action, dict):
+                    # Normalize tool name aliases on action
+                    for alias in ("root_tool", "target_tool", "fn_name", "function_name"):
+                        if alias in action:
+                            action.setdefault("tool", action.pop(alias))
+                    if "name" in action and "tool" not in action:
+                        action["tool"] = action.pop("name")
+
                     action_args = action.setdefault("arguments", {})
                     # Repair misplaced https/http top-level keys
                     for scheme in ("https", "http"):

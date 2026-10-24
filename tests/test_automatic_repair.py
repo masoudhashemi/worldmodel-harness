@@ -282,3 +282,19 @@ def test_normalize_assistant_tool_calls_repairs_jira_confluence_gmail():
     norm_sms = normalize_assistant_tool_calls(AssistantMessage(blocks=[sms_call]))
     sms_body = json.loads(json.loads(norm_sms.blocks[0].arguments)["action"]["arguments"]["body"])
     assert "2026-01-29T03:30:00Z" in sms_body["Body"]
+
+    # 5. Root tool alias normalization
+    root_tool_call = ToolCall(
+        tool_call_id="c_root",
+        name="execute_decision",
+        arguments=json.dumps({
+            "action": {
+                "root_tool": "api_fetch",
+                "arguments": {"method": "GET", "url": "https://example.com"},
+            }
+        })
+    )
+    norm_root = normalize_assistant_tool_calls(AssistantMessage(blocks=[root_tool_call]))
+    root_action = json.loads(norm_root.blocks[0].arguments)["action"]
+    assert root_action["tool"] == "api_fetch"
+    assert "root_tool" not in root_action
