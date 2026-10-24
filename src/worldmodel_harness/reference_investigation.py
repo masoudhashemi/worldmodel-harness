@@ -54,16 +54,26 @@ def extract_unresolved_references(adapter: Any) -> list[dict[str, str]]:
 
     # Get all successful environment read episodes
     all_episodes = []
-    if hasattr(adapter, "evidence") and hasattr(adapter.evidence, "db"):
+    if hasattr(adapter, "evidence") and hasattr(adapter.evidence, "episodes"):
+        try:
+            all_episodes = list(adapter.evidence.episodes(adapter.scope))
+        except Exception:
+            all_episodes = []
+    if not all_episodes and hasattr(adapter, "evidence") and getattr(adapter.evidence, "db", None) is not None:
         from .knowledge import Episode
 
         try:
             with adapter.evidence.db:
                 rows = adapter.evidence.db.execute(
-                    "SELECT body FROM episodes WHERE scope = ? ORDER BY rowid",
-                    (adapter.scope.model_dump_json(),),
+                    "SELECT body FROM episodes ORDER BY rowid"
                 ).fetchall()
-                all_episodes = [Episode.model_validate_json(r[0]) for r in rows]
+                parsed = [Episode.model_validate_json(r[0]) for r in rows]
+                all_episodes = [
+                    e for e in parsed
+                    if not hasattr(adapter, "scope")
+                    or e.scope.applies_to(adapter.scope)
+                    or getattr(e.scope, "task_id", None) == getattr(adapter.scope, "task_id", None)
+                ]
         except Exception:
             all_episodes = []
     if not all_episodes and hasattr(adapter, "task_state"):
