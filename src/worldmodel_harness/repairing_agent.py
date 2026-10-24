@@ -75,15 +75,17 @@ def normalize_assistant_tool_calls(msg):
         if any(marker in text for marker in ("<|tool_call>call:", "<|tool_call|>call:", "<tool_call>call:")):
             from .runtime import parse_gemma_calls
 
-            _, extracted = parse_gemma_calls(text)
-            for idx, (fn_name, fn_args) in enumerate(extracted):
-                blocks.append(
-                    ToolCall(
-                        tool_call_id=f"text_call_{idx}",
-                        name=fn_name,
-                        arguments=json.dumps(fn_args),
-                    )
+            clean_text, extracted = parse_gemma_calls(text)
+            new_text_blocks = [TextBlock(text=clean_text)] if clean_text.strip() else []
+            new_tool_blocks = [
+                ToolCall(
+                    tool_call_id=f"text_call_{idx}",
+                    name=fn_name,
+                    arguments=json.dumps(fn_args),
                 )
+                for idx, (fn_name, fn_args) in enumerate(extracted)
+            ]
+            blocks = new_text_blocks + new_tool_blocks
 
     new_blocks = []
     for b in blocks:
@@ -96,16 +98,42 @@ def normalize_assistant_tool_calls(msg):
                         action = json.loads(action)
                     except Exception:
                         pass
-                if isinstance(action, dict) and action.get("tool") in ("finish", "finish_task"):
-                    finish_args = action.get("arguments") or {}
-                    new_blocks.append(
-                        ToolCall(
-                            tool_call_id=b.tool_call_id,
-                            name="finish",
-                            arguments=json.dumps(finish_args),
+                if isinstance(action, dict):
+                    action_args = action.setdefault("arguments", {})
+                    # Repair misplaced https/http top-level keys
+                    for scheme in ("https", "http"):
+                        if scheme in args:
+                            val = str(args.pop(scheme))
+                            if not val.startswith(f"{scheme}:"):
+                                val = f"{scheme}:{val}" if val.startswith("//") else f"{scheme}://{val}"
+                            action_args["url"] = val
+                            action.setdefault("tool", "api_fetch")
+                            if "method" not in action_args:
+                                action_args["method"] = "POST"
+
+                    # Repair malformed body with trailing delimiter
+                    if isinstance(action_args, dict) and "body" in action_args:
+                        body_val = str(action_args["body"])
+                        for marker in ("},method:", "},url:", "},params:"):
+                            if marker in body_val:
+                                action_args["body"] = body_val.split(marker)[0] + "}"
+                                key = marker[2:-1]
+                                if key == "method" and "method" not in action_args:
+                                    action_args["method"] = "POST"
+
+                    if action.get("tool") in ("finish", "finish_task"):
+                        finish_args = action.get("arguments") or {}
+                        new_blocks.append(
+                            ToolCall(
+                                tool_call_id=b.tool_call_id,
+                                name="finish",
+                                arguments=json.dumps(finish_args),
+                            )
                         )
-                    )
-                    continue
+                        continue
+
+                    args["action"] = action
+                    b = b.model_copy(update={"arguments": json.dumps(args)})
             except Exception:
                 pass
         new_blocks.append(b)

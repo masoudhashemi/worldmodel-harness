@@ -152,3 +152,29 @@ def test_evidence_only_revision_does_not_trigger_repair(world):
     )
     store.put_claim(current.model_copy(update={"version": 3}))
     assert repair_candidates(store, scope) == ([], {})
+
+
+def test_normalize_assistant_tool_calls_repairs_split_url_and_body():
+    from stirrup.core.models import AssistantMessage, ToolCall
+    from worldmodel_harness.repairing_agent import normalize_assistant_tool_calls
+
+    args = {
+        "action": {
+            "arguments": {
+                "body": '{"raw": "RnJvbTog..."},method:'
+            }
+        },
+        "https": "//gmail.googleapis.com/gmail/v1/users/me/messages/send"
+    }
+    tc = ToolCall(tool_call_id="c1", name="execute_decision", arguments=json.dumps(args))
+    msg = AssistantMessage(blocks=[tc])
+    normalized = normalize_assistant_tool_calls(msg)
+
+    repaired_tc = normalized.blocks[0]
+    parsed = json.loads(repaired_tc.arguments)
+    action = parsed["action"]
+    assert action["tool"] == "api_fetch"
+    assert action["arguments"]["method"] == "POST"
+    assert action["arguments"]["url"] == "https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
+    assert action["arguments"]["body"] == '{"raw": "RnJvbTog..."}'
+    assert "https" not in parsed
