@@ -22,6 +22,43 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def extract_final_summary(messages):
+    """Use the last finish declaration, including an unresolved/rejected attempt.
+
+    Tool feedback is never used as summary text or as proof of completion.
+    """
+    summaries = []
+    for message in messages:
+        if message.get("role") != "assistant":
+            continue
+        calls = [b for b in message.get("blocks", []) if b.get("kind") == "tool_call"]
+        calls += [c.get("function", c) for c in message.get("tool_calls", [])]
+        for call in calls:
+            if call.get("name") != "finish":
+                continue
+            args = call.get("arguments", {})
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except ValueError:
+                    continue
+            if isinstance(args, dict) and isinstance(args.get("summary"), str):
+                summaries.append(args["summary"])
+    if summaries:
+        return summaries[-1], "last_finish_attempt"
+    if messages and messages[-1].get("role") == "assistant":
+        last = messages[-1]
+        if not last.get("tool_calls") and not any(
+            b.get("kind") == "tool_call" for b in last.get("blocks", [])
+        ):
+            text = last.get("content") or "\n".join(
+                b.get("text", "") for b in last.get("blocks", []) if b.get("kind") == "text"
+            )
+            if isinstance(text, str) and text:
+                return text, "terminal_assistant_message"
+    return None, "missing"
+
+
 def load_run(path):
     histories = list(path.glob("*/history.json"))
     if len(histories) != 1:
@@ -43,7 +80,7 @@ def load_run(path):
     if len(scopes) != 1:
         raise ValueError("Replay requires exactly one environment task scope")
     scope = next(e.scope for e in episodes if e.origin == "environment")
-    return task, episodes, scope, histories[0]
+    return task, episodes, scope, histories[0], extract_final_summary(messages)
 
 
 async def main():
@@ -52,9 +89,17 @@ async def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--model-config", type=Path, required=True)
     parser.add_argument(
-        "--boundary", choices=["before_first_write", "final", "both"], default="both"
+        "--boundary",
+        choices=["before_first_write", "final", "both"],
+        default="final",
+        help="Final audits completion and summary; before_first_write retains the legacy interpretation audit.",
     )
-    parser.add_argument("--max-evidence-chars", type=int, default=60000)
+    parser.add_argument(
+        "--max-evidence-chars",
+        type=int,
+        default=60000,
+        help="Completion audits bound the serialized compact evidence catalog; schema and assessments are additional context.",
+    )
     args = parser.parse_args()
     if args.max_evidence_chars < 1000:
         parser.error("Evidence allowance must be at least 1000 characters")
@@ -72,22 +117,33 @@ async def main():
     boundaries = ["before_first_write", "final"] if args.boundary == "both" else [args.boundary]
     failed = False
     for run in args.runs:
-        task, episodes, scope, history = load_run(run)
+        task, episodes, scope, history, (summary, summary_source) = load_run(run)
         hashes = {str(p.resolve()): digest(p) for p in (run / "evidence.sqlite", history)}
         for boundary in boundaries:
             print(f"AUDIT {run.name} {boundary}", flush=True)
             start = len(client.calls)
             accounting = {}
             try:
-                report = await shadow_interpretation.interpret(
-                    client,
-                    task,
-                    episodes,
-                    scope,
-                    max_chars=args.max_evidence_chars,
-                    boundary=boundary,
-                    accounting=accounting,
-                )
+                if boundary == "final":
+                    report = await shadow_interpretation.audit_completion(
+                        client,
+                        task,
+                        summary,
+                        episodes,
+                        scope,
+                        max_chars=args.max_evidence_chars,
+                        accounting=accounting,
+                    )
+                else:
+                    report = await shadow_interpretation.interpret(
+                        client,
+                        task,
+                        episodes,
+                        scope,
+                        max_chars=args.max_evidence_chars,
+                        boundary=boundary,
+                        accounting=accounting,
+                    )
             except Exception as exc:  # noqa: BLE001 -- record failure without provider secrets
                 report = {
                     "mode": "offline_shadow",
@@ -97,6 +153,12 @@ async def main():
                 }
                 failed = True
             report.update(run_id=run.name, input_hashes=hashes, model_calls=client.calls[start:])
+            if boundary == "final":
+                report.update(
+                    final_summary=summary,
+                    summary_source=summary_source,
+                )
+                report.setdefault("audit_type", "staged_task_completion")
             output = args.output / f"{run.name}-{boundary}.json"
             output.write_text(json.dumps(report, indent=2))
             assert all(digest(Path(p)) == h for p, h in hashes.items()), (
