@@ -588,6 +588,9 @@ def compile_trajectory_graph(
     for task_eps in all_by_task.values():
         current_state = "root"
         for ep in task_eps:
+            if ep.origin != "environment":
+                continue
+
             target_nid = match_episode_to_node_id(ep)
             action_type = ep.operation
             args = ep.arguments or {}
@@ -627,7 +630,11 @@ def compile_trajectory_graph(
                     result_summary = str(res)[:100]
 
                 err_lower = result_summary.lower()
-                if "unable to parse range" in err_lower or "range" in err_lower:
+                if "base64" in err_lower:
+                    lesson = "Encoding requirement: Gmail/email payloads require base64url encoding."
+                elif "recipient" in err_lower or "no 'to'" in err_lower:
+                    lesson = "Header requirement: Email must specify recipient 'To:' and 'From:' headers."
+                elif "unable to parse range" in err_lower or "range" in err_lower:
                     lesson = "Parameter syntax error: verify range syntax (e.g. use clean 'A:Z')."
                 elif "method" in err_lower or err_type == "malformed_http_method":
                     lesson = "Action syntax error: method must be GET/POST/PUT/DELETE, not tool name."
@@ -638,7 +645,7 @@ def compile_trajectory_graph(
                 elif outcome == "blocked":
                     lesson = "Precondition gate blocked execution before dispatch."
                 else:
-                    lesson = "Call failed. Verify arguments against schema."
+                    lesson = f"Call failed: {result_summary[:80]}"
             else:
                 if isinstance(res, dict):
                     if "values" in res and isinstance(res["values"], list):
