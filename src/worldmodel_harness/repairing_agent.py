@@ -1,6 +1,7 @@
 """Preserve Stirrup execution, enrich its pre-dispatch schema rejection feedback."""
 
 import json
+import re
 from typing import Any, Union, get_args, get_origin
 
 from pydantic import ValidationError
@@ -62,8 +63,6 @@ def suggested_arguments(schema, arguments):
 
 def extract_context_entities(messages) -> dict[str, Any]:
     """Extract dynamic domain entities (e.g. primary on-call, detected timestamp) from observed tool results and prompts."""
-    import re
-
     entities = {}
     for msg in messages or []:
         texts_to_check = []
@@ -184,6 +183,9 @@ def normalize_assistant_tool_calls(msg, context_entities: dict[str, Any] | None 
                         target = action_args if k in action_args else action
                         if k in target:
                             val = str(target[k])
+                            m = re.search(r'\}\s*,\s*(?:method|tool|url|params|headers):', val)
+                            if m:
+                                val = val[:m.start() + 1]
                             for marker in ("},tool:", "},method:", "},url:", "},params:", "},headers:"):
                                 if marker in val:
                                     val = val.split(marker)[0] + "}"
@@ -293,7 +295,6 @@ def normalize_assistant_tool_calls(msg, context_entities: dict[str, Any] | None 
                             try:
                                 bdict = json.loads(body_val)
                                 if isinstance(bdict, dict):
-                                    import re
                                     sms_body = bdict.get("Body") or bdict.get("body")
                                     ts = (context_entities or {}).get("detected_timestamp") or "2026-01-29T03:30:00Z"
                                     if sms_body and ts:
