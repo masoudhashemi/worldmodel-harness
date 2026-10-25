@@ -129,6 +129,8 @@ def detect_active_services(text: str, focus_entities: tuple[str, ...] = ()) -> s
     for w in raw:
         if w.startswith("ss_") or w.startswith("ws_"):
             active.add("sheets")
+        if w.startswith("#"):
+            active.add("slack")
         for k, v in SERVICE_SYNONYMS.items():
             if w == k or (len(k) >= 4 and k in w):
                 active.add(v)
@@ -338,11 +340,11 @@ def retrieve(
 
     # 3. Reverse Dataflow Prerequisite Resolution (graph-grounded pattern)
     dataflow_additions: list[Claim] = []
-    for c in list(ranked[:6]):
+    for c in list(ranked[:16]):
         if c.relation == "endpoint_contract":
             ep_id = c.payload.get("id")
             for prod_id in dataflow_reverse.get(ep_id, []):
-                for cand in candidates.values():
+                for cand in raw_candidates.values():
                     if cand.relation == "endpoint_contract" and cand.payload.get("id") == prod_id:
                         if cand.claim_id not in queued:
                             dataflow_additions.append(cand)
@@ -364,7 +366,7 @@ def retrieve(
 
     for src_id in frontier_sources:
         for cons_id in dataflow_forward.get(src_id, []):
-            for cand in candidates.values():
+            for cand in raw_candidates.values():
                 if cand.relation == "endpoint_contract" and cand.payload.get("id") == cons_id:
                     if cand.claim_id not in queued:
                         forward_additions.append(cand)

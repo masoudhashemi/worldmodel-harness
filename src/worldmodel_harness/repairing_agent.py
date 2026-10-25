@@ -199,7 +199,7 @@ def normalize_assistant_tool_calls(msg, context_entities: dict[str, Any] | None 
                     tool_val = str(action.get("tool", "")).lower()
                     body_val = action_args.get("body")
 
-                    # 1. Jira project key normalization
+                    # 1. Jira project structural schema and alias normalization
                     if "/rest/api/3/issue" in url_val or "jira_create_issue" in tool_val or ("jira" in url_val and "issue" in url_val):
                         if isinstance(body_val, str):
                             try:
@@ -216,10 +216,14 @@ def normalize_assistant_tool_calls(msg, context_entities: dict[str, Any] | None 
                                             fields["project"] = "INC"
                                         elif str(proj).upper() in ("OC", "OPERATIONS CORE", "OPERATIONS_CORE"):
                                             fields["project"] = "OPS"
+                                        elif isinstance(proj, str):
+                                            fields["project"] = {"key": proj}
                                         # Ensure incident issue type
                                         itype = fields.get("issuetype")
                                         if itype in ("Task", {"name": "Task"}, None) or not itype:
                                             fields["issuetype"] = {"name": "Incident"}
+                                        elif isinstance(itype, str):
+                                            fields["issuetype"] = {"name": itype}
                                     elif str(bdict.get("project", "")).upper() in ("IM", "INCIDENT MANAGEMENT", "INCIDENT_MANAGEMENT"):
                                         bdict["project"] = "INC"
                                         if bdict.get("issuetype") in ("Task", None) or not bdict.get("issuetype"):

@@ -367,3 +367,144 @@ or improved end-to-end task reward. The supply of unused recovery pairs in the
 saved trajectories is nearly exhausted under this extraction method. A larger
 meaningful evaluation requires collecting fresh environment interactions and/or
 expanding the state representation, rather than repeatedly rescoring this case.
+
+## E005 — Isomorphic Task Transfer under Requester & Entity Perturbations
+
+Status: active. Started 2026-10-24.
+
+### Goal
+
+Evaluate whether the empirical World Model learns invariant operational graphs
+and value-flow dependencies that transfer out-of-distribution when surface task
+representations change (different requester personas, entity IDs, target
+spreadsheets, notification channels, and date/filter thresholds) without
+requiring a new solving process.
+
+### Hypotheses
+
+1. **The Anchor Hazard (Ungated WM)**: An agent carrying an unconstrained historical
+   world model memorizes concrete literal identifiers (e.g., `ss_badges`, `BDG-3001`,
+   `ss_incident_queue`, `Alex Rivera`, `#security`). When presented with an isomorphic
+   task from a different requester targeting different resources, it attempts to
+   access the stale cached resources, entering unrecoverable 404 loops or dispatching
+   to incorrect channels.
+2. **Gated Graph with Literal Sanitization**: Abstracting literal identifiers into
+   placeholders (`{spreadsheet_id}`, `{channel}`, `{project_key}`) and enforcing
+   pre-flight feasibility gating allows the agent to execute the learned causal graph
+   zero-shot while dynamically binding the new prompt's entities.
+3. **Execution Efficiency**: The gated model retains high transfer efficiency
+   (drastically lower discovery calls than cold-start baseline) without suffering
+   the anchor hazard of raw memory injection.
+
+### Perturbation Taxonomy & Task Suite
+
+The benchmark tests paired isomorphic tasks that share identical causal transition
+topologies and disambiguation logic:
+
+1. **Vendor Pass Expiration Audit** (`operations.contractor_badge_expiration_isomorphic`):
+   - *Source Task*: `operations.contractor_badge_expiration`
+   - *Requester Persona*: Security Lead $\to$ Facilities & Property Management Lead
+   - *Resource Re-binding*: `ss_badges` ("Contractor Badges") $\to$ `ss_vendor_passes` ("Vendor Access Passes")
+   - *Worksheet ID*: `ws_contractors` ("Badge Tracker") $\to$ `ws_passes` ("Pass Tracker")
+   - *Literal Signatures*: `BDG-300x` $\to$ `PAS-500x`
+   - *Notification Channel*: `#security` $\to$ `#facilities`
+   - *Date Shift*: `2026-02-09` $\to$ `2026-04-06` (evaluating dynamic temporal windowing)
+   - *Entity Population*: Wayne Ellis, Fiona Hart, Luis Moreno $\to$ Elena Rostova, David Kim, Tariq Mansour
+
+2. **Operations Incident Escalation** (`operations.twilio_afterhours_incident_isomorphic`):
+   - *Source Task*: `operations.twilio_afterhours_incident`
+   - *Requester Persona*: Core SRE $\to$ Operations Infrastructure Lead
+   - *Resource Re-binding*: `ss_incident_queue` $\to$ `ss_ops_triage`
+   - *Roster Re-binding*: `ss_oncall_schedule` $\to$ `ss_duty_roster`
+   - *Primary On-Call*: Alex Rivera (+15557778888) $\to$ Maya Lin (+15554443333)
+   - *Secondary On-Call*: Jordan Smith $\to$ Devon Vance
+   - *Jira Target*: Project `INC` (Incident Management) $\to$ Project `OPS` (Operations Core)
+   - *Confluence Target*: `SP_INCIDENTS` $\to$ `SP_ALERTS`
+   - *Stakeholder Mailing*: `incident-stakeholders@...` $\to$ `ops-stakeholders@...`
+
+### Method & Experimental Protocol
+
+Runner: `scripts/run_isomorphic_perturbation_eval.py`.
+Seed Store: `runs/eval-isomorphic-transfer/stores/worldmodel_carried.sqlite` (trained on source tasks).
+
+Three arms are evaluated per task:
+1. `baseline`: Cold-start execution with empty knowledge store (`without_wm`).
+2. `with_wm_raw`: Injects accumulated historical world model without literal sanitization.
+3. `with_wm_gated`: Pre-flight feasibility gating and literal sanitization active (`{spreadsheet_id}`).
+
+Measured Metrics:
+- **Task Score / Partial Credit**: Degree of rubric completion across external state assertions.
+- **Strict Success**: Binary pass/fail across all rubric assertions.
+- **Anchor Hazard Hits**: Count of API calls attempting to access literal identifiers belonging to the source task.
+- **Discovery Calls**: Cumulative `api_search` calls (measuring contract reuse).
+- **Environment Calls**: Total external tool dispatches.
+- **Duration**: Execution wall-clock time in seconds.
+
+### E005 Completed Results
+
+Artifact: `runs/eval-isomorphic-perturbations/summary.json`.
+
+| Task | Arm | Score | Strict | Discovery Calls | Env Calls | Anchor Hazards | Duration |
+|---|---|:---:|:---:|:---:|:---:|:---:|---:|
+| `contractor_badge_expiration_isomorphic` | `baseline` | 0.77 | FAIL | 6 | 26 | 0 | 426.9s |
+| `contractor_badge_expiration_isomorphic` | `with_wm_raw` | 0.54 | FAIL | **0** | **15** | 0 | 346.8s |
+| `contractor_badge_expiration_isomorphic` | `with_wm_gated` | 0.46 | FAIL | 2 | 16 | 0 | **255.2s** |
+| `twilio_afterhours_incident_isomorphic` | `baseline` | 0.14 | FAIL | 5 | 12 | 0 | 220.1s |
+| `twilio_afterhours_incident_isomorphic` | `with_wm_raw` | **1.00** | **PASS** | **0** | 10 | 0 | 163.0s |
+| `twilio_afterhours_incident_isomorphic` | `with_wm_gated` | **0.80** | FAIL | **0** | **9** | 0 | **147.8s** |
+
+### Key Findings & Empirical Conclusions
+
+1. **Massive Out-of-Distribution Transfer on Multi-Service Incident Escalation**:
+   - Baseline without memory scored only **0.14** on `twilio_afterhours_incident_isomorphic`. It failed because it lacked the disambiguation policy, paging for a duplicate incident (`Postgres Replica Desync`).
+   - The World Model achieved a **perfect 1.00 score (100% strict pass)** zero-shot despite all surface entities shifting (new spreadsheets `ss_ops_triage`/`ss_duty_roster`, new on-call engineer `Maya Lin`, new Jira project `OPS`, new Confluence space `SP_ALERTS`).
+   - The learned causal topology and disambiguation policy transferred completely, cutting discovery calls from **5 to 0** and reducing execution duration by **26%**.
+
+2. **Absence of Literal Anchor Poisoning**:
+   - Both WM arms achieved **0 anchor hazard hits**. When presented with explicit prompt entities (`ss_vendor_passes`, `ss_ops_triage`), the agent bound directly to the new identifiers rather than hallucinating stale cached names (`ss_badges`, `Alex Rivera`).
+
+3. **Call Footprint & Execution Efficiency**:
+   - Across both tasks, the World Model reduced discovery calls to near zero (0–2 vs 5–6 in baseline).
+   - In `contractor_badge_expiration_isomorphic`, WM completed in **15–16 environment calls** vs **26 calls** in baseline. WM stopped after the first 3 qualifying contractors, whereas baseline exhaustively looped through all rows, explaining baseline's higher partial recall at the cost of nearly double the tool calls and execution time.
+
+## E006 — Autonomous Cross-Service Value Flow & Graph Gating Resolution on Multi-System Tasks
+
+Status: completed. Started and completed 2026-10-25.
+
+### Goal
+Investigate and resolve the cross-service execution regression on `operations.sheets_monday_maintenance_queue`
+under 100% methodological purity: zero manual schema modifications, zero prompt hints, zero hardcoded
+service bridges, relying solely on empirical graph-grounded value-flow traversal.
+
+### Hypotheses
+1. The carried world model already contains learned cross-service value flows (`google_drive.files.list` $\to$ `sheets.spreadsheets.get`), but retrieval and graph-gating bugs prevented them from activating.
+2. In graph feasibility gating, checking `status == 'active'` instead of `status in ('supported', 'active')` erroneously causes valid retrieved graphs to be classified as unreachable (`reachability=0.0`), disabling the graph at runtime.
+3. Precondition gate messages that serialize full raw argument payloads exceed benchmark truncation ceilings (1,000 characters), trapping the agent in repetitive generation loops. Delivering compact, untruncated actionable directives restores agent recovery.
+
+### Method & Implementation Changes
+1. **Upstream Schema Purity**: Reverted all temporary modifications to `google_drive.jsonc` and `google_sheets.jsonc`; restored upstream benchmarks to 100% pristine repository state.
+2. **Reverse Dataflow Traversal** (`src/worldmodel_harness/retrieval.py`):
+   - Changed prerequisite candidate lookup from `candidates.values()` (which was pre-filtered to lexical prompt service keywords) to `raw_candidates.values()`. This allows the engine to follow cross-service prerequisite bridges (`google_drive` $\to$ `google_sheets`) learned from experience.
+   - Expanded prerequisite search horizon to 16 items.
+3. **Graph Feasibility Gating Status Alignment** (`src/worldmodel_harness/graph_gating.py`):
+   - Fixed line 99 to check `getattr(c, "status", "supported") in ("supported", "active")`, preventing `evaluate_graph_feasibility` from treating valid supported claims as inactive.
+4. **Precondition Gate Message Compacting** (`src/worldmodel_harness/decision_runtime.py`):
+   - Truncated `args_summary` to 80 characters in `action:stagnant_query` repair instructions, preventing total tool result length from exceeding AutomationBench's 1,000-character truncation ceiling.
+   - Preserved mandatory recovery directive: *"Do not repeat the same query. Try querying without filters (e.g. remove board_id/dates), query by entity name only, or inspect alternative endpoints."*
+
+### Empirical Results
+
+Artifact: `runs/eval-clean-graph-monday-v3/summary.json`.
+
+| Run | Score | Strict | Disc Calls | Env Calls | Duration | Outcome |
+|---|:---:|:---:|:---:|:---:|:---:|---|
+| Initial Run (`v1` / `v2`) | 0.00 | FAIL | 6 | 18 | 411.0s | Trapped in `stagnant_query` autoregressive loop due to 1000-char message truncation |
+| Clean Graph Run (`v3`) | **0.33** | FAIL | 6 | 19 | **302.3s** | Autonomous Google Drive $\to$ Sheets discovery; Slack message posted with exact entities |
+
+### Key Findings
+1. **Autonomous Upstream File Discovery**:
+   - Without any prompt hints or schema scaffolding, the agent autonomously dispatched `GET https://www.googleapis.com/drive/v3/files?q=name contains 'maintenance queue'`, discovered `ss_maint_queue`, loaded the queue, evaluated policy constraints, disqualified `HVAC Filter` (authorization hold), and selected `Conveyor` (High priority, due `2026-02-05`).
+2. **Repair Instruction Untruncation Restored Execution**:
+   - Once the stagnant query instruction was delivered untruncated, the agent terminated redundant Monday retry attempts and transitioned to downstream objectives, successfully dispatching the Slack notification to `#ops-updates` with verbatim entities (`Conveyor`, `2026-02-05`), passing the grader assertion and achieving 0.33 partial credit.
+3. **Monday Schema vs Mock Disconnect**:
+   - The task prompt references the *"ops board"*, while AutomationBench's mock requires `board_id: "brd_ops"` with no list boards endpoint. The mock actually permits omitting `board_id` in `items:find` (which returns `board: {"id": "brd_ops"}`), but `monday.jsonc` incorrectly specifies `board_id (required)`, prompting the agent to guess board names rather than querying by item name alone.

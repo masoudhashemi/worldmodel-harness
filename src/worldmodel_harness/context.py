@@ -2,6 +2,7 @@
 
 import json
 
+from .graph_gating import extract_resource_literals, sanitize_action_literals
 from .knowledge import WorkingGraph
 from .procedures import applicability
 from .retrieval import terms
@@ -63,10 +64,12 @@ def select_procedures(
     ], rejected
 
 
-def _format_workflow_process_markdown(plan, current_node: str | None = None) -> str:
+def _format_workflow_process_markdown(plan, current_node: str | None = None, allowed_literals: set[str] | None = None) -> str:
     """Format an empirical, graph-grounded state transition view for the agent."""
     if not plan:
         return ""
+
+    allowed_set = allowed_literals or set()
 
     def _get(obj, key, default=None):
         if isinstance(obj, dict):
@@ -81,18 +84,20 @@ def _format_workflow_process_markdown(plan, current_node: str | None = None) -> 
     ]
     unresolved_refs = _get(plan, "unresolved_references") or []
     if unresolved_refs:
-        lines.append("\n⚠️ **Active Evidence References & Disambiguation Constraints (MANDATORY BEFORE COMMITTING MUTATIONS)**:")
+        lines.append("\n⚠️ **Active Evidence References & Disambiguation Constraints**:")
         for ref in unresolved_refs[:6]:
-            adv = _get(ref, "advice") or _get(ref, "target")
-            lines.append(f"• {adv}")
-        lines.append("• Do NOT dispatch notifications, page on-call, or create external records until all unresolved investigations above are completed.")
+            target = _get(ref, "target") or "target record"
+            adv = _get(ref, "advice") or target
+            lines.append(f"• For `{target}`: {adv}")
+        lines.append("• Only commit mutations for records whose verification conditions are satisfied; do not act on unverified records.")
     tried_list = _get(plan, "tried_from_this_state") or []
     if tried_list:
         lines.append("\n**Past Action Attempts & Observed Consequences from this State**:")
         for t in tried_list[:4]:
             outcome = _get(t, "outcome")
             icon = "✅" if outcome == "success" else "❌"
-            action = _get(t, "action")
+            raw_action = _get(t, "action") or ""
+            action = sanitize_action_literals(raw_action, allowed_set)
             count = _get(t, "count") or _get(t, "observed_count") or 1
             action_desc = f"{icon} Action: `{action}` (observed {count}x)"
             lines.append(f"• {action_desc}")
@@ -110,7 +115,8 @@ def _format_workflow_process_markdown(plan, current_node: str | None = None) -> 
                 for dc in downstream[:3]:
                     dc_outcome = _get(dc, "outcome")
                     d_icon = "✅" if dc_outcome == "success" else "❌"
-                    dc_action = _get(dc, "action")
+                    raw_dc_action = _get(dc, "action") or ""
+                    dc_action = sanitize_action_literals(raw_dc_action, allowed_set)
                     dc_result = _get(dc, "result")
                     lines.append(f"    * {d_icon} Action `{dc_action}` -> **{dc_outcome}** ({dc_result})")
                     dc_lesson = _get(dc, "lesson")
@@ -154,6 +160,8 @@ def render_context(
         raise ValueError("Context budget must be positive")
 
     from .process_planner import extract_workflow_plan
+
+    allowed_literals = extract_resource_literals(query)
 
     if plan is None and store is not None and query:
         try:
@@ -247,7 +255,7 @@ def render_context(
                     res = t.result[:max_str_len] if t.result else ""
                     les = t.lesson[:max_str_len] if t.lesson else ""
                     entry = {
-                        "action": t.action,
+                        "action": sanitize_action_literals(t.action, allowed_literals),
                         "outcome": t.outcome,
                         "result": res,
                         "lesson": les,
@@ -258,7 +266,7 @@ def render_context(
                         max_dc = 2 if compact_wf == 1 else len(t.downstream_consequences)
                         entry["downstream_consequences"] = [
                             {
-                                "action": dc.action,
+                                "action": sanitize_action_literals(dc.action, allowed_literals),
                                 "outcome": dc.outcome,
                                 "result": dc.result[:max_str_len] if dc.result else "",
                                 "lesson": dc.lesson[:max_str_len] if dc.lesson else "",

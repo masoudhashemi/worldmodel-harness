@@ -91,6 +91,12 @@ SERVICE_SYNONYMS = {
     "envelope": "docusign",
     "jira": "jira",
     "confluence": "confluence",
+    "monday": "monday",
+    "board": "monday",
+    "boards": "monday",
+    "notify": "slack",
+    "notification": "slack",
+    "notifications": "slack",
 }
 
 
@@ -657,7 +663,14 @@ def compile_trajectory_graph(
                 else:
                     lesson = f"Call failed: {result_summary[:80]}"
             else:
-                if isinstance(res, dict):
+                from .decision_runtime import is_empty_query_result
+                is_read = method == "GET" or any(s in url for s in (":find", "/find", ":search", "/search", ":query", "/query"))
+                if is_read and is_empty_query_result(res):
+                    outcome = "zero_matches"
+                    result_summary = "HTTP 200: Request accepted, zero matches, identifier unresolved"
+                    lesson = "Request accepted, zero matches, identifier unresolved: verify entity title, table ID, or query parameters."
+                    target_nid = None
+                elif isinstance(res, dict):
                     if "values" in res and isinstance(res["values"], list):
                         result_summary = f"HTTP 200: Successfully returned {len(res['values'])} rows"
                     elif "sid" in res or "id" in res:
@@ -667,9 +680,10 @@ def compile_trajectory_graph(
                     else:
                         keys = list(res.keys())[:3]
                         result_summary = f"HTTP 200: Succeeded (keys: {keys})"
+                    lesson = "Valid verified operational transition."
                 else:
                     result_summary = "Operation succeeded"
-                lesson = "Valid verified operational transition."
+                    lesson = "Valid verified operational transition."
 
             attempt = NodeAttempt(
                 source_node=current_state,
@@ -700,20 +714,30 @@ def compile_trajectory_graph(
             else:
                 graph.node_attempts[current_state].append(attempt)
 
-            # Advance current_state on environment success
+            # Advance current_state on environment success with valid target and non-empty result
             if (
-                ep.outcome == "success"
+                outcome == "success"
+                and target_nid is not None
                 and ep.origin == "environment"
                 and ep.operation not in ("api_search", "lookup_knowledge")
             ):
                 current_state = target_nid
 
     # 4b. Map successful execution transitions into graph edges
+    from .decision_runtime import is_empty_query_result
     by_task: dict[str, list[Episode]] = defaultdict(list)
     for e in raw_episodes:
         # Harness records wrap environment events; they are not graph transitions.
-        # Failed calls supply recovery evidence, not successful execution paths.
-        if successful_transitions_only and (e.origin != "environment" or e.outcome != "success"):
+        # Failed calls or zero-match queries supply recovery evidence, not successful execution paths.
+        args = e.arguments if isinstance(e.arguments, dict) else {}
+        is_read = args.get("method", "GET").upper() == "GET" or any(
+            s in str(args.get("url", "")).lower() for s in (":find", "/find", ":search", "/search", ":query", "/query")
+        )
+        if successful_transitions_only and (
+            e.origin != "environment"
+            or e.outcome != "success"
+            or (is_read and is_empty_query_result(e.response))
+        ):
             continue
         if e.operation in ("api_search", "lookup_knowledge"):
             continue

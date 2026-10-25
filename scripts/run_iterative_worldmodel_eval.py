@@ -93,6 +93,11 @@ def parse_args():
         help="Skip the baseline cold-start run and only execute WM iterations",
     )
     parser.add_argument(
+        "--only-baseline",
+        action="store_true",
+        help="Run only the cold-start baseline and skip WM iterations",
+    )
+    parser.add_argument(
         "--no-semantic-learning",
         dest="semantic_learning",
         action="store_false",
@@ -104,6 +109,11 @@ def parse_args():
         type=int,
         default=12000,
         help="Maximum character budget for injected operational memory",
+    )
+    parser.add_argument(
+        "--gated-graph",
+        action="store_true",
+        help="Enable pre-flight feasibility and entity collision gating with discovery plateau cutoff",
     )
     parser.add_argument(
         "--resume",
@@ -124,6 +134,7 @@ async def run_trial(
     timeout: int,
     semantic_learning: bool = False,
     retrieval_chars: int = 12000,
+    gated_graph: bool = False,
 ) -> dict:
     domain = task_name.split(".", 1)[0]
     settings = ExperimentSettings(
@@ -141,6 +152,7 @@ async def run_trial(
         semantic_learning=semantic_learning,
         adaptive=True,
         retrieval_chars=retrieval_chars,
+        gated_graph=gated_graph,
     )
     start_time = time.perf_counter()
     report = await run_automationbench(root, settings, store_path)
@@ -271,6 +283,7 @@ async def main():
                     timeout=args.timeout,
                     semantic_learning=False,
                     retrieval_chars=args.retrieval_chars,
+                    gated_graph=args.gated_graph,
                 )
                 all_results.append(metrics)
                 completed_trials.add(("baseline", 0, task_name))
@@ -292,6 +305,11 @@ async def main():
                 })
 
             summary_file.write_text(json.dumps({"results": all_results}, indent=2))
+
+        if args.only_baseline:
+            print_scorecard(all_results)
+            print(f"\nBaseline results saved to: {summary_file}")
+            return
 
     # -------------------------------------------------------------
     # PHASE 2: Iterative World Model (WITH_WM) - Persistent Memory
@@ -332,6 +350,7 @@ async def main():
                     timeout=args.timeout,
                     semantic_learning=args.semantic_learning,
                     retrieval_chars=args.retrieval_chars,
+                    gated_graph=args.gated_graph,
                 )
                 all_results.append(metrics)
                 completed_trials.add(("with_worldmodel", iteration, task_name))

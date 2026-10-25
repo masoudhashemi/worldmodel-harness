@@ -61,6 +61,7 @@ class ExperimentSettings(BaseModel):
     max_environment_calls: int | None = Field(default=40, ge=1)
     retrieval_chars: int = Field(default=12000, ge=1)
     timeout_seconds: int | None = Field(default=300, ge=1)
+    gated_graph: bool = False
     shift: ResponseShift | None = None
 
     @model_validator(mode="after")
@@ -134,6 +135,7 @@ class KnowledgeClient:
         self.client, self.adapter = client, adapter
         self.knowledge, self.settings = knowledge, settings
         self.retrievals = []
+        self.gating_decision = None
         self.model_call_costs = []
         self.last_messages = []
         self.online_learner = None
@@ -251,18 +253,49 @@ class KnowledgeClient:
             # Response bodies can contain unrelated words and instructions. In the
             # operational arm use explicit action bindings and its current subgoal.
             retrieval_query = query if self.settings.operational else query + " " + " ".join(recent)
-            working = retrieve(
-                self.knowledge,
-                self.adapter.scope,
-                retrieval_query,
-                live=self.adapter.live,
-                max_chars=self.settings.retrieval_chars,
-                expand=self.settings.memory == "graph",
-                focus_entities=focus,
-                subgoal=subgoal,
-                current_node=current_node,
-                completed_nodes=set(self._completed_operations),
-            )
+            gating_decision_record = None
+            if self.settings.gated_graph:
+                from .graph_gating import evaluate_graph_feasibility
+                gating = evaluate_graph_feasibility(query, self.knowledge, self.adapter.scope)
+                gating_decision_record = {
+                    "action": gating.action,
+                    "reachability": gating.reachability,
+                    "collision_hazard": gating.collision_hazard,
+                    "required_services": gating.required_services,
+                    "missing_services": gating.missing_services,
+                    "colliding_entities": gating.colliding_entities,
+                    "reason": gating.reason,
+                }
+                self.gating_decision = gating_decision_record
+                if gating.action == "without_graph":
+                    from .knowledge import WorkingGraph
+                    working = WorkingGraph(scope=self.adapter.scope, claims=[])
+                else:
+                    working = retrieve(
+                        self.knowledge,
+                        self.adapter.scope,
+                        retrieval_query,
+                        live=self.adapter.live,
+                        max_chars=self.settings.retrieval_chars,
+                        expand=self.settings.memory == "graph",
+                        focus_entities=focus,
+                        subgoal=subgoal,
+                        current_node=current_node,
+                        completed_nodes=set(self._completed_operations),
+                    )
+            else:
+                working = retrieve(
+                    self.knowledge,
+                    self.adapter.scope,
+                    retrieval_query,
+                    live=self.adapter.live,
+                    max_chars=self.settings.retrieval_chars,
+                    expand=self.settings.memory == "graph",
+                    focus_entities=focus,
+                    subgoal=subgoal,
+                    current_node=current_node,
+                    completed_nodes=set(self._completed_operations),
+                )
             procedures, rejected = [], {}
             if self.settings.adaptive:
                 procedures, rejected = select_procedures(
@@ -725,6 +758,8 @@ async def run_automationbench(
             attach_validation_score(result, adapter)
             result["ledger"] = asdict(ledger)
             result["retrievals"] = wrapper.retrievals
+            if wrapper.gating_decision is not None:
+                result["gating_decision"] = wrapper.gating_decision
             result["prediction_assessments"] = adapter.prediction_assessments
             if settings.operational:
                 result["decision_audit"] = decision_audit

@@ -49,8 +49,6 @@ def is_empty_query_result(response: Any) -> bool:
                         return True
         if response.get("total") == 0 or response.get("count") == 0:
             return True
-        if not response:
-            return True
     return False
 
 
@@ -138,6 +136,85 @@ def count_consecutive_empty_queries(
                 else:
                     break
     return count
+
+
+def count_discovery_searches_in_episode(
+    evidence_store: KnowledgeStore | None,
+    scope: Scope,
+) -> int:
+    """Count how many total api_search / discovery calls have occurred in this episode."""
+    if evidence_store is None:
+        return 0
+    episodes = evidence_store.episodes(scope)
+    return sum(1 for ep in episodes if ep.operation in ("api_search", "lookup_knowledge"))
+
+
+def extract_query_target(arguments: dict[str, Any]) -> str | None:
+    """Extract semantic target identifier from query arguments (e.g. title, search string)."""
+    params = arguments.get("params") or arguments.get("body")
+    if isinstance(params, str):
+        try:
+            params = json.loads(params)
+        except Exception:
+            params = {}
+    if isinstance(params, dict):
+        for key in ("title", "name", "q", "query", "search"):
+            if params.get(key):
+                return str(params[key]).strip().lower()
+    if "query" in arguments:
+        return str(arguments["query"]).strip().lower()
+    return None
+
+
+def normalize_url_path(url: str) -> str:
+    """Strip synthetic trailing numeric suffixes like _1, _2 from URL paths."""
+    import re
+    return re.sub(r"_[0-9]+(?=/|$)", "_*", url.lower())
+
+
+def count_stagnant_lookup_attempts(
+    evidence_store: KnowledgeStore | None,
+    scope: Scope,
+    tool_name: str,
+    arguments: dict[str, Any],
+) -> tuple[int, str]:
+    """Count attempts targeting the same search objective across synthetic variations."""
+    if evidence_store is None:
+        return 0, ""
+    target = extract_query_target(arguments)
+    prop_url = str(arguments.get("url", ""))
+    norm_url = normalize_url_path(prop_url)
+
+    if not target and "_*" not in norm_url:
+        return 0, ""
+
+    episodes = evidence_store.episodes(scope)
+    if not episodes:
+        return 0, ""
+
+    count = 0
+    for ep in reversed(episodes):
+        if not isinstance(ep.arguments, dict):
+            continue
+        ep_target = extract_query_target(ep.arguments)
+        ep_url = str(ep.arguments.get("url", ""))
+        ep_norm_url = normalize_url_path(ep_url)
+
+        same_objective = False
+        if target and ep_target and target == ep_target:
+            same_objective = True
+        elif "_*" in norm_url and norm_url == ep_norm_url:
+            same_objective = True
+
+        if same_objective:
+            if is_empty_query_result(ep.response) or ep.outcome in ("zero_matches", "error"):
+                count += 1
+            else:
+                break
+        elif ep.outcome == "success" and not is_empty_query_result(ep.response):
+            break
+
+    return count, target or norm_url
 
 
 async def propose_decision(
@@ -404,6 +481,9 @@ async def dispatch_decision(
                     empty_count = count_consecutive_empty_queries(
                         evidence_store, scope, decision.action.tool, decision.action.arguments
                     )
+                    stagnant_lookup_count, target_desc = count_stagnant_lookup_attempts(
+                        evidence_store, scope, decision.action.tool, decision.action.arguments
+                    )
                     if empty_count >= 2:
                         gate = GateResult(
                             allowed=False,
@@ -411,14 +491,51 @@ async def dispatch_decision(
                             checked_claims=gate.checked_claims,
                             checked_facts=gate.checked_facts,
                         )
+                        args_summary = json.dumps(decision.action.arguments)
+                        if len(args_summary) > 80:
+                            args_summary = args_summary[:77] + "..."
                         repair_details = {
                             "instruction": (
-                                f"Query '{decision.action.tool}' with arguments {json.dumps(decision.action.arguments)} "
-                                f"has already returned empty results {empty_count} times with no intervening data updates. "
-                                "Do not repeat the same query. Try querying without filters, inspect the schema, "
-                                "or search alternative resources/endpoints."
+                                f"Query '{decision.action.tool}' ({args_summary}) "
+                                f"returned empty results {empty_count} times. "
+                                "Do not repeat the same query. Try querying without filters (e.g. remove board_id/dates), "
+                                "query by entity name only, or inspect alternative endpoints."
                             ),
                             "consecutive_empty_count": empty_count,
+                        }
+                    elif stagnant_lookup_count >= 2:
+                        gate = GateResult(
+                            allowed=False,
+                            gaps=("action:stagnant_lookup",),
+                            checked_claims=gate.checked_claims,
+                            checked_facts=gate.checked_facts,
+                        )
+                        repair_details = {
+                            "instruction": (
+                                f"Lookup targeting '{target_desc}' has returned zero matches {stagnant_lookup_count} times "
+                                "across candidate tables or parameter variations. "
+                                "Do not guess synthetic numbered IDs or repeat ungrounded queries. "
+                                "Verify whether title matching requires an exact prefix/full title, or proceed with other steps."
+                            ),
+                            "stagnant_lookup_count": stagnant_lookup_count,
+                            "target": target_desc,
+                        }
+                if gate.allowed and decision.action.tool in ("api_search", "lookup_knowledge"):
+                    disc_count = count_discovery_searches_in_episode(evidence_store, scope)
+                    if disc_count >= 6:
+                        gate = GateResult(
+                            allowed=False,
+                            gaps=("discovery:plateau_exhausted",),
+                            checked_claims=gate.checked_claims,
+                            checked_facts=gate.checked_facts,
+                        )
+                        repair_details = {
+                            "instruction": (
+                                f"Discovery search budget exceeded ({disc_count} searches performed). "
+                                "Do not call api_search again. Proceed using verified endpoints already in context "
+                                "or execute tool actions directly with exact names from the prompt."
+                            ),
+                            "discovery_searches_performed": disc_count,
                         }
                 if gate.allowed and entity_tracker is not None and getattr(entity_tracker, "excluded_entities", None):
                     if is_mutation_action(decision.action.tool, decision.action.arguments):
