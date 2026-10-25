@@ -103,20 +103,29 @@ def entity_match(entity, participant):
 
 def claim_service(claim: Claim) -> str | None:
     """Identify the service domain for an endpoint or claim."""
+    svc = None
     if isinstance(claim.payload, dict):
         if claim.payload.get("service"):
-            return str(claim.payload["service"]).lower()
-        cid = claim.payload.get("id")
-        if isinstance(cid, str) and "." in cid:
-            return cid.split(".")[0].lower()
-    for p in claim.participants:
-        if isinstance(p, str) and "." in p and not p.startswith("http"):
-            return p.split(".")[0].lower()
-        if isinstance(p, str) and p.startswith("https://"):
-            host = urlsplit(p).netloc.lower()
-            for part in host.split("."):
-                if part not in ("api", "www", "com", "googleapis", "org", "net", "io", "co"):
-                    return part
+            svc = str(claim.payload["service"]).lower()
+        elif isinstance(claim.payload.get("id"), str) and "." in claim.payload["id"]:
+            svc = claim.payload["id"].split(".")[0].lower()
+    if svc is None:
+        for p in claim.participants:
+            if isinstance(p, str) and "." in p and not p.startswith("http"):
+                svc = p.split(".")[0].lower()
+                break
+            if isinstance(p, str) and p.startswith("https://"):
+                host = urlsplit(p).netloc.lower()
+                for part in host.split("."):
+                    if part not in ("api", "www", "com", "googleapis", "org", "net", "io", "co"):
+                        svc = part
+                        break
+                if svc:
+                    break
+    if svc:
+        if svc in ("google_sheets", "sheets"):
+            return "sheets"
+        return svc
     return None
 
 

@@ -97,6 +97,22 @@ SERVICE_SYNONYMS = {
     "notify": "slack",
     "notification": "slack",
     "notifications": "slack",
+    "pipefy": "pipefy",
+    "card": "pipefy",
+    "cards": "pipefy",
+    "phase": "pipefy",
+    "airtable": "airtable",
+    "base": "airtable",
+    "trello": "trello",
+    "hubspot": "hubspot",
+    "notion": "notion",
+    "zoom": "zoom",
+    "xero": "xero",
+    "calendly": "calendly",
+    "canva": "canva",
+    "freshdesk": "freshdesk",
+    "helpscout": "helpscout",
+    "gorgias": "gorgias",
 }
 
 
