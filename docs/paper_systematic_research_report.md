@@ -92,33 +92,43 @@ The Empirical Multi-Layer World Model Harness resolves these failure modes by co
 
 Existing autonomous agent architectures fall into four primary categories, each ill-suited for multi-tenant enterprise APIs:
 
+### 1.3 How Our Approach Differs from Existing Literature Formulations
+
+Existing autonomous enterprise agent frameworks reviewed in our literature taxonomy fall into four primary paradigms, each exhibiting critical limitations when faced with complex multi-tenant SaaS environments:
+
 ```mermaid
 quadrantChart
-    title Paradigm Comparison: Enterprise SaaS Automation
-    x-axis Low Structural Safety / Causal Rigor --> High Structural Safety / Causal Rigor
-    y-axis Single-Turn / Static --> Continual / Multi-Hop Long-Horizon
+    title Related Work Landscape: Enterprise Agent Optimization
+    x-axis Low Explicit Operational Structure --> High Explicit Operational Structure
+    y-axis Static Harness / Single Task --> Continual Multi-Task / Self-Evolving
     quadrant-1 Empirical Multi-Layer World Model (Ours)
-    quadrant-2 Symbolic Planning / PDDL (LLM+P)
-    quadrant-3 Sensory Model-Based RL (Dreamer, PlaNet)
-    quadrant-4 Reactive Tool Calling & Flat Memory (ReAct, MemGPT)
-    "ReAct / ToolBench": [0.15, 0.20]
-    "Gorilla / Toolformer": [0.25, 0.15]
-    "Reflexion / MemGPT": [0.35, 0.50]
-    "PDDL / LLM+P": [0.85, 0.35]
-    "DreamerV3 / MuZero": [0.45, 0.70]
-    "Empirical World Model (Ours)": [0.90, 0.90]
+    quadrant-2 Procedural Graphs / NeSyC
+    quadrant-3 WorldAbduct / E-Ledger
+    quadrant-4 Meta-Harness / AHE / Harness2
+    "Procedural Graphs (2026)": [0.75, 0.40]
+    "E-Ledger & WorldAbduct (2026)": [0.80, 0.70]
+    "Continual Discovery CDA (2026)": [0.65, 0.60]
+    "Meta-Harness (2026)": [0.25, 0.45]
+    "Harness2 (2026)": [0.30, 0.65]
+    "TreeFlex / Harness-G (2026)": [0.45, 0.75]
+    "NeSyC (2025)": [0.80, 0.35]
+    "Empirical World Model (Ours)": [0.90, 0.85]
 ```
 
-1. **Reactive Tool-Calling (ReAct, ToolBench, Gorilla)**:
-   - *Limitation*: Treats each API call as an isolated text generation step. No causal understanding of dataflow across tools ($A \to B \to C$). When an unexpected empty response or container constraint occurs, it lacks the mechanisms to systematically backtrack or relax queries.
-2. **Episodic Flat Memory (Reflexion, MemGPT, Letta)**:
-   - *Limitation*: Treats past experience as conversational text strings. When cross-tenant tasks are encountered, flat vector recall injects historical literal values into new request payloads, causing severe cross-tenant contamination.
-3. **Symbolic Planning (PDDL, STRIPS, LLM+P)**:
-   - *Limitation*: Assumes complete, closed-world domain specifications with deterministic transition axioms. In real-world SaaS APIs, schemas are loose, error messages are unstructured, and container hierarchies are dynamic. Symbolic systems crash upon the first undocumented API response.
-4. **Sensory Model-Based Reinforcement Learning (World Models, Dreamer, PlaNet)**:
-   - *Limitation*: Learns continuous latent transition spaces ($s_{t+1} \sim p(s \mid s_t, a_t)$) optimized for visual pixels or continuous control vectors. They lack the discrete relational algebra required for RESTful JSON paths, HTTP headers, authentication scopes, and exact string parameter bindings.
+1. **Procedural Memory and Graph Guidance (Procedural Graphs [2609.09153])**:
+   - *Approach*: Learns an editable procedural graph $\mathcal{G} = (\mathcal{V}, \mathcal{R}, \mathcal{E}, \Phi)$ to guide inference steps via local graph neighborhoods.
+   - *Limitation*: Procedural Graphs models *what an agent should do* (execution macros) without a decoupled model of *what the environment is like* (interface contracts, schemas, and dataflow constraints). As our experiments demonstrate, static execution macros become brittle and fail under isomorphic parameter shifts or changing container hierarchies.
+2. **Coupled World Models and Harness Evolution (E-Ledger & WorldAbduct [2610.11552])**:
+   - *Approach*: Couples static world knowledge $\mathcal{W}_S$ with dynamic task state $\mathcal{W}_D^t$, diagnosing failures with multi-objective metrics $\mathcal{J}_{\text{WM}}$ to propose harness edits and hypothesis verification interactions.
+   - *Limitation*: Focuses primarily on diagnosing hidden business rules. It does not provide explicit mechanisms for cross-service causal value-flow bindings ($p_{\text{out}} \to p_{\text{in}}$), offline frontier catalog pre-indexing, or pre-flight literal filtering to prevent cross-tenant Anchor Hazards.
+3. **Phase-Separated Continual Rule Discovery (CDA [2609.19551])**:
+   - *Approach*: Represents the world as explicit condition-effect rules $M = \{(c_i, e_i)\}_i$, strictly segregating an exploratory discovery phase from a downstream application phase.
+   - *Limitation*: Enterprise tasks require interleaved execution: an agent must discover, verify, and mutate within the same unified interaction budget. Rigid phase separation cannot recover when an ungrounded container deadlock occurs during live execution.
+4. **Programmatic Harness Optimization (Meta-Harness [2603.28052], Harness2 [2604.14838], AHE [2604.04944])**:
+   - *Approach*: Searches over surrounding Python harness programs ($H$) using LLM coding proposers, execution traces, and score archives.
+   - *Limitation*: Modifies executable code or prompts without maintaining an explicit operational world model ($K$). As analyzed in our formulation framework, optimizing harness code alone cannot resolve runtime dataflow incompatibilities or enforce multi-tenant parameter safety.
 
-**Our Distinction**: The Empirical World Model Harness introduces a **discrete, ontologically partitioned epistemic graph** that represents API contracts (`INTERFACE`), verified causal value-flow bindings (`BEHAVIOR`), and multi-tenant execution traces (`EVIDENCE`) as distinct first-class entities. It enforces pre-flight validation and dynamic query relaxation while remaining completely domain-agnostic.
+**Our Distinction**: The Empirical World Model Harness introduces a **discrete, ontologically partitioned epistemic graph** $\mathcal{G} = \langle \mathcal{V}, \mathcal{E}, \mathcal{C}, \mathcal{H} \rangle$ that separates immutable API contracts (`INTERFACE`), tenant configuration (`CONFIGURATION`), verified causal value flows (`BEHAVIOR`), and raw traces (`EVIDENCE`). By pairing offline frontier pre-compilation with pre-flight feasibility gating and runtime query relaxation, it achieves robust, provably isolated execution across heterogeneous enterprise SaaS platforms.
 
 ---
 
@@ -453,36 +463,77 @@ To rigorously quantify the individual contribution of each architectural module,
 
 ---
 
-## 5. Background and Mathematical Formulation
+## 5. Background, Mathematical Formulation, and Related Work
 
-### 5.1 Enterprise Automation as an Epistemic POMDP
+### 5.1 Enterprise Automation as a Partially Observed Multi-Tenant System
 
-We formalize multi-tenant enterprise workflow execution as a Partially Observable Markov Decision Process augmented with epistemic constraints:
-$$\mathcal{M} = \langle \mathcal{S}, \mathcal{A}, \mathcal{T}, \mathcal{R}, \Omega, \mathcal{O}, \mathcal{K}, \gamma \rangle$$
+Following the environment formulation of **World of Workflows** ([2601.22130](literature-and-formulation.md#p01-world-of-workflows)) and **AutomationBench** ([2604.18934](literature-and-formulation.md#4-benchmark-roles)), we model an enterprise automation environment as a Partially Observable Markov Decision Process augmented with multi-tenant relational states and decoupled observation channels:
 
-- **State Space ($\mathcal{S}$)**: The distributed state $s = \langle s_{\text{CRM}}, s_{\text{Sheets}}, s_{\text{Slack}}, \dots \rangle$ partitioned across disjoint tenants $u \in \mathcal{U}$.
-- **Action Space ($\mathcal{A}$)**: Structured API requests $a = (v, \theta)$, where $v \in \mathcal{V}$ is an endpoint contract and $\theta \in \Theta_v$ is a parameter binding.
-- **Observation Space ($\Omega$) and Function ($\mathcal{O}$)**: Partial JSON observations $o \sim \mathcal{O}(s, a)$ containing response bodies, HTTP status codes, and pagination metadata.
-- **Sparse Multi-Objective Reward ($\mathcal{R}$)**:
-  $$\mathcal{R}(s, a) = \sum_{m=1}^{M} w_m \cdot \mathbf{1}_{[\text{condition}_m(s)]}$$
-  requiring simultaneous satisfaction of target database mutations, audit notifications, and negative safety constraints.
+$$\mathcal{M} = \langle \mathcal{U}, \mathcal{S}, \mathcal{A}, \mathcal{T}, \mathcal{O}, \Omega, \mathcal{K}, \gamma \rangle$$
+
+- **State Space ($\mathcal{S}$)**: The true environment state $s_t \in \mathcal{S}$ represents the union of distributed relational databases, spreadsheets, issue boards, and communication mailboxes:
+  $$s_t = \bigcup_{i} \mathcal{R}_i^{(t)}$$
+  strictly partitioned across disjoint tenants $u \in \mathcal{U}$ to preserve tenant isolation.
+- **Contextual Dynamics ($T$)**: Following **Enterprise Dynamics / Do Enterprise Systems Need Learned World Models?** ([2605.12178](literature-and-formulation.md#p02-do-enterprise-systems-need-learned-world-models)), state transitions depend on active deployment configuration $c_t$ (e.g., approval thresholds, routing policies):
+  $$s_{t+1} \sim T_{\omega_t}(\cdot \mid s_t, a_t, c_t)$$
+- **Action Space ($\mathcal{A}$)**: Structured API requests $a_{k,t} = (\eta, \mathcal{P})$, where $\eta \in \mathcal{V}$ is an endpoint contract identifier and $\mathcal{P} \in \Theta_\eta$ is a parameter payload binding schema arguments to runtime values.
+- **Observation Space ($\Omega$) and Decoupled Channels ($\mathcal{O}$)**: The agent receives partial observations $o_{k,t+1} \sim \mathcal{O}_{\omega_t}(\cdot \mid s_t, a_{k,t}, s_{t+1})$. As established in **World of Workflows**, tool response channels $o^{\text{tool}}$ (status codes, returned rows) are accessible during inference, while audit/evaluation channels $o^{\text{eval}}$ (database side-effects, grader assertions) are withheld from the agent to prevent data snooping.
+- **Sparse Multi-Objective Reward ($\mathbf{J}$)**: Rubrics require simultaneous satisfaction of target mutations ($C_U$), audit notifications ($P_{\text{policy}}$), and negative safety constraints ($N_{\text{safety}}$):
+  $$\mathbf{J}(s, a) = \langle C_U(\tau), P_{\text{policy}}(\tau), N_{\text{safety}}(\tau) \rangle$$
 
 ---
 
-### 5.2 The Epistemic Causal Graph Formulation
+### 5.2 The Standardized Agent Configuration Framework
 
-The harness maintains the world model as an evolving causal graph:
+To systematically evaluate world model architectures, we adopt the standardized agent configuration framework from [`formulations.md`](formulations.md#part-i-standardized-comparison-framework):
+
+$$Z_n = \langle K_n, H_n, \vartheta_n, \Psi_n, \phi_n, \mathcal{D}_n \rangle$$
+
+where:
+- $K_n$: **Explicit Reusable Knowledge**: The multi-layer operational world model and causal value-flow graph.
+- $H_n$: **Executable Harness Support**: Pre-flight feasibility gates, query relaxation operators, and trajectory pre-planners.
+- $\vartheta_n$: **Acting Policy Parameters**: The base reasoning policy (`openai/gemma-4-31B-it`), held frozen.
+- $\Psi_n, \phi_n$: **Update Mechanism and Parameters**: The offline graph compiler and edge graduation algorithms.
+- $\mathcal{D}_n$: **Retained Evidence**: Episodic execution traces, HTTP payloads, and validation hashes.
+
+During task $k$ at step $t$, the agent retrieves a bounded **Task Working Graph** $W_{k,t} = \mathcal{R}_{H_n}(q_k, z_{k,t}, K_n)$ to act, avoiding context window bloat:
+$$a_{k,t} \sim \pi_{\vartheta_n, H_n}(\cdot \mid q_k, z_{k,t}, W_{k,t})$$
+
+---
+
+### 5.3 The Epistemic Causal Graph and Graduation Algebra
+
+The operational world model $K$ is maintained as an epistemic causal graph:
 $$\mathcal{G} = \langle \mathcal{V}, \mathcal{E}, \mathcal{C}, \mathcal{H} \rangle$$
 
-1. **Vertex Space ($\mathcal{V}$)**: Immutable endpoint contract claims:
+1. **Vertex Space ($\mathcal{V}$ — `INTERFACE` Layer)**:
+   Indexed offline via the Frontier Discovery Catalog across all 758 endpoints:
    $$v = \langle \text{id}, \text{method}, \text{url\_path}, \Sigma_{\text{in}}, \Sigma_{\text{out}}, \text{stage} \rangle$$
-2. **Edge Space ($\mathcal{E}$)**: Verified causal value flows:
-   $$e = (v_i, p_{\text{out}}, v_j, p_{\text{in}}) \quad \text{denoting} \quad \text{Extract}(o_{v_i}, p_{\text{out}}) \xrightarrow{\text{binds to}} \text{Inject}(\theta_{v_j}, p_{\text{in}})$$
-3. **Causal Graduation Criterion**:
-   $$\mathcal{K}_{\text{confirm}}(e) = \left\{ (u_k, t_k, \theta_k) \;\middle|\; |\mathcal{U}| \ge 2, |\mathcal{T}| \ge 2, |\Theta| \ge 2 \right\}$$
-4. **Feasibility and Relaxation Constraints ($\mathcal{C}$)**:
-   $$\text{Gate}(\hat{a}) = \text{BLOCKED} \quad \text{if} \quad \hat{\theta} \cap \text{Literals}(u_{\text{hist}}) \neq \emptyset$$
-   $$\text{Relax}(\theta) = \theta \setminus \{\text{container\_id}, \text{date\_filters}\} \quad \text{if} \quad \text{consecutive\_empty}(a) \ge 2$$
+2. **Edge Space ($\mathcal{E}$ — `BEHAVIOR` Layer / Causal Value Flows)**:
+   Verified data dependencies mapping producer output JSON paths to consumer input JSON paths:
+   $$e = (v_i, p_{\text{out}}, v_j, p_{\text{in}}) \quad \Longleftrightarrow \quad \text{Extract}(o_{v_i}, p_{\text{out}}) \xrightarrow{\text{binds to}} \text{Inject}(\theta_{v_j}, p_{\text{in}})$$
+3. **Causal Graduation Criterion ($\mathcal{K}_{\text{confirm}}$)**:
+   Edges initialize with `status="hypothesis"` and graduate to `status="supported"` only after multi-tenant confirmation:
+   $$\mathcal{K}_{\text{confirm}}(e) = \left\{ (u_m, t_m, \mathcal{P}_m) \;\middle|\; |\mathcal{U}| \ge 2, |\mathcal{T}| \ge 2, |\mathcal{P}| \ge 2 \right\}$$
+4. **Feasibility and Relaxation Constraints ($\mathcal{C}$ — Executable Harness $H$)**:
+   $$\text{Gate}(\hat{a}) = \text{BLOCKED} \quad \text{if} \quad \mathcal{P}(\hat{a}) \cap \text{Literals}(u_{\text{hist}}) \neq \emptyset$$
+   $$\text{Relax}(\mathcal{P}) = \mathcal{P} \setminus \{\text{container\_id}, \text{parent\_folder}, \text{board\_id}\} \quad \text{if} \quad \text{consecutive\_empty}(a) \ge 2$$
+
+---
+
+### 5.4 Comparative Paradigm Matrix
+
+We compare our Empirical World Model against the primary literature formulations reviewed in [`literature-and-formulation.md`](literature-and-formulation.md):
+
+| Feature / Formulation Dimension | Procedural Graphs ([2609.09153](literature-and-formulation.md#p05-procedural-graphs)) | E-Ledger / WorldAbduct ([2610.11552](literature-and-formulation.md#p04-e-ledger-and-worldabduct)) | Continual Discovery (CDA) ([2609.19551](literature-and-formulation.md#p03-continual-enterprise-world-model-discovery)) | Meta-Harness / Harness2 ([2603.28052](literature-and-formulation.md#p06-meta-harness)) | **Empirical World Model (Ours)** |
+|---|:---:|:---:|:---:|:---:|:---:|
+| **Primary Reusable Object** | Procedural Graph $\mathcal{G}$ | World Ledger $\mathcal{W}_S$ & Harness $H$ | Rule Model $M=\{(c_i, e_i)\}$ | Harness Code $H$ & Trace Archive | **Tri-Tier Causal Graph $\mathcal{G} = \langle \mathcal{V}, \mathcal{E}, \mathcal{C}, \mathcal{H} \rangle$** |
+| **Causal Value Flows ($p_{\text{out}} \to p_{\text{in}}$)** | None (Step macros) | Action Effects ($\Delta s$) | Co-occurrence Rules | None (Code Search) | **Graduated Path Bindings ($\ge 2$ Tenants/Tasks)** |
+| **Decoupled Information Layers** | No (Single graph) | 2 Layers ($\mathcal{W}_S, \mathcal{W}_D$) | Single rule set | Flat traces | **6 Layers (`INTERFACE`, `CONFIG`, `BEHAVIOR`, `PROC`, `EVID`, `LIVE`)** |
+| **Tenant Isolation & Anchor Defense** | Vulnerable | Unspecified | Vulnerable | Vulnerable | **Guaranteed (0.0% Anchor Hazard Gate)** |
+| **Container Deadlock Recovery** | Validation Gate | Diagnostic Verification | None (Rule Retire) | Re-generate Code | **Escalated Query Relaxation Operator** |
+| **Frontier API Pre-Indexing** | No | No | No | No | **Offline Catalog (758 Endpoints / 47 Services)** |
+| **Update Mechanism** | Batch Refinement | Trajectory Diagnosis | Phase-Separated | Proposer Agent | **Task-Interleaved Causal Induction & Graduation** |
 
 ---
 
