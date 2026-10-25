@@ -97,6 +97,17 @@ class WorkflowProcess(BaseModel):
     unresolved_references: list[dict[str, str]] = Field(default_factory=list)
 
 
+def _stage_rank(node: OperationNode) -> int:
+    """Ontological stage rank: lookup (1) -> mutate (2) -> notify (3)."""
+    if node.action_type == "read" or node.method == "GET":
+        return 1
+    if node.service in ("gmail", "slack", "twilio") and any(
+        term in (node.endpoint_id or "").lower() for term in ("send", "post", "sms", "notify")
+    ):
+        return 3
+    return 2
+
+
 def _generate_step_description(node: OperationNode, next_node: OperationNode | None = None) -> str:
     """Generate a concise, human-readable operational instruction for a step."""
     if node.node_id == "base64_encode":
@@ -208,6 +219,9 @@ def extract_workflow_plan(
     min_target_score = max(4, int(top_target_score * 0.6))
     filtered_targets = [item for item in target_candidates if item[0] >= min_target_score]
 
+    # Order targets by ontological lifecycle stage (mutations before notifications), then by score
+    filtered_targets.sort(key=lambda item: (_stage_rank(item[2]), -item[0]))
+
     # Select best targets (allowing composite intra-service mutations!)
     # Allow up to 2 distinct operations per service, preserving sequential multi-step mutations
     service_target_counts: dict[str, int] = defaultdict(int)
@@ -232,7 +246,8 @@ def extract_workflow_plan(
             top_starts.append(nid)
 
     if not top_starts and best_targets:
-        top_starts = [best_targets[0]]
+        min_stage = min(_stage_rank(graph.nodes[t]) for t in best_targets)
+        top_starts = [t for t in best_targets if _stage_rank(graph.nodes[t]) == min_stage][:2]
 
     # Identify intermediate investigation waypoints from unresolved references (e.g. check email, check policy sheet)
     investigation_targets: list[str] = []
@@ -294,10 +309,18 @@ def extract_workflow_plan(
         return None
 
     # Construct candidate solution paths for multi-path exploration
-    # When multiple candidate paths exist, rank them via Bayesian posterior draws (Thompson Sampling)
+    # Rank paths primarily by authorized target coverage (to prevent multi-objective truncation)
+    # and secondarily via Bayesian posterior draws (Thompson Sampling)
     ranked_candidates = list(candidate_paths)
     if len(ranked_candidates) > 1:
-        ranked_candidates.sort(key=lambda c: getattr(c, "sample_score", c[2]), reverse=True)
+        def path_ranking_key(cand):
+            p_nodes = cand[0]
+            covered_targets = sum(1 for t in best_targets if t in p_nodes)
+            target_coverage = covered_targets / len(best_targets) if best_targets else 1.0
+            score = getattr(cand, "sample_score", cand[2])
+            return (target_coverage, score)
+
+        ranked_candidates.sort(key=path_ranking_key, reverse=True)
 
     path_nodes, cost, _, _ = ranked_candidates[0][:4]
     if not path_nodes:

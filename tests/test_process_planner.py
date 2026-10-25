@@ -302,4 +302,20 @@ def test_state_transition_memory_and_downstream_branching(plan_store):
     assert "Recommended Transition Path" in md
 
 
+def test_multi_objective_target_coverage_ranking(plan_store):
+    store, scope = plan_store
+    query = "Remove subscribers from Mailchimp and send notification via Gmail."
+
+    plan = extract_workflow_plan(store, scope, query)
+    assert plan is not None
+    assert len(plan.potential_solution_paths) >= 1
+
+    rec_path = plan.potential_solution_paths[0]
+    # The recommended path MUST cover both Mailchimp mutation and Gmail notification
+    assert "mailchimp.lists.members.delete" in rec_path.steps
+    assert "gmail.users.messages.send" in rec_path.steps
+    assert rec_path.steps[-1] == "finish"
+
+
+
 
