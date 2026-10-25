@@ -613,6 +613,21 @@ Empirically evaluate Task 2 (Graph-Conditioned Pre-Execution Planning) on `opera
    - Extended `count_consecutive_empty_queries` to inspect the live session `audit` alongside recorded episodes.
    - When container-bound queries (e.g. `monday.items:find`) fail due to ungrounded container identifiers (such as `board_ops`), the runtime injects filter-relaxation guidance instructing the agent to omit `board_id` and search across all boards by name alone.
 
+#### Architecture: Gated Pre-Planning & Query Relaxation Pipeline
+
+```mermaid
+flowchart TD
+    Prompt["Task Prompt (Drive -> Sheets -> Monday -> Slack)"] --> PrePlan["1. Graph-Conditioned Pre-Planning<br>(Multi-Objective Coverage + Ontological Stage Rank)"]
+    PrePlan --> PlanOrder["Synthesized Plan:<br>1. Lookup: drive.files.list -> sheets.spreadsheets.get<br>2. Mutate: monday.items.find -> monday.items.updateColumn<br>3. Notify: slack.chat.postMessage"]
+    PlanOrder --> Gating["2. Pre-Flight Feasibility Gating<br>(Entity Collision & Reachability Check)"]
+    Gating --> ActionProposal["Agent Proposes Action<br>(e.g. POST monday:find board_id='board_ops')"]
+    ActionProposal --> ExecAudit["Audit & Empty Check"]
+    ExecAudit -- "Empty Results >= 2" --> Relaxation["3. Stagnant Query Relaxation<br>(Escalated Directive: Omit container filter; search by name)"]
+    Relaxation --> RelaxedAction["POST monday:find {name: 'Conveyor'}<br>-> Resolves itm_700 & brd_ops!"]
+    RelaxedAction --> MondayMutate["Mutate Monday status to 'Scheduled'"]
+    MondayMutate --> SlackTransition["Transition to Next Stage:<br>POST slack/chat.postMessage (#ops-updates)"]
+```
+
 ### Empirical Results
 
 Artifact: `runs/eval-task2-preplanning-monday-queue-v2/summary.json` (Run ID: `4a804e9ea2544d27a3534dfd2282c24f`).
