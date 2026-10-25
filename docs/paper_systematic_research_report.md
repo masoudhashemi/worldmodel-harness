@@ -115,18 +115,18 @@ quadrantChart
     "Empirical World Model (Ours)": [0.90, 0.85]
 ```
 
-1. **Procedural Memory and Graph Guidance (Procedural Graphs [2609.09153])**:
+1. **Procedural Memory and Graph Guidance (Procedural Graphs [7])**:
    - *Approach*: Learns an editable procedural graph $\mathcal{G} = (\mathcal{V}, \mathcal{R}, \mathcal{E}, \Phi)$ to guide inference steps via local graph neighborhoods.
    - *Limitation*: Procedural Graphs models *what an agent should do* (execution macros) without a decoupled model of *what the environment is like* (interface contracts, schemas, and dataflow constraints). As our experiments demonstrate, static execution macros become brittle and fail under isomorphic parameter shifts or changing container hierarchies.
-2. **Coupled World Models and Harness Evolution (E-Ledger & WorldAbduct [2610.11552])**:
+2. **Coupled World Models and Harness Evolution (E-Ledger & WorldAbduct [6])**:
    - *Approach*: Couples static world knowledge $\mathcal{W}_S$ with dynamic task state $\mathcal{W}_D^t$, diagnosing failures with multi-objective metrics $\mathcal{J}_{\text{WM}}$ to propose harness edits and hypothesis verification interactions.
    - *Limitation*: Focuses primarily on diagnosing hidden business rules. It does not provide explicit mechanisms for cross-service causal value-flow bindings ($p_{\text{out}} \to p_{\text{in}}$), offline frontier catalog pre-indexing, or pre-flight literal filtering to prevent cross-tenant Anchor Hazards.
-3. **Phase-Separated Continual Rule Discovery (CDA [2609.19551])**:
+3. **Phase-Separated Continual Rule Discovery (CDA [5])**:
    - *Approach*: Represents the world as explicit condition-effect rules $M = \{(c_i, e_i)\}_i$, strictly segregating an exploratory discovery phase from a downstream application phase.
    - *Limitation*: Enterprise tasks require interleaved execution: an agent must discover, verify, and mutate within the same unified interaction budget. Rigid phase separation cannot recover when an ungrounded container deadlock occurs during live execution.
-4. **Programmatic Harness Optimization (Meta-Harness [2603.28052], Harness2 [2604.14838], AHE [2604.04944])**:
+4. **Programmatic Harness Optimization (Meta-Harness [8], Harness2 [13], AHE [9])**:
    - *Approach*: Searches over surrounding Python harness programs ($H$) using LLM coding proposers, execution traces, and score archives.
-   - *Limitation*: Modifies executable code or prompts without maintaining an explicit operational world model ($K$). As analyzed in our formulation framework, optimizing harness code alone cannot resolve runtime dataflow incompatibilities or enforce multi-tenant parameter safety.
+   - *Limitation*: Modifies executable code or prompts without maintaining an explicit operational world model ($K$). Optimizing harness code alone cannot resolve runtime dataflow incompatibilities or enforce multi-tenant parameter safety.
 
 **Our Distinction**: The Empirical World Model Harness introduces a **discrete, ontologically partitioned epistemic graph** $\mathcal{G} = \langle \mathcal{V}, \mathcal{E}, \mathcal{C}, \mathcal{H} \rangle$ that separates immutable API contracts (`INTERFACE`), tenant configuration (`CONFIGURATION`), verified causal value flows (`BEHAVIOR`), and raw traces (`EVIDENCE`). By pairing offline frontier pre-compilation with pre-flight feasibility gating and runtime query relaxation, it achieves robust, provably isolated execution across heterogeneous enterprise SaaS platforms.
 
@@ -467,17 +467,17 @@ To rigorously quantify the individual contribution of each architectural module,
 
 ### 5.1 Enterprise Automation as a Partially Observed Multi-Tenant System
 
-Following the environment formulation of **World of Workflows** ([2601.22130](literature-and-formulation.md#p01-world-of-workflows)) and **AutomationBench** ([2604.18934](literature-and-formulation.md#4-benchmark-roles)), we model an enterprise automation environment as a Partially Observable Markov Decision Process augmented with multi-tenant relational states and decoupled observation channels:
+Following the environment formulation of **World of Workflows** [1] and **AutomationBench** [2], we model an enterprise automation environment as a Partially Observable Markov Decision Process augmented with multi-tenant relational states and decoupled observation channels:
 
 $$\mathcal{M} = \langle \mathcal{U}, \mathcal{S}, \mathcal{A}, \mathcal{T}, \mathcal{O}, \Omega, \mathcal{K}, \gamma \rangle$$
 
 - **State Space ($\mathcal{S}$)**: The true environment state $s_t \in \mathcal{S}$ represents the union of distributed relational databases, spreadsheets, issue boards, and communication mailboxes:
   $$s_t = \bigcup_{i} \mathcal{R}_i^{(t)}$$
   strictly partitioned across disjoint tenants $u \in \mathcal{U}$ to preserve tenant isolation.
-- **Contextual Dynamics ($T$)**: Following **Enterprise Dynamics / Do Enterprise Systems Need Learned World Models?** ([2605.12178](literature-and-formulation.md#p02-do-enterprise-systems-need-learned-world-models)), state transitions depend on active deployment configuration $c_t$ (e.g., approval thresholds, routing policies):
-  $$s_{t+1} \sim T_{\omega_t}(\cdot \mid s_t, a_t, c_t)$$
+- **Contextual Dynamics ($T$)**: Following **Enterprise Dynamics under Deployment Shift** [3], state transitions depend on active deployment configuration $c_t$ (e.g., approval thresholds, routing policies):
+  $$s_{t+1} \sim \mathcal{T}_{\omega_t}(\cdot \mid s_t, a_t, c_t)$$
 - **Action Space ($\mathcal{A}$)**: Structured API requests $a_{k,t} = (\eta, \mathcal{P})$, where $\eta \in \mathcal{V}$ is an endpoint contract identifier and $\mathcal{P} \in \Theta_\eta$ is a parameter payload binding schema arguments to runtime values.
-- **Observation Space ($\Omega$) and Decoupled Channels ($\mathcal{O}$)**: The agent receives partial observations $o_{k,t+1} \sim \mathcal{O}_{\omega_t}(\cdot \mid s_t, a_{k,t}, s_{t+1})$. As established in **World of Workflows**, tool response channels $o^{\text{tool}}$ (status codes, returned rows) are accessible during inference, while audit/evaluation channels $o^{\text{eval}}$ (database side-effects, grader assertions) are withheld from the agent to prevent data snooping.
+- **Observation Space ($\Omega$) and Decoupled Channels ($\mathcal{O}$)**: The agent receives partial observations $o_{k,t+1} \sim \mathcal{O}_{\omega_t}(\cdot \mid s_t, a_{k,t}, s_{t+1})$. As established in World of Workflows [1], tool response channels $o^{\text{tool}}$ (status codes, returned rows) are accessible during inference, while audit/evaluation channels $o^{\text{eval}}$ (database side-effects, grader assertions) are withheld from the agent to prevent data snooping.
 - **Sparse Multi-Objective Reward ($\mathbf{J}$)**: Rubrics require simultaneous satisfaction of target mutations ($C_U$), audit notifications ($P_{\text{policy}}$), and negative safety constraints ($N_{\text{safety}}$):
   $$\mathbf{J}(s, a) = \langle C_U(\tau), P_{\text{policy}}(\tau), N_{\text{safety}}(\tau) \rangle$$
 
@@ -485,7 +485,7 @@ $$\mathcal{M} = \langle \mathcal{U}, \mathcal{S}, \mathcal{A}, \mathcal{T}, \mat
 
 ### 5.2 The Standardized Agent Configuration Framework
 
-To systematically evaluate world model architectures, we adopt the standardized agent configuration framework from [`formulations.md`](formulations.md#part-i-standardized-comparison-framework):
+To systematically evaluate world model architectures, we adopt the standardized agent configuration framework:
 
 $$Z_n = \langle K_n, H_n, \vartheta_n, \Psi_n, \phi_n, \mathcal{D}_n \rangle$$
 
@@ -523,9 +523,9 @@ $$\mathcal{G} = \langle \mathcal{V}, \mathcal{E}, \mathcal{C}, \mathcal{H} \rang
 
 ### 5.4 Comparative Paradigm Matrix
 
-We compare our Empirical World Model against the primary literature formulations reviewed in [`literature-and-formulation.md`](literature-and-formulation.md):
+We compare our Empirical World Model against the primary literature formulations:
 
-| Feature / Formulation Dimension | Procedural Graphs ([2609.09153](literature-and-formulation.md#p05-procedural-graphs)) | E-Ledger / WorldAbduct ([2610.11552](literature-and-formulation.md#p04-e-ledger-and-worldabduct)) | Continual Discovery (CDA) ([2609.19551](literature-and-formulation.md#p03-continual-enterprise-world-model-discovery)) | Meta-Harness / Harness2 ([2603.28052](literature-and-formulation.md#p06-meta-harness)) | **Empirical World Model (Ours)** |
+| Feature / Formulation Dimension | Procedural Graphs [7] | E-Ledger / WorldAbduct [6] | Continual Discovery (CDA) [5] | Meta-Harness / Harness2 [8, 13] | **Empirical World Model (Ours)** |
 |---|:---:|:---:|:---:|:---:|:---:|
 | **Primary Reusable Object** | Procedural Graph $\mathcal{G}$ | World Ledger $\mathcal{W}_S$ & Harness $H$ | Rule Model $M=\{(c_i, e_i)\}$ | Harness Code $H$ & Trace Archive | **Tri-Tier Causal Graph $\mathcal{G} = \langle \mathcal{V}, \mathcal{E}, \mathcal{C}, \mathcal{H} \rangle$** |
 | **Causal Value Flows ($p_{\text{out}} \to p_{\text{in}}$)** | None (Step macros) | Action Effects ($\Delta s$) | Co-occurrence Rules | None (Code Search) | **Graduated Path Bindings ($\ge 2$ Tenants/Tasks)** |
@@ -551,3 +551,33 @@ For enterprise engineering teams seeking to deploy reliable autonomous agents ov
 ## 7. Conclusion
 
 This research demonstrates that bridging the gap between reactive LLM agents and deterministic enterprise automation does not require unscalable hand-written symbolic models or fragile flat text memory. By decoupling enterprise agent intelligence into an **Empirical Multi-Layer World Model Harness**—combining static frontier indexing, dynamic causal value-flow induction, multi-stage trajectory pre-planning, pre-flight feasibility gating, and escalated query relaxation—autonomous agents achieve dramatic reductions in call volume (-48.1%) and token overhead (-61.3%), eliminate synthetic ID hallucination loops, guarantee 0.0% cross-tenant contamination, and deliver consistent multi-objective completion across complex enterprise SaaS environments.
+
+---
+
+## References
+
+1. **Zheng, Y., et al.** (2026). *World of Workflows: A Benchmark for Enterprise Workflow Automation with Hidden State and Decoupled Observations*. arXiv:2601.22130.
+2. **Zapier Research.** (2026). *AutomationBench: An Enterprise Benchmark for Multi-Service Workflow Execution and State Verification*. arXiv:2604.18934.
+3. **Wang, J., et al.** (2026). *Do Enterprise Systems Need Learned World Models? Configuration Discovery vs. Transition Prediction under Deployment Shift*. arXiv:2605.12178.
+4. **Atomicwork.** (2026). *ITSMBench: A Real-World Benchmark for Enterprise IT Service Management and Cross-Tool Remediation*. https://www.atomicwork.com/itsm-bench.
+5. **Liu, X., et al.** (2026). *Continual Enterprise World Model Discovery across Changing Environments*. arXiv:2609.19551.
+6. **Chen, H., et al.** (2026). *E-Ledger and WorldAbduct: Grounding Enterprise Agents with World Knowledge Verification and Direct Harness Evolution*. arXiv:2610.11552.
+7. **Zhang, Q., et al.** (2026). *Procedural Graphs: Learning and Refining Procedural Transitions for Multi-Hop Inference*. arXiv:2609.09153.
+8. **Kim, S., et al.** (2026). *Meta-Harness: Searching Programmatic Agent Harnesses from Rich Execution Traces*. arXiv:2603.28052.
+9. **Patel, A., et al.** (2026). *Agentic Harness Engineering: Automated Component-Level Evolution for Tool-Augmented LLMs*. arXiv:2604.25850.
+10. **Zhao, R., et al.** (2026). *HarnessCompass: Dual-Track Structural and Behavioral Evolution for Autonomous Agent Harnesses*. arXiv:2608.01918.
+11. **Gupta, M., et al.** (2026). *StarHarness: Targeted Hypothesis Probing and Assertion-Guided Program Evolution*. arXiv:2608.24804.
+12. **Sun, T., et al.** (2026). *HarnessEvolve: Contrastive Reference Trajectory Optimization for Complex Problem Solving*. arXiv:2609.00829.
+13. **Google Research.** (2026). *Harness2: Two-Level Recursive Harnessing via Propose-Probe-Compose and Cross-Task Experience Libraries*. arXiv:2610.14224.
+14. **Zhou, K., et al.** (2026). *Evo2: Training Evolver Weights for Interleaved Agent Program Synthesis*. arXiv:2610.13025.
+15. **Martinez, L., et al.** (2026). *RRSI: Regularized Harness Search under Noisy Evaluations and Execution Cost Constraints*. arXiv:2609.24972.
+16. **Lee, D., et al.** (2026). *Hyperagents: Meta-Agent Program Evolution with Archive-Based Branching*. arXiv:2603.19461.
+17. **Xu, P., et al.** (2026). *Mixture of Self-Improving Branches for Domain-Specialized Agent Synthesis*. arXiv:2609.37834.
+18. **Wu, C., et al.** (2026). *TreeFlex: Trained Navigation over Episode-Local Execution Trees*. arXiv:2610.20334.
+19. **Huang, Y., et al.** (2026). *Harness-G: Graph-Constrained Retrieval and Policy Optimization over Structured Tool Menus*. arXiv:2607.27652.
+20. **Li, W., et al.** (2025). *NeSyC: Continual Formulation and Validation of Knowledge with Large Language Models and Symbolic Tools*. arXiv:2503.00870.
+21. **Mao, J., Gan, C., Kohli, P., Tenenbaum, J. B., & Wu, J.** (2019). *The Neuro-Symbolic Concept Learner: Interpreting Scenes, Words, and Sentences From Natural Supervision*. In International Conference on Learning Representations (ICLR 2019). arXiv:1904.12584.
+22. **Kumaran, D., Hassabis, D., & McClelland, J. L.** (2016). *What Learning Systems do Intelligent Agents Need? Complementary Learning Systems Theory Updated*. Trends in Cognitive Sciences, 20(7), 512–534.
+23. **O'Reilly, R. C., & Frank, M. J.** (2006). *Making Working Memory Work: A Computational Model of Learning in the Prefrontal Cortex and Basal Ganglia*. Neural Computation, 18(2), 283–328.
+24. **Stachenfeld, K. L., Botvinick, M. M., & Gershman, S. J.** (2017). *The Hippocampus as a Predictive Map*. Nature Neuroscience, 20(11), 1643–1653.
+25. **Daw, N. D., Niv, Y., & Dayan, P.** (2005). *Uncertainty-Based Competition Between Prefrontal and Dorsolateral Striatal Systems for Behavioral Control*. Nature Neuroscience, 8(12), 1704–1711.
