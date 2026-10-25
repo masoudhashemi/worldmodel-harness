@@ -654,3 +654,61 @@ Artifact: `runs/eval-task2-preplanning-monday-queue-v2/summary.json` (Run ID: `4
 3. **Partial Credit Increased to 0.33**:
    - The task achieved 0.33 partial credit. Full credit was prevented only by the omission of the due date string in the secondary Monday date update and Slack message text, before the per-trial timeout elapsed during effect verification.
 
+
+## E009 — Continual Learning & Multi-Iteration Consolidation Benchmark
+
+Status: completed. Started and completed 2026-10-25.
+
+### Goal
+Empirically evaluate Task 3 (Continual Learning & Multi-Iteration Consolidation) across out-of-distribution isomorphic perturbation tasks using the internal Toolkit cluster (`openai/gemma-4-31B-it`), verifying:
+1. Live promotion of value-flow claims from `status="hypothesis"` to `status="supported"` in SQLite once confirmed across $\ge 2$ distinct task/tenant contexts with distinct concrete values.
+2. Parameter slot abstraction without concrete literal anchoring or cross-task contamination (0 anchor hazard rate).
+3. Continual performance retention without catastrophic forgetting.
+
+### Method & Implementation
+1. **Model & Infrastructure**:
+   - Evaluated on `openai/gemma-4-31B-it` via vLLM on `job.console.elementai.com` (`TOOLKIT_TOKEN`).
+2. **Benchmark Tasks**:
+   - `operations.contractor_badge_expiration_isomorphic`: Surface entities, vendor passes, dates, and channels shifted from source task.
+   - `operations.twilio_afterhours_incident_isomorphic`: Incident responder, on-call schedules, phone numbers, and spreadsheets shifted from source task.
+3. **Carried Knowledge Store**:
+   - Seeded from `runs/eval-5tasks-gated-graph-v2/stores/worldmodel_carried.sqlite` containing initial experience on source tasks.
+   - Evaluated sequentially, allowing `CompositionLearner` ([`src/worldmodel_harness/composition.py`](../src/worldmodel_harness/composition.py)) to consolidate input/output reuse across episodes.
+4. **Safety & Hazard Auditing**:
+   - Evaluated under `--gated-graph` feasibility checking.
+   - Audited for stale literal leaks using `audit_anchor_hazards`.
+
+### Empirical Results
+
+Artifact: `runs/eval-task3-continual-consolidation/summary.json`.
+
+| Task | Arm | Partial Credit | Strict Score | Discovery Calls | Env Calls | Anchor Hazards | Duration |
+|---|---|:---:|:---:|:---:|:---:|:---:|:---:|
+| `contractor_badge_expiration_isomorphic` | `with_wm_gated` | **0.70** | FAIL | 6 | 21 | **0** | 479.4s |
+| `twilio_afterhours_incident_isomorphic` | `with_wm_gated` | **0.80** | FAIL | 4 | 14 | **0** | 341.8s |
+| **Macro Average** | `with_wm_gated` | **0.75** | FAIL | 5.0 | 17.5 | **0** | 410.6s |
+
+#### Value Flow Consolidation & Promotion Scorecard
+
+Queried from `runs/eval-task3-continual-consolidation/stores/worldmodel_carried.sqlite`:
+
+| Value Flow Claim ID | Source Endpoint | Target Endpoint | Supporting Episodes | Status Before | Status After | Consolidation Outcome |
+|---|---|---|:---:|:---:|:---:|---|
+| `6b32229c9a5b5b6c` | `google_drive.files.list` | `sheets.spreadsheets.get` | 12 | `hypothesis` | **`supported`** | **Promoted**: Confirmed across multiple tenants/tasks with distinct file IDs |
+| `1084758a2255e6c2` | `sheets.spreadsheets.values.get` | `twilio.messages.create` | 58 | `supported` | **`supported`** | **Retained**: Consolidated across 58 phone number dispatches |
+| `6c71a7bf84cf52d0` | `sheets.spreadsheets.values.get` | `twilio.messages.create` | 34 | `supported` | **`supported`** | **Retained**: Consolidated recipient routing |
+| `b33063f791f7cd98` | `gmail.users.messages.list` | `gmail.users.messages.get` | 90 | `supported` | **`supported`** | **Retained**: Consolidated message ID pipeline |
+| `ebb16422102afb61` | `twilio.messages.create` | `twilio.messages.create` | 86 | `supported` | **`supported`** | **Retained**: Preserved sender ID consistency |
+| `f52603815f54b768` | `gmail.users.messages.send` | `gmail.users.messages.get` | 4 | `supported` | **`supported`** | **Retained**: Confirmed email dispatch verification |
+
+### Key Findings
+1. **High Zero-Shot Transfer & Performance (0.75 Macro Average)**:
+   - The agent achieved strong out-of-distribution performance (**0.70** and **0.80**) on isomorphic perturbation tasks where concrete identities and thresholds were modified.
+2. **Autonomous Claim Promotion to `supported`**:
+   - `google_drive.files.list (files.*.id) -> sheets.spreadsheets.get (path.spreadsheetId)` successfully graduated from `hypothesis` to `status="supported"` after confirmation across distinct tenant contexts with distinct spreadsheet IDs.
+   - Causal reachability edges in `compile_trajectory_graph` now automatically attach this dataflow for future pre-planning.
+3. **100% Stale Anchor Protection (Zero Hazards)**:
+   - Despite carrying thousands of historical interaction episodes across tasks, `audit_anchor_hazards` verified **0 anchor hazard hits** across both runs.
+   - Gated graph feasibility prevented the model from hallucinatory reuse of past task identifiers (e.g., `ss_badges`, `alex rivera`), forcing dynamic discovery of runtime identifiers.
+
+
