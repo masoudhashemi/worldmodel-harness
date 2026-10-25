@@ -93,48 +93,63 @@ def count_consecutive_empty_queries(
     scope: Scope,
     tool_name: str,
     arguments: dict[str, Any],
+    audit: list[dict] | None = None,
 ) -> int:
     """Count how many times this exact query has returned empty results without intervening mutations."""
-    if evidence_store is None:
-        return 0
-    episodes = evidence_store.episodes(scope)
-    if not episodes:
-        return 0
-
     count = 0
-    for ep in reversed(episodes):
-        if not isinstance(ep.arguments, dict):
-            continue
-        method = str(ep.arguments.get("method", "GET")).upper()
-        url = str(ep.arguments.get("url", "")).lower()
-        is_read_query = (
-            method == "GET"
-            or any(s in url for s in (":find", "/find", ":search", "/search", ":query", "/query"))
-            or ep.operation in ("api_search", "lookup_knowledge", "inspect_contract")
-        )
-        if ep.outcome == "success" and not is_read_query and method in ("POST", "PUT", "PATCH", "DELETE"):
-            # A write occurred, so state could have changed
-            break
-
-        if ep.operation == tool_name:
-            ep_url = ep.arguments.get("url")
-            prop_url = arguments.get("url")
-            ep_method = str(ep.arguments.get("method", "GET")).upper()
-            prop_method = str(arguments.get("method", "GET")).upper()
-            if ep_url == prop_url and ep_method == prop_method:
-                ep_params = ep.arguments.get("params") or ep.arguments.get("body")
-                prop_params = arguments.get("params") or arguments.get("body")
-                if ep_params == prop_params:
-                    if is_empty_query_result(ep.response):
-                        count += 1
-                    else:
-                        break
-        elif tool_name == "api_search" and ep.operation == "api_search":
-            if ep.arguments.get("query") == arguments.get("query"):
-                if is_empty_query_result(ep.response):
-                    count += 1
-                else:
+    if evidence_store is not None:
+        episodes = evidence_store.episodes(scope)
+        if episodes:
+            for ep in reversed(episodes):
+                if not isinstance(ep.arguments, dict):
+                    continue
+                method = str(ep.arguments.get("method", "GET")).upper()
+                url = str(ep.arguments.get("url", "")).lower()
+                is_read_query = (
+                    method == "GET"
+                    or any(s in url for s in (":find", "/find", ":search", "/search", ":query", "/query"))
+                    or ep.operation in ("api_search", "lookup_knowledge", "inspect_contract")
+                )
+                if ep.outcome == "success" and not is_read_query and method in ("POST", "PUT", "PATCH", "DELETE"):
+                    # A write occurred, so state could have changed
                     break
+
+                if ep.operation == tool_name:
+                    ep_url = ep.arguments.get("url")
+                    prop_url = arguments.get("url")
+                    ep_method = str(ep.arguments.get("method", "GET")).upper()
+                    prop_method = str(arguments.get("method", "GET")).upper()
+                    if ep_url == prop_url and ep_method == prop_method:
+                        ep_params = ep.arguments.get("params") or ep.arguments.get("body")
+                        prop_params = arguments.get("params") or arguments.get("body")
+                        if ep_params == prop_params:
+                            if is_empty_query_result(ep.response):
+                                count += 1
+                            else:
+                                break
+                elif tool_name == "api_search" and ep.operation == "api_search":
+                    if ep.arguments.get("query") == arguments.get("query"):
+                        if is_empty_query_result(ep.response):
+                            count += 1
+                        else:
+                            break
+
+    # Also count recent blocked attempts in the current session audit
+    if audit:
+        for entry in reversed(audit):
+            dec = entry.get("decision", {})
+            action = dec.get("action", {})
+            if action.get("tool") == tool_name:
+                ep_url = action.get("arguments", {}).get("url")
+                prop_url = arguments.get("url")
+                ep_method = str(action.get("arguments", {}).get("method", "GET")).upper()
+                prop_method = str(arguments.get("method", "GET")).upper()
+                if ep_url == prop_url and ep_method == prop_method:
+                    ep_params = action.get("arguments", {}).get("params") or action.get("arguments", {}).get("body")
+                    prop_params = arguments.get("params") or arguments.get("body")
+                    if ep_params == prop_params:
+                        if not entry.get("invoked", True):
+                            count += 1
     return count
 
 
@@ -479,7 +494,7 @@ async def dispatch_decision(
                     }
                 if gate.allowed and is_query_action(decision.action.tool, decision.action.arguments):
                     empty_count = count_consecutive_empty_queries(
-                        evidence_store, scope, decision.action.tool, decision.action.arguments
+                        evidence_store, scope, decision.action.tool, decision.action.arguments, audit=audit
                     )
                     stagnant_lookup_count, target_desc = count_stagnant_lookup_attempts(
                         evidence_store, scope, decision.action.tool, decision.action.arguments
@@ -494,13 +509,40 @@ async def dispatch_decision(
                         args_summary = json.dumps(decision.action.arguments)
                         if len(args_summary) > 80:
                             args_summary = args_summary[:77] + "..."
+                        is_monday_find = "monday" in str(decision.action.arguments.get("url", "")) and ":find" in str(decision.action.arguments.get("url", ""))
+                        if empty_count >= 3:
+                            if is_monday_find:
+                                instruction = (
+                                    f"STAGNANT QUERY BLOCKED: '{decision.action.tool}' ({args_summary}) "
+                                    f"has failed {empty_count} times with zero matches. "
+                                    "In Monday.com mock, omit 'board_id' from the request body: call POST /monday/v2/items:find "
+                                    "with body '{\"name\": \"<name>\"}' (only 'name', no 'board_id'). "
+                                    "Alternatively, proceed immediately to your downstream workflow objectives (e.g. notifications)."
+                                )
+                            else:
+                                instruction = (
+                                    f"STAGNANT QUERY BLOCKED: '{decision.action.tool}' ({args_summary}) "
+                                    f"has failed {empty_count} times with zero matches. "
+                                    "Do NOT retry with board_id or filters. You must either query by entity name only "
+                                    "(omitting board_id), or immediately proceed to your downstream workflow objectives (e.g. notifications)."
+                                )
+                        else:
+                            if is_monday_find:
+                                instruction = (
+                                    f"Query '{decision.action.tool}' ({args_summary}) "
+                                    f"returned empty results {empty_count} times. "
+                                    "In Monday.com mock, omit 'board_id' (send only '{\"name\": \"...\"}') "
+                                    "to search across all boards, or inspect alternative endpoints."
+                                )
+                            else:
+                                instruction = (
+                                    f"Query '{decision.action.tool}' ({args_summary}) "
+                                    f"returned empty results {empty_count} times. "
+                                    "Do not repeat the same query. Try querying without filters (e.g. remove board_id/dates), "
+                                    "query by entity name only, or inspect alternative endpoints."
+                                )
                         repair_details = {
-                            "instruction": (
-                                f"Query '{decision.action.tool}' ({args_summary}) "
-                                f"returned empty results {empty_count} times. "
-                                "Do not repeat the same query. Try querying without filters (e.g. remove board_id/dates), "
-                                "query by entity name only, or inspect alternative endpoints."
-                            ),
+                            "instruction": instruction,
                             "consecutive_empty_count": empty_count,
                         }
                     elif stagnant_lookup_count >= 2:

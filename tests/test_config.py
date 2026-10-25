@@ -9,7 +9,7 @@ def test_repository_settings(monkeypatch):
 
     monkeypatch.delenv("WORLDMODEL_MODEL_CONFIG", raising=False)
     settings = load_settings(Path(__file__).resolve().parents[1])
-    assert settings.name == "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
+    assert settings.name == "openai/gemma-4-31B-it"
 
 
 def test_free_profile_is_explicit_and_cannot_fall_back(monkeypatch):
@@ -25,7 +25,7 @@ def test_free_profile_is_explicit_and_cannot_fall_back(monkeypatch):
         load_settings(root)
 
 
-def test_smoke_and_repository_default_profiles_are_free(monkeypatch):
+def test_smoke_and_repository_default_profiles_are_configured(monkeypatch):
     from pathlib import Path
 
     monkeypatch.delenv("WORLDMODEL_MODEL_CONFIG", raising=False)
@@ -33,7 +33,7 @@ def test_smoke_and_repository_default_profiles_are_free(monkeypatch):
     assert load_settings(root, default_profile="configs/model-free-test.toml").name.endswith(
         ":free"
     )
-    assert load_settings(root).name == "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
+    assert load_settings(root).name == "openai/gemma-4-31B-it"
 
 
 def test_dotenv_is_root_relative_and_secret_is_redacted(tmp_path, monkeypatch):

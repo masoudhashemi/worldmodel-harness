@@ -789,3 +789,54 @@ def test_compact_decision_truncates_oversized_goal():
     assert len(d.goal) == 240
     assert d.goal == "A" * 240
 
+
+def test_consecutive_blocked_queries_escalate_and_guide_monday_items_find(world):
+    from worldmodel_harness.decision_runtime import count_consecutive_empty_queries, dispatch_decision
+    from worldmodel_harness.knowledge import Episode
+
+    store, scope = world
+
+    # Add 2 empty episodes for a monday search query
+    ep1 = Episode(
+        task_id=scope.task_id,
+        scope=scope,
+        operation="api_fetch",
+        arguments={"method": "POST", "url": "https://api.monday.com/v2/items:find", "body": '{"board_id": "brd_wrong", "name": "Conveyor"}'},
+        response={"items": []},
+        outcome="success",
+    )
+    ep2 = Episode(
+        task_id=scope.task_id,
+        scope=scope,
+        operation="api_fetch",
+        arguments={"method": "POST", "url": "https://api.monday.com/v2/items:find", "body": '{"board_id": "brd_wrong", "name": "Conveyor"}'},
+        response={"items": []},
+        outcome="success",
+    )
+    store.append_episode(ep1)
+    store.append_episode(ep2)
+
+    # Empty count from store alone should be 2
+    count_2 = count_consecutive_empty_queries(
+        store, scope, "api_fetch", {"method": "POST", "url": "https://api.monday.com/v2/items:find", "body": '{"board_id": "brd_wrong", "name": "Conveyor"}'}
+    )
+    assert count_2 == 2
+
+    # If audit has a blocked attempt for the same query, total count escalates to 3
+    audit = [
+        {
+            "decision": {
+                "action": {
+                    "tool": "api_fetch",
+                    "arguments": {"method": "POST", "url": "https://api.monday.com/v2/items:find", "body": '{"board_id": "brd_wrong", "name": "Conveyor"}'},
+                }
+            },
+            "invoked": False,
+        }
+    ]
+    count_3 = count_consecutive_empty_queries(
+        store, scope, "api_fetch", {"method": "POST", "url": "https://api.monday.com/v2/items:find", "body": '{"board_id": "brd_wrong", "name": "Conveyor"}'}, audit=audit
+    )
+    assert count_3 == 3
+
+
