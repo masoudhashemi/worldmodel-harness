@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 
 from worldmodel_harness.checkpoint import copy_checkpoint
-from worldmodel_harness.experiment import ExperimentSettings, run_automationbench
+from worldmodel_harness.experiment import ExperimentSettings, dataset, run_automationbench
 from worldmodel_harness.store import KnowledgeStore
 
 DEFAULT_TASKS = {
