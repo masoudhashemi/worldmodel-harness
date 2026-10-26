@@ -95,20 +95,20 @@ def parse_args():
     parser.add_argument(
         "--max-turns",
         type=int,
-        default=35,
-        help="Maximum turns per task trial",
+        default=50,
+        help="Maximum turns per task trial (official AutomationBench default: 50)",
     )
     parser.add_argument(
         "--max-env-calls",
         type=int,
-        default=35,
-        help="Maximum environment calls per task trial",
+        default=50,
+        help="Maximum environment calls per task trial (default: 50)",
     )
     parser.add_argument(
         "--timeout",
         type=int,
-        default=450,
-        help="Per-trial timeout in seconds",
+        default=900,
+        help="Per-trial timeout in seconds (default: 900)",
     )
     parser.add_argument(
         "--seed-store",
@@ -172,6 +172,7 @@ async def run_trial(
     gated_graph: bool = False,
 ) -> dict:
     domain = task_name.split(".", 1)[0]
+    is_baseline = (arm == "baseline")
     settings = ExperimentSettings(
         domain=domain,
         task_names=(task_name,),
@@ -179,15 +180,15 @@ async def run_trial(
         max_turns=max_turns,
         max_environment_calls=max_env_calls,
         timeout_seconds=timeout,
-        memory="graph",
-        operational=True,
-        resolve_execution_frontier=True,
-        successful_transition_graph=True,
+        memory="none" if is_baseline else "graph",
+        operational=not is_baseline,
+        resolve_execution_frontier=not is_baseline,
+        successful_transition_graph=not is_baseline,
         phase="test",  # Enables learning from trajectories into the store
-        semantic_learning=semantic_learning,
-        adaptive=True,
+        semantic_learning=False if is_baseline else semantic_learning,
+        adaptive=not is_baseline,
         retrieval_chars=retrieval_chars,
-        gated_graph=gated_graph,
+        gated_graph=False if is_baseline else gated_graph,
     )
     start_time = time.perf_counter()
     report = await run_automationbench(root, settings, store_path)
