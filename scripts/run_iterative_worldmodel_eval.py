@@ -351,8 +351,8 @@ async def main():
             prior_data = json.loads(summary_file.read_text())
             for r in prior_data.get("results", []):
                 # Keep trials that completed cleanly or weren't interrupted by cluster crashes
-                err = r.get("error_type") or r.get("error")
-                if not err or err in ("TimeoutError",):
+                err = str(r.get("error_type") or r.get("error") or "")
+                if "BadGateway" not in err and "ConnectionError" not in err and "502" not in err:
                     all_results.append(r)
                     completed_trials.add((r["arm"], r["iteration"], r["task"]))
             print(f"\n>>> Resuming run. Found {len(completed_trials)} already completed trials. <<<")
