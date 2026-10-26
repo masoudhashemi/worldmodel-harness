@@ -448,7 +448,10 @@ class KnowledgeClient:
 
 
 async def run_automationbench(
-    root: Path, settings: ExperimentSettings, knowledge_path: Path | None = None
+    root: Path,
+    settings: ExperimentSettings,
+    knowledge_path: Path | None = None,
+    output_dir: Path | None = None,
 ) -> dict:
     model_settings = load_settings(root)
     client = build_client(model_settings, load_api_key(root, model_settings))
@@ -463,9 +466,14 @@ async def run_automationbench(
             }
         )
         semantic_client = MeteredClient(build_client(semantic_settings, load_api_key(root, semantic_settings)))
-    run_id = uuid4().hex
-    output = root / "runs" / run_id
-    output.mkdir(parents=True, exist_ok=False)
+    if output_dir is not None:
+        output = output_dir
+        output.mkdir(parents=True, exist_ok=True)
+        run_id = output.name
+    else:
+        run_id = uuid4().hex
+        output = root / "runs" / run_id
+        output.mkdir(parents=True, exist_ok=False)
     checkpoint_metadata = None
     checkpoint_source = None
     if settings.phase == "checkpoint":
@@ -658,8 +666,11 @@ async def run_automationbench(
                         )
                     )
                 )
-            task_output = output / adapter.scope.task_id
-            task_output.mkdir()
+            if output_dir is not None:
+                task_output = output / "trajectories" / adapter.task.task_id
+            else:
+                task_output = output / adapter.scope.task_id
+            task_output.mkdir(parents=True, exist_ok=True)
             result = {"task_name": adapter.task.task_id, "scope": adapter.scope.model_dump()}
             try:
                 async with agent.session(
@@ -687,16 +698,19 @@ async def run_automationbench(
                         ),
                     }
                 )
-                (task_output / "history.json").write_text(
-                    json.dumps(
-                        [[m.model_dump(mode="json") for m in group] for group in history], indent=2
-                    )
+                traj_json = json.dumps(
+                    [[m.model_dump(mode="json") for m in group] for group in history], indent=2
                 )
+                (task_output / "history.json").write_text(traj_json)
+                (task_output / "trajectory.json").write_text(traj_json)
             except Exception as exc:  # noqa: BLE001 -- keep SDK error details out of artifacts
                 result.update({"finished": False, "error_type": type(exc).__name__})
-                (task_output / "partial_history.json").write_text(json.dumps(
+                partial_json = json.dumps(
                     [m.model_dump(mode="json") for m in wrapper.last_messages], indent=2
-                ) + "\n")
+                ) + "\n"
+                (task_output / "partial_history.json").write_text(partial_json)
+                (task_output / "trajectory.json").write_text(partial_json)
+                (task_output / "history.json").write_text(partial_json)
             result["model_call_costs"] = wrapper.model_call_costs
             result["outer_validation_audit"] = agent.outer_validation_audit
             result["online_learning"] = (
@@ -785,6 +799,14 @@ async def run_automationbench(
             if adapter.shift is not None:
                 result["controlled_shift"] = adapter.shift.report()
             results.append(result)
+            if output_dir is not None:
+                import shutil
+                (task_output / "result.json").write_text(json.dumps(result, indent=2) + "\n")
+                if result.get("grading_details"):
+                    (task_output / "rubric.json").write_text(json.dumps(result["grading_details"], indent=2) + "\n")
+                ev_file = output / "evidence.sqlite"
+                if ev_file.exists():
+                    shutil.copy2(ev_file, task_output / "evidence.sqlite")
             (output / "summary.json").write_text(json.dumps(report, indent=2) + "\n")
         scored = [r["task_completed_correctly"] for r in results if "task_completed_correctly" in r]
         report["mean_strict_success"] = sum(scored) / len(scored) if scored else None

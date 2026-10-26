@@ -71,14 +71,14 @@ def parse_args():
     parser.add_argument(
         "--domains",
         nargs="+",
-        default=["operations", "sales"],
+        default=["public"],
         help="Domains to evaluate (e.g. operations, sales, or 'public'/'all')",
     )
     parser.add_argument(
         "--per-domain",
         type=int,
-        default=5,
-        help="Number of tasks per domain to evaluate (default: 5)",
+        default=None,
+        help="Number of tasks per domain to evaluate (default: None for full domain run)",
     )
     parser.add_argument(
         "--tasks",
@@ -101,8 +101,15 @@ def parse_args():
     parser.add_argument(
         "--max-env-calls",
         type=int,
-        default=50,
-        help="Maximum environment calls per task trial (default: 50)",
+        default=None,
+        help="Maximum environment calls per task trial (default: None for unconstrained calls)",
+    )
+    parser.add_argument(
+        "--toolset",
+        type=str,
+        default="api",
+        choices=["api", "zapier"],
+        help="Toolset mode (default: api for official REST API tools)",
     )
     parser.add_argument(
         "--timeout",
@@ -165,8 +172,9 @@ async def run_trial(
     iteration: int,
     store_path: Path,
     max_turns: int,
-    max_env_calls: int,
-    timeout: int,
+    max_env_calls: int | None,
+    timeout: int | None,
+    output_dir: Path | None = None,
     semantic_learning: bool = False,
     retrieval_chars: int = 12000,
     gated_graph: bool = False,
@@ -191,7 +199,7 @@ async def run_trial(
         gated_graph=False if is_baseline else gated_graph,
     )
     start_time = time.perf_counter()
-    report = await run_automationbench(root, settings, store_path)
+    report = await run_automationbench(root, settings, store_path, output_dir=output_dir)
     duration = time.perf_counter() - start_time
 
     res = report["results"][0] if report.get("results") else {}
@@ -213,10 +221,18 @@ async def run_trial(
     scope = res.get("scope") or {}
     task_id = scope.get("task_id", "")
     trajectory_path = None
-    if report.get("run_id") and task_id:
-        cand_traj = root / "runs" / report["run_id"] / task_id / "history.json"
-        if cand_traj.exists():
-            trajectory_path = str(cand_traj)
+    if output_dir:
+        for name in ("trajectory.json", "history.json", "partial_history.json"):
+            cand = output_dir / "trajectories" / task_name / name
+            if cand.exists():
+                trajectory_path = str(cand)
+                break
+    if not trajectory_path and report.get("run_id") and task_id:
+        for name in ("trajectory.json", "history.json", "partial_history.json"):
+            cand_traj = root / "runs" / report["run_id"] / task_id / name
+            if cand_traj.exists():
+                trajectory_path = str(cand_traj)
+                break
 
     return {
         "task": task_name,
@@ -238,6 +254,22 @@ async def run_trial(
         "error_type": res.get("error_type"),
         "duration_seconds": round(duration, 1),
     }
+
+
+class TeeWriter:
+    def __init__(self, filepath: Path, stream):
+        self.file = open(filepath, "a", encoding="utf-8")
+        self.stream = stream
+
+    def write(self, data):
+        self.stream.write(data)
+        self.stream.flush()
+        self.file.write(data)
+        self.file.flush()
+
+    def flush(self):
+        self.stream.flush()
+        self.file.flush()
 
 
 def print_scorecard(results: list[dict]):
@@ -264,7 +296,12 @@ async def main():
     args.output_dir.mkdir(parents=True, exist_ok=True)
     stores_dir = args.output_dir / "stores"
     stores_dir.mkdir(parents=True, exist_ok=True)
+    (args.output_dir / "trajectories").mkdir(parents=True, exist_ok=True)
     summary_file = args.output_dir / "summary.json"
+    log_file = args.output_dir / "benchmark.log"
+
+    sys.stdout = TeeWriter(log_file, sys.stdout)
+    sys.stderr = TeeWriter(log_file, sys.stderr)
 
     # Resolve task list
     if args.tasks:
@@ -287,8 +324,11 @@ async def main():
 
         task_list = []
         for d in resolved_domains:
-            dom_tasks = DEFAULT_TASKS.get(d, [])
-            task_list.extend(dom_tasks[:args.per_domain])
+            ds = list(dataset(d))
+            dom_tasks = [json.loads(r["info"])["task_name"] for r in ds]
+            if args.per_domain is not None and args.per_domain > 0:
+                dom_tasks = dom_tasks[:args.per_domain]
+            task_list.extend(dom_tasks)
 
     if not task_list:
         print("No tasks selected for evaluation.", file=sys.stderr)
@@ -345,6 +385,7 @@ async def main():
                     max_turns=args.max_turns,
                     max_env_calls=args.max_env_calls,
                     timeout=args.timeout,
+                    output_dir=args.output_dir,
                     semantic_learning=False,
                     retrieval_chars=args.retrieval_chars,
                     gated_graph=args.gated_graph,
@@ -412,6 +453,7 @@ async def main():
                     max_turns=args.max_turns,
                     max_env_calls=args.max_env_calls,
                     timeout=args.timeout,
+                    output_dir=args.output_dir,
                     semantic_learning=args.semantic_learning,
                     retrieval_chars=args.retrieval_chars,
                     gated_graph=args.gated_graph,
