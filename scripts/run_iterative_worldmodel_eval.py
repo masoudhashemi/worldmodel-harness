@@ -34,7 +34,36 @@ DEFAULT_TASKS = {
         "sales.priority_selection",
         "sales.format_ambiguity",
     ],
+    "marketing": [
+        "marketing.social_engagement_response",
+        "marketing.lead_enrichment",
+        "marketing.contact_data_cleanup",
+        "marketing.ad_performance_review",
+        "marketing.ad_platform_audit",
+    ],
+    "support": [
+        "support.zendesk_sf_case_sync",
+        "support.helpscout_jira_bugs",
+        "support.gorgias_order_lookup",
+        "support.zoho_sf_enrichment",
+        "support.zendesk_maintenance_notify",
+    ],
+    "finance": [
+        "finance.invoice_email_extract",
+        "finance.expense_anomaly_detection",
+        "finance.overdue_invoice_followup",
+        "finance.weekly_expense_summary",
+        "finance.timesheet_to_invoice",
+    ],
+    "hr": [
+        "hr.offboarding_automation",
+        "hr.training_compliance",
+        "hr.performance_feedback_logging",
+        "hr.job_posting_distribution",
+        "hr.job_board_monitoring",
+    ],
 }
+PUBLIC_DOMAINS = ["operations", "sales", "marketing", "support", "finance", "hr"]
 
 
 def parse_args():
@@ -42,8 +71,14 @@ def parse_args():
     parser.add_argument(
         "--domains",
         nargs="+",
-        default=["operations"],
-        help="Domains to evaluate (e.g. operations, sales)",
+        default=["operations", "sales"],
+        help="Domains to evaluate (e.g. operations, sales, or 'public'/'all')",
+    )
+    parser.add_argument(
+        "--per-domain",
+        type=int,
+        default=5,
+        help="Number of tasks per domain to evaluate (default: 5)",
     )
     parser.add_argument(
         "--tasks",
@@ -174,13 +209,25 @@ async def run_trial(
         except Exception:
             pass
 
+    scope = res.get("scope") or {}
+    task_id = scope.get("task_id", "")
+    trajectory_path = None
+    if report.get("run_id") and task_id:
+        cand_traj = root / "runs" / report["run_id"] / task_id / "history.json"
+        if cand_traj.exists():
+            trajectory_path = str(cand_traj)
+
     return {
         "task": task_name,
         "arm": arm,
         "iteration": iteration,
         "run_id": report.get("run_id"),
+        "task_id": task_id,
         "strict_eval": bool(res.get("task_completed_correctly") == 1),
         "partial_credit": res.get("partial_credit", 0.0),
+        "grading_details": res.get("grading_details", []),
+        "token_usage": res.get("token_usage", {}),
+        "trajectory_path": trajectory_path,
         "validation_available": bool(res.get("validation_available")),
         "turns_used": res.get("turns_taken") or len(res.get("messages", [])) // 2,
         "environment_calls": ledger.get("environment_calls", 0),
@@ -222,9 +269,25 @@ async def main():
     if args.tasks:
         task_list = list(args.tasks)
     else:
-        task_list = []
+        target_domains = []
         for d in args.domains:
-            task_list.extend(DEFAULT_TASKS.get(d, []))
+            if d.lower() in ("public", "all"):
+                target_domains.extend(PUBLIC_DOMAINS)
+            else:
+                target_domains.append(d)
+        
+        # Deduplicate while preserving order
+        seen_domains = set()
+        resolved_domains = []
+        for d in target_domains:
+            if d not in seen_domains:
+                seen_domains.add(d)
+                resolved_domains.append(d)
+
+        task_list = []
+        for d in resolved_domains:
+            dom_tasks = DEFAULT_TASKS.get(d, [])
+            task_list.extend(dom_tasks[:args.per_domain])
 
     if not task_list:
         print("No tasks selected for evaluation.", file=sys.stderr)
