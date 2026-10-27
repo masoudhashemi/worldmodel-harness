@@ -125,7 +125,7 @@ flowchart TD
 │   ├── procedures.py         # Procedure representation and independent adoption
 │   ├── store.py              # SQLite persistent knowledge store
 │   └── trajectory_graph.py   # Operational graph compilation, Beta posteriors, Thompson sampling
-└── tests/                    # Comprehensive unit and integration test suite (430+ tests)
+└── tests/                    # Comprehensive unit and integration test suite (540 tests)
 ```
 
 ---
@@ -178,3 +178,21 @@ WORLDMODEL_MODEL_CONFIG=configs/model-gemma.toml uv run python scripts/run_itera
   --seed-store runs/focused-env-audit/store.sqlite \
   --output-dir runs/iterative-eval-bayesian
 ```
+
+### 4. Official AutomationBench Baseline Benchmark
+Run the full 604-task AutomationBench evaluation in official API mode across all 6 enterprise domains (`operations`, `sales`, `marketing`, `support`, `finance`, `hr`):
+```bash
+uv run python scripts/run_iterative_worldmodel_eval.py \
+  --domains public \
+  --only-baseline \
+  --output-dir runs/official-automationbench-baseline \
+  --resume
+```
+
+---
+
+## Documentation & Research Reports
+
+- [Background & Related Work Formulation](docs/background_and_related_work_formulation.md): Literature taxonomy, standardized POMDP comparison framework, and formal motivation for the operational world model.
+- [Systematic Research Report](docs/paper_systematic_research_report.md): Formal research report covering problem framing, core claims, empirical verification, and baseline comparisons.
+- [Experiment Journal](docs/experiment-journal.md): Complete chronological log of empirical milestones (E001–E012) including the 604-task official benchmark scorecard.
