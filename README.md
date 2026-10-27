@@ -152,8 +152,6 @@ uv run worldmodel check-config
 Configure model access in `.env` (or pass via environment variables):
 ```env
 OPENROUTER_API_KEY=your_key_here
-# Optional custom endpoint credentials
-ELEMENT_AI_API_KEY=your_key_here
 ```
 
 ---
