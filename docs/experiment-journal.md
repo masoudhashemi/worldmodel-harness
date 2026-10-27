@@ -812,7 +812,89 @@ Artifact: `runs/eval-extended-sales-benchmark/summary.json`.
    - `sales.multi_hop_lookup` in Iteration 2 exhausted its turn budget (35 turns), demonstrating that while single-hop schemas and negative filters transfer well, multi-hop lookups requiring 4+ sequential spreadsheets benefit significantly from explicit trajectory pre-planning DAG enforcement to avoid deep recursive search.
 
 
-## Master Empirical Research Scorecard (Milestones E007 – E011)
+## E012 — Official AutomationBench Full Baseline Benchmark (604 Tasks)
+
+Status: completed. Started 2026-10-25, completed 2026-10-27.
+
+### Goal
+
+Establish the definitive empirical cold-start baseline of the unassisted model (`openai/gemma-4-31B-it`) across the complete, official AutomationBench enterprise benchmark in API mode (REST endpoints: `api_search`, `api_fetch`, `base64_encode`) under the exact official benchmark defaults (`max_turns=50`, unconstrained calls `max_env_calls=None`, `timeout=900s`, `memory="none"`, `operational=False`, `gated_graph=False`).
+
+### Execution Configuration
+
+- **Model**: `openai/gemma-4-31B-it` via internal Toolkit cluster (`configs/model.toml`)
+- **Harness Mode**: Cold-Start Baseline (`WITHOUT_WM`, pure unassisted agent)
+- **Toolset**: Official `api` mode (`api_search`, `api_fetch`, `base64_encode`)
+- **Total Benchmark Tasks**: 604 tasks across all 6 enterprise domains (`operations`, `sales`, `marketing`, `support`, `finance`, `hr`)
+- **Artifacts Location**: `runs/official-automationbench-baseline/`
+  - `benchmark.log`: Complete 58 MB turn-by-turn execution log
+  - `summary.json`: Detailed 2.8 MB record of all 604 task trials, tokens, and assertions
+  - `trajectories/<task_name>/`: 604 human-readable task folders containing `trajectory.json`, `result.json`, `rubric.json`, and `evidence.sqlite`
+
+### Comprehensive Baseline Scorecard
+
+| Domain | Tasks Evaluated | Strict Pass Rate ($\text{Pass}^1$) | Average Partial Credit | Avg. Calls / Task | Domain Time |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **`operations`** | **104 / 104** | 3 / 104 (**2.88%**) | 26.41% | 47.0 calls (16.2 disc) | 3.1h |
+| **`sales`** | **100 / 100** | 6 / 100 (**6.00%**) | 24.16% | 35.7 calls (14.8 disc) | 3.0h |
+| **`marketing`** | **100 / 100** | 4 / 100 (**4.00%**) | 37.20% | 37.1 calls (15.5 disc) | 4.6h |
+| **`support`** | **100 / 100** | 0 / 100 (**0.00%**) | 17.73% | 74.7 calls (22.1 disc) | 5.8h |
+| **`finance`** | **100 / 100** | 10 / 100 (**10.00%**) | 26.37% | 43.7 calls (16.4 disc) | 4.3h |
+| **`hr`** | **100 / 100** | 4 / 100 (**4.00%**) | 21.30% | 53.7 calls (19.2 disc) | 5.5h |
+| **Total Benchmark** | **604 / 604 (100%)** | **27 / 604 (4.47%)** | **25.53%** | **48.6 calls (17.3 disc)** | **26.29h** |
+
+### Complete Registry of Strictly Passing Tasks (27 Total)
+
+1. `operations.airtable_gmail_visitor_followup`: 27.2s, 11 env calls, 4 discovery calls
+2. `operations.notion_slack_playbook`: 42.9s, 20 env calls, 7 discovery calls
+3. `operations.twilio_production_incident`: 60.0s, 22 env calls, 9 discovery calls
+4. `sales.five_level_conditional`: 39.5s, 21 env calls, 13 discovery calls
+5. `sales.zoom_calendar_conflict`: 127.7s, 70 env calls, 11 discovery calls
+6. `sales.create_important_draft`: 73.3s, 35 env calls, 3 discovery calls
+7. `sales.meeting_action_items`: 38.2s, 13 env calls, 4 discovery calls
+8. `sales.cross_modal_renewal_processing`: 91.1s, 25 env calls, 9 discovery calls
+9. `sales.unreliable_label_account_review`: 85.2s, 21 env calls, 9 discovery calls
+10. `marketing.content_localization`: 56.0s, 13 env calls, 5 discovery calls
+11. `marketing.campaign_attribution`: 113.1s, 30 env calls, 11 discovery calls
+12. `marketing.patent_monitoring`: 33.1s, 4 env calls, 2 discovery calls
+13. `marketing.twitter_influencer_followup`: 67.2s, 26 env calls, 4 discovery calls
+14. `finance.xero_vendor_onboard`: 42.2s, 16 env calls, 4 discovery calls
+15. `finance.petty_cash_reconciliation`: 58.5s, 14 env calls, 4 discovery calls
+16. `finance.invoice_file_organization`: 61.9s, 20 env calls, 5 discovery calls
+17. `finance.vendor_spend_analysis`: 115.5s, 37 env calls, 24 discovery calls
+18. `finance.cash_flow_forecast`: 83.1s, 24 env calls, 9 discovery calls
+19. `finance.commission_calculation`: 165.2s, 44 env calls, 4 discovery calls
+20. `finance.monday_project_billing`: 63.1s, 16 env calls, 5 discovery calls
+21. `finance.lease_payment_schedule`: 145.5s, 51 env calls, 17 discovery calls
+22. `finance.gl_variance_analysis`: 145.9s, 40 env calls, 7 discovery calls
+23. `finance.audit_sample_selection`: 50.0s, 12 env calls, 5 discovery calls
+24. `hr.standup_absence_tracking`: 106.3s, 38 env calls, 5 discovery calls
+25. `hr.recruitment_channel_roi`: 143.4s, 33 env calls, 18 discovery calls
+26. `hr.twilio_emergency_notification`: 86.0s, 26 env calls, 11 discovery calls
+27. `hr.quarterly_termination_queue`: 35.8s, 13 env calls, 8 discovery calls
+
+### Key Empirical Findings on Baseline Failure Modes
+
+1. **Discovery Tax Consumes Massive Budget**:
+   - The unassisted model averaged **17.3 `api_search` discovery calls per task** (over 35% of all calls). Because the model starts completely cold without schema memory, it repeatedly searches for basic endpoint definitions (e.g. Asana task creation, Slack message posting, Google Drive searching) on every trial.
+2. **Support Domain Bottlenecks**:
+   - The `support` domain proved the most challenging for the unassisted model (**0.0% strict pass rate, 17.73% partial credit, 74.7 avg calls/task**). Complex cross-platform ticket deduplication across Re:amaze, Freshdesk, and HelpCrunch frequently trapped the agent in pagination loops and unresolved entity matching.
+3. **Finance Domain Determinism**:
+   - The `finance` domain achieved the highest baseline strict pass rate (**10.0%**), driven by deterministic mathematical formulas, reconciliation tables, and structured invoice lookups where clear tabular headers mitigated ambiguity.
+## Master Empirical Research Scorecard (Milestones E007 – E012)
+
+Comprehensive synthesis of the empirical World Model Harness evaluated on `openai/gemma-4-31B-it` via the internal Toolkit cluster:
+
+| Phase / Milestone | Focus Area | Benchmark Tasks | Baseline Score | World Model Score | Delta / Impact | Primary Research Finding |
+|---|---|---|:---:|:---:|:---:|---|
+| **E007 (Task 1)** | Ground-Truth Graph Verification | 47 Enterprise Services (758 endpoints) | — | **100.0% Node Prec.<br>100.0% Flow Prec.** | Zero Hallucinations | Learned World Model maps 1:1 to environment ground truth with 84% canonical stage ordering. |
+| **E008 (Task 2)** | Graph-Conditioned Pre-Planning | `sheets_monday_maintenance_queue` | 0.00 | **0.33 (+0.33)** | +0.33 Partial Credit | Gated pre-planning + query relaxation broke the Monday container trap; completed status mutation & Slack. |
+| **E009 (Task 3)** | Continual Learning & Consolidation | `contractor_badge_isomorphic`<br>`twilio_afterhours_isomorphic` | 0.40 | **0.75 (+0.35)** | +0.35 Macro Credit<br>0% Anchor Leaks | Composition learner autonomously promoted `google_drive` $\to$ `sheets` to `supported`; 0 poison literal hits. |
+| **E010 (Task 4)** | Frontier Discovery Cold-Start | `pipefy_slack_purchase_request` | 0.00 | **0.50 (+0.50)** | +0.50 Score<br>**-63.6% Time** | Pre-indexed catalog slashed duration from 330.8s to 120.4s and prevented the 16-turn synthetic ID trap. |
+| **E011 (Extended)**| Cross-Domain Longitudinal Evals | `sales.multi_hop_lookup`<br>`sales.negative_selection`<br>`sales.recency_selection` | — | **0.46 (Maintained)** | **-40% Disc. Calls<br>-33.5% Latency** | Iteration 2 on negative selection reduced discovery calls by 40% and runtime by 33.5% while growing store to 956 claims. |
+| **E012 (Master Baseline)**| Full Official AutomationBench Benchmark | **All 604 Tasks (6 Domains)** | **4.47% Strict<br>25.53% Partial** | — | **Established Complete Official Baseline** | Full baseline establishes an exhaustive empirical benchmark: 27/604 pass rate, 25.53% average credit, 48.6 calls/task. |
+
+
 
 Comprehensive synthesis of the empirical World Model Harness evaluated on `openai/gemma-4-31B-it` via the internal Toolkit cluster:
 
