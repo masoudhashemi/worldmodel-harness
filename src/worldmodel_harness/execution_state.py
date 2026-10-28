@@ -18,7 +18,7 @@ def extract_task_exclusions(task_text: str) -> list[str]:
     if not task_text:
         return []
     patterns = [
-        r"(?:except|excluding|skip|ignore|do not process|do not notify|other than|don't bother with|dont bother with|do not bother with)\s+(?:for\s+)?(?:the\s+)?(?:contractors who've been\s+|badges that were\s+|tickets that are\s+)?(?:(?:already|previously)\s+)?([A-Za-z0-9_-]+)",
+        r"(?:except|excluding|exclude|skip|ignore|omit|do not process|do not notify|do not include|dont include|other than|don't bother with|dont bother with|do not bother with)\s+(?:for\s+)?(?:the\s+)?(?:contractors who've been\s+|badges that were\s+|tickets that are\s+)?(?:(?:already|previously)\s+)?([A-Za-z0-9_-]+)",
     ]
     exclusions = []
     for pat in patterns:
@@ -462,7 +462,10 @@ class EntityTracker:
             "pending_entities": [e.name or e.badge_id for e in pending if e != active],
         }
         if self.task_exclusions:
-            res["negative_constraints"] = [f"Excluded from processing: {ex}" for ex in self.task_exclusions]
+            res["negative_constraints"] = [
+                f"Excluded from processing: {ex}. Rule: Do NOT mention or include {ex} in outgoing messages, reports, or records, even to explain why it was excluded."
+                for ex in self.task_exclusions
+            ]
         return res
 
 

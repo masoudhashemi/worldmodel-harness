@@ -120,8 +120,8 @@ def parse_args():
     parser.add_argument(
         "--timeout",
         type=int,
-        default=900,
-        help="Per-trial timeout in seconds (default: 900)",
+        default=1200,
+        help="Per-trial timeout in seconds (default: 1200)",
     )
     parser.add_argument(
         "--seed-store",

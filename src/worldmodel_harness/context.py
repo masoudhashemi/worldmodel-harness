@@ -90,6 +90,12 @@ def _format_workflow_process_markdown(plan, current_node: str | None = None, all
             adv = _get(ref, "advice") or target
             lines.append(f"• For `{target}`: {adv}")
         lines.append("• Only commit mutations for records whose verification conditions are satisfied; do not act on unverified records.")
+    neg_constraints = _get(plan, "negative_constraints") or []
+    if neg_constraints:
+        lines.append("\n🚫 **Negative Constraints & Exclusions**:")
+        for nc in neg_constraints[:4]:
+            lines.append(f"• {nc}")
+        lines.append("• Do NOT mention excluded entities or regions in outgoing messages or output records, even to explain why they were excluded.")
     tried_list = _get(plan, "tried_from_this_state") or []
     if tried_list:
         lines.append("\n**Past Action Attempts & Observed Consequences from this State**:")

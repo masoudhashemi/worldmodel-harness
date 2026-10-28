@@ -128,6 +128,31 @@ def _inject_operational_context(messages: list, content: str, title: str) -> lis
     return updated
 
 
+def _prune_historical_tool_outputs(
+    messages: list, keep_recent: int = 4, max_chars: int = 1500
+) -> list:
+    """Prune large historical tool outputs from earlier turns to prevent context bloat and latency spikes."""
+    tool_indices = [i for i, m in enumerate(messages) if getattr(m, "role", None) == "tool"]
+    if len(tool_indices) <= keep_recent:
+        return list(messages)
+    prune_indices = set(tool_indices[:-keep_recent])
+    pruned = []
+    for i, m in enumerate(messages):
+        if i in prune_indices and getattr(m, "content", None) and len(str(m.content)) > max_chars:
+            trunc_notice = (
+                f"\n... [Truncated {len(str(m.content)) - max_chars} characters of previous tool output "
+                "for response latency and context bounds. Full details are recorded in task evidence.]"
+            )
+            truncated_content = str(m.content)[:max_chars] + trunc_notice
+            if hasattr(m, "model_copy"):
+                pruned.append(m.model_copy(update={"content": truncated_content}))
+            else:
+                pruned.append(m)
+        else:
+            pruned.append(m)
+    return pruned
+
+
 class KnowledgeClient:
     """Inject a fresh working view before each model decision; keep Stirrup's loop."""
 
@@ -173,7 +198,7 @@ class KnowledgeClient:
     async def generate(self, messages, tools):
         if self.online_learner is not None:
             await self.online_learner.before_decision()
-        selected_messages = list(messages)
+        selected_messages = _prune_historical_tool_outputs(messages)
         if self.settings.memory != "none":
             started = perf_counter()
             user_msgs = [m["content"] for m in self.adapter.task.prompt if m.get("role") != "system"]

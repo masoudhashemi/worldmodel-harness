@@ -501,6 +501,30 @@ def test_finish_warns_on_pending_entity_obligations(make_adapter):
     assert payload2["status"] == "unresolved"
 
 
+def test_transport_payload_keys_not_treated_as_unverified_written_fields(make_adapter):
+    task = "Organize invoices into the registry sheet."
+    adapter = make_adapter(task)
+    write = Episode(
+        scope=adapter.scope,
+        task_id=adapter.scope.task_id,
+        operation="api_fetch",
+        arguments={
+            "method": "PUT",
+            "url": "https://sheets.googleapis.com/v4/spreadsheets/ss1/values/A1:B2",
+            "body": json.dumps({"range": "Sheet1!A1:B2", "values": [["ACM-001", "3400"]]}),
+        },
+        response={"updatedCells": 2},
+        coverage=("success",),
+        outcome="success",
+    )
+    adapter.evidence.append_episode(write)
+    adapter.live.observe(write)
+    formats, fields = adapter.goal_tracker._written_slots()
+    assert "range" not in fields
+    assert "values" not in fields
+
+
+
 
 
 

@@ -42,6 +42,16 @@ def anchored(text, value):
     return bool(words) and any(observed[i : i + len(words)] == words for i in range(len(observed)))
 
 
+TRANSPORT_PAYLOAD_KEYS = {
+    "range",
+    "values",
+    "majordimension",
+    "raw",
+    "requests",
+    "data",
+}
+
+
 class GoalCheck(Record):
     requirement_id: str = Field(min_length=1, max_length=80)
     task_quote: str = Field(min_length=1, max_length=1000)
@@ -424,7 +434,7 @@ class GoalTracker:
                     continue
             if isinstance(body, dict):
                 for key, item in body.items():
-                    if method in ("PUT", "PATCH"):
+                    if method in ("PUT", "PATCH") and str(key).casefold() not in TRANSPORT_PAYLOAD_KEYS:
                         fields.add(str(key))
                     fmt = value_format(item, str(key))
                     if fmt:
@@ -491,7 +501,7 @@ class GoalTracker:
                         "message": (
                             f"Eligible entities {unprocessed} still have pending obligations. "
                             "The task requires processing all eligible entities identified in the records before completing. "
-                            "Please process the remaining entities or confirm with unresolved=true if truly unreachable."
+                            "Please process the remaining entities to complete all task obligations."
                         ),
                         "next_step": f"Process obligations for {unprocessed[0]}.",
                     }
@@ -521,10 +531,9 @@ class GoalTracker:
                             "The task changes a "
                             + " and ".join(missing or unverified_written)
                             + " value. A matched identity/NAME check does not verify it. "
-                            "Check the field holding that value on the current record, "
-                            "or finish with unresolved=true."
+                            "Check the field holding that value on the current record."
                             if all_matched and (missing or unverified_written)
-                            else "Call check_effect directly before finish: supply requirement_id, exact task_quote, latest known non-mutating read episode_id, modified field path, exact expected value from task/source, and task-quoted identity anchor_text. A read alone does not register verification. Do not repeat a successful write. Use unresolved=true if evidence is unavailable."
+                            else "Call check_effect directly before finish: supply requirement_id, exact task_quote, latest known non-mutating read episode_id, modified field path, exact expected value from task/source, and task-quoted identity anchor_text. A read alone does not register verification. Do not repeat a successful write."
                         ),
                     }
                 ),
@@ -555,6 +564,5 @@ class GoalTracker:
             name="finish",
             parameters=CheckedFinish,
             executor=finish_checked,
-            description="Finish only after recording and checking task requirements. "
-            "Use unresolved=true to report incomplete work honestly when evidence/budget is missing.",
+            description="Finish the task and summarize the verified outcome after completing all task requirements and checks.",
         )

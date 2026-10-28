@@ -278,3 +278,34 @@ def test_workflow_plan_compacts_under_tight_budget():
     assert len(content) <= 1500
     assert report["workflow_plan"] is not None
 
+
+def test_prune_historical_tool_outputs_bounds_latency():
+    from stirrup.core.models import AssistantMessage, ToolMessage, UserMessage
+    from worldmodel_harness.experiment import _prune_historical_tool_outputs
+
+    messages = [
+        UserMessage(content="Start task"),
+    ]
+    # Add 6 rounds of assistant + tool messages
+    for i in range(6):
+        messages.append(AssistantMessage(content=f"Call {i}"))
+        messages.append(ToolMessage(content="X" * 3000, tool_call_id=f"c_{i}", name="api_fetch"))
+
+    pruned = _prune_historical_tool_outputs(messages, keep_recent=4, max_chars=1500)
+    assert len(pruned) == len(messages)
+
+    # First two tool messages (indices 2 and 4) must be truncated
+    assert len(pruned[2].content) < 2000
+    assert "Truncated" in pruned[2].content
+    assert pruned[2].tool_call_id == "c_0"
+
+    assert len(pruned[4].content) < 2000
+    assert "Truncated" in pruned[4].content
+
+    # The last 4 tool messages (indices 6, 8, 10, 12) must remain unpruned
+    assert len(pruned[6].content) == 3000
+    assert len(pruned[8].content) == 3000
+    assert len(pruned[10].content) == 3000
+    assert len(pruned[12].content) == 3000
+
+
