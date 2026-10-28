@@ -87,6 +87,12 @@ def parse_args():
         help="Explicit list of task names (overrides domain defaults)",
     )
     parser.add_argument(
+        "--task-file",
+        type=Path,
+        default=None,
+        help="Path to JSON file containing list of task names",
+    )
+    parser.add_argument(
         "--iterations",
         type=int,
         default=3,
@@ -304,7 +310,15 @@ async def main():
     sys.stderr = TeeWriter(log_file, sys.stderr)
 
     # Resolve task list
-    if args.tasks:
+    if args.task_file and args.task_file.exists():
+        raw = json.loads(args.task_file.read_text())
+        if isinstance(raw, dict) and "tasks" in raw:
+            task_list = list(raw["tasks"])
+        elif isinstance(raw, list):
+            task_list = list(raw)
+        else:
+            raise ValueError(f"Invalid format in task file: {args.task_file}")
+    elif args.tasks:
         task_list = list(args.tasks)
     else:
         target_domains = []
