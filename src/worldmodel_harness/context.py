@@ -81,6 +81,7 @@ def _format_workflow_process_markdown(plan, current_node: str | None = None, all
         "### 🗺️ Empirical World Model — State Graph & Historical Transitions",
         f"**Current State**: `{current_node or 'initial_state'}`",
         f"**Active Objective**: `{goal}`",
+        "• **Clean Output Rule**: In outgoing emails, summaries, and records, include ONLY the recommended or targeted entities. Do NOT mention excluded, skipped, or non-matching candidates, even as explanatory notes.",
     ]
     unresolved_refs = _get(plan, "unresolved_references") or []
     if unresolved_refs:

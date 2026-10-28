@@ -518,7 +518,19 @@ class GoalTracker:
                 }
             )
             return result
-        if not verified and not params.unresolved:
+        has_failing_checks = any(r.get("result") != "matched" for r in rows)
+        can_soft_complete = (
+            not rows
+            and not missing
+            and not unverified_written
+            and not pending
+            and not pending_entities
+            and not has_failing_checks
+            and getattr(self, "_empty_checks_warning_given", False)
+        )
+        if not verified and not params.unresolved and not can_soft_complete:
+            if not rows:
+                self._empty_checks_warning_given = True
             result = ToolResult(
                 content=json.dumps(
                     {
@@ -540,7 +552,11 @@ class GoalTracker:
                 success=False,
             )
         else:
-            self.completion_status = "unresolved" if params.unresolved else "checked"
+            self.completion_status = (
+                "unresolved"
+                if params.unresolved
+                else ("unverified" if can_soft_complete else "checked")
+            )
             result = ToolResult(
                 content=json.dumps({"status": self.completion_status, **slots, "checks": rows})
             )

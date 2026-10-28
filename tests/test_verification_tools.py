@@ -694,3 +694,8 @@ def test_finish_repair_names_direct_tool_and_preserves_empty_ledger(world):
     assert feedback["public_task"] == task
     assert "exact expected value" in feedback["next"]
     assert adapter.goal_tracker.checks == {}
+
+    # Second finish without pending entity obligations or written fields allows soft completion
+    second = adapter.goal_tracker.finish(CheckedFinish(summary="done"))
+    assert second.success
+    assert adapter.goal_tracker.completion_status == "unverified"
