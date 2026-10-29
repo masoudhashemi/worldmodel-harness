@@ -468,8 +468,10 @@ def extract_workflow_plan(
     if investigation_targets and any(t not in completed for t in investigation_targets):
         inv_str = ", ".join(investigation_targets)
         goal = f"Investigate referenced evidence ({inv_str}) before mutating actions"
+    elif confidence >= 0.70:
+        goal = f"Execute verified workflow: {' -> '.join(s.operation for s in steps[:-1])}"
     else:
-        goal = f"Execute multi-step workflow: {' -> '.join(s.operation for s in steps[:-1])}"
+        goal = f"Fulfill task requirements (Candidate lead: {' -> '.join(s.operation for s in steps[:-1])})"
 
     return WorkflowProcess(
         goal=goal,

@@ -545,7 +545,10 @@ class GoalTracker:
                             + " value. A matched identity/NAME check does not verify it. "
                             "Check the field holding that value on the current record."
                             if all_matched and (missing or unverified_written)
-                            else "Call check_effect directly before finish: supply requirement_id, exact task_quote, latest known non-mutating read episode_id, modified field path, exact expected value from task/source, and task-quoted identity anchor_text. A read alone does not register verification. Do not repeat a successful write."
+                            else (
+                                "If you have completed all task mutations and requirements, call finish again to finalize immediately. "
+                                "Alternatively, call check_effect directly before finish: supply requirement_id, exact task_quote, latest known non-mutating read episode_id, modified field path, exact expected value from task/source, and task-quoted identity anchor_text. Do not repeat a successful write."
+                            )
                         ),
                     }
                 ),

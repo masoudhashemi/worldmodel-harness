@@ -134,8 +134,13 @@ def _format_workflow_process_markdown(plan, current_node: str | None = None, all
         rec_path = paths[0]
         rec_cert = _get(rec_path, "certainty", 0.0)
         rec_steps = _get(rec_path, "steps", [])
-        lines.append(f"\n**Recommended Transition Path** (Bayesian Thompson Certainty: {rec_cert:.2f}):")
-        lines.append(f"• `{' -> '.join(rec_steps)}`")
+        if rec_cert >= 0.70:
+            lines.append(f"\n**Recommended Transition Path** (Bayesian Thompson Certainty: {rec_cert:.2f}):")
+            lines.append(f"• `{' -> '.join(rec_steps)}`")
+        else:
+            lines.append(f"\n**Recommended Transition Path (Candidate - Low Certainty: {rec_cert:.2f})**:")
+            lines.append(f"• `{' -> '.join(rec_steps)}`")
+            lines.append("• ⚠️ Exploratory Candidate: Verify all task requirements independently; do NOT assume this candidate path covers all necessary mutations.")
         if len(paths) > 1:
             alt = paths[1]
             alt_id = _get(alt, "path_id", "alt")
