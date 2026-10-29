@@ -446,3 +446,52 @@ def test_value_flows_never_authorize_mutations(tmp_path, status, review):
     else:
         assert "slack.post" not in edges
     store.close()
+
+
+def test_trajectory_graph_parameterizes_concrete_literals_in_attempts(tmp_path):
+    store = KnowledgeStore(tmp_path / "param_attempts.sqlite")
+    scope = Scope(environment="test", version="1")
+    ep_discovery = Episode(task_id="disc_task", scope=scope, operation="api_search", arguments={}, response={}, outcome="success")
+    store.append_episode(ep_discovery)
+
+    # Register endpoint contract with template url
+    contract = Claim(
+        claim_id="airtable.comments.post",
+        version=1,
+        layer=Layer.INTERFACE,
+        relation="endpoint_contract",
+        participants=("airtable.comments.post",),
+        scope=scope,
+        statement="Post comments",
+        status="supported",
+        supporting_episodes=(ep_discovery.episode_id,),
+        payload={
+            "id": "airtable.comments.post",
+            "method": "POST",
+            "url": "https://api.airtable.com/v0/{baseId}/Visitors/{recordId}/comments",
+        },
+    )
+    store.put_claim(contract)
+
+    # Execution episode with concrete instance IDs (base_ops, rec_104)
+    ep_exec = Episode(
+        task_id="t1",
+        scope=scope,
+        operation="api_fetch",
+        arguments={"method": "POST", "url": "https://api.airtable.com/v0/base_ops/Visitors/rec_104/comments"},
+        response={"id": "com_123"},
+        outcome="success",
+        origin="environment",
+    )
+    store.append_episode(ep_exec)
+
+    graph = compile_trajectory_graph(store, scope)
+    fetch_attempts = [a for a in graph.node_attempts.get("root", []) if a.action_type == "api_fetch"]
+    assert len(fetch_attempts) == 1
+    attempt = fetch_attempts[0]
+    # The URL in NodeAttempt must be parameterized from contract template, not concrete rec_104!
+    assert "rec_104" not in attempt.url
+    assert "base_ops" not in attempt.url
+    assert "{recordId}" in attempt.url
+    assert "{baseId}" in attempt.url
+    store.close()

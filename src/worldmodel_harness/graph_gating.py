@@ -194,6 +194,14 @@ def sanitize_action_literals(action_str: str, allowed_literals: set[str]) -> str
             return "{message_id}"
         if token.startswith("thr_"):
             return "{thread_id}"
+        if token.startswith("rec_"):
+            return "{record_id}"
+        if token.startswith("base_"):
+            return "{base_id}"
+        if token.startswith("att_"):
+            return "{attachment_id}"
+        if token.startswith("usr_"):
+            return "{user_id}"
         return token
 
-    return re.sub(r"\b(?:ss|ws|proj|sec|tbl|msg|thr)_[a-zA-Z0-9_-]+\b", replacer, action_str)
+    return re.sub(r"\b(?:ss|ws|proj|sec|tbl|msg|thr|rec|base|att|usr)_[a-zA-Z0-9_-]+\b", replacer, action_str)

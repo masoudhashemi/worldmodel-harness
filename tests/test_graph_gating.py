@@ -35,6 +35,14 @@ def test_sanitize_action_literals():
     assert "ss_badges" not in sanitized
     assert "{spreadsheet_id}" in sanitized
 
+    # Test Airtable base and record sanitization
+    airtable_action = "api_fetch POST https://api.airtable.com/v0/base_ops/Visitors/rec_104/comments"
+    airtable_sanitized = sanitize_action_literals(airtable_action, set())
+    assert "base_ops" not in airtable_sanitized
+    assert "rec_104" not in airtable_sanitized
+    assert "{base_id}" in airtable_sanitized
+    assert "{record_id}" in airtable_sanitized
+
 
 def test_evaluate_graph_feasibility_no_store():
     decision = evaluate_graph_feasibility("Check spreadsheet ss_test", None)

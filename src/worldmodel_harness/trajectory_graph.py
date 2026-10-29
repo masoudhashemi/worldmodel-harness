@@ -600,6 +600,16 @@ def compile_trajectory_graph(
                 graph.forward_value_flows[src].append(flow)
                 graph.reverse_value_flows[tgt].append(flow)
 
+    # 3b. Index LLM-symbolized workflow templates
+    symbolized_step_templates: dict[str, str] = {}
+    for c in claims:
+        if c.relation == "symbolized_workflow_template" and isinstance(c.payload, dict):
+            for s in c.payload.get("steps", []):
+                op = s.get("operation")
+                tmpl = s.get("action_template")
+                if op and tmpl:
+                    symbolized_step_templates[op] = tmpl
+
     # 4. Map episodes to node IDs, track tried actions/outcomes, and count empirical transitions
     def match_episode_to_node_id(e: Episode) -> str:
         return graph.match_episode_to_node_id(e) or e.operation
@@ -627,7 +637,15 @@ def compile_trajectory_graph(
             action_type = ep.operation
             args = ep.arguments or {}
             method = args.get("method", "").upper() if isinstance(args, dict) else ""
-            url = args.get("url", "") if isinstance(args, dict) else ""
+            raw_url = args.get("url", "") if isinstance(args, dict) else ""
+
+            # Prioritize LLM-symbolized template, then contract url_template, then fallback to raw_url
+            if target_nid and target_nid in symbolized_step_templates:
+                url = symbolized_step_templates[target_nid]
+            elif target_nid and target_nid in graph.nodes and graph.nodes[target_nid].url_template:
+                url = graph.nodes[target_nid].url_template
+            else:
+                url = raw_url
 
             param_summary = ""
             if isinstance(args, dict):
