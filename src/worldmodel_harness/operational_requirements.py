@@ -59,6 +59,15 @@ def api_requirements(
 
     matches = matching_contracts(store, scope, method, url)
     claim = preferred_contract(matches)
+    if claim is None and matches:
+        # If there is an exact literal template match for the requested endpoint URL,
+        # prefer it over generic wildcards (e.g. /meta/bases vs /{baseId}/{tableId}).
+        exact_matches = [
+            c for c in matches
+            if request_target(c.payload.get("url", "")) == endpoint_url
+        ]
+        if exact_matches:
+            claim = preferred_contract(exact_matches)
     # Do not drop stale/disputed matches: the gate must reject their use, rather
     # than turning obsolete knowledge into absence of a requirement. Distinct URL
     # templates stay ambiguous. Identical templates are one route.

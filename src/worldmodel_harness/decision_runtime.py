@@ -562,23 +562,6 @@ async def dispatch_decision(
                             "stagnant_lookup_count": stagnant_lookup_count,
                             "target": target_desc,
                         }
-                if gate.allowed and decision.action.tool in ("api_search", "lookup_knowledge"):
-                    disc_count = count_discovery_searches_in_episode(evidence_store, scope)
-                    if disc_count >= 6:
-                        gate = GateResult(
-                            allowed=False,
-                            gaps=("discovery:plateau_exhausted",),
-                            checked_claims=gate.checked_claims,
-                            checked_facts=gate.checked_facts,
-                        )
-                        repair_details = {
-                            "instruction": (
-                                f"Discovery search budget exceeded ({disc_count} searches performed). "
-                                "Do not call api_search again. Proceed using verified endpoints already in context "
-                                "or execute tool actions directly with exact names from the prompt."
-                            ),
-                            "discovery_searches_performed": disc_count,
-                        }
                 if gate.allowed and entity_tracker is not None and getattr(entity_tracker, "excluded_entities", None):
                     if is_mutation_action(decision.action.tool, decision.action.arguments):
                         args_str = json.dumps(decision.action.arguments).lower()

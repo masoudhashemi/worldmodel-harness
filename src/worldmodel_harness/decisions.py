@@ -71,12 +71,12 @@ class CompactDecision(Record):
     action: ProposedAction
     goal: str = Field(default="Next task step", min_length=1, max_length=240)
     rationale: str = Field(default="", max_length=320)
-    evidence_ids: tuple[str, ...] = Field(default=(), max_length=8)
+    evidence_ids: tuple[str, ...] = Field(default=(), max_length=16)
     considered_claim_ids: tuple[str, ...] = Field(
-        default=(), max_length=8,
+        default=(), max_length=16,
         description="Retrieved claims or hypotheses considered for this decision; not prerequisites or proof.",
     )
-    output_expectations: tuple[OutputExpectation, ...] = Field(default=(), max_length=4)
+    output_expectations: tuple[OutputExpectation, ...] = Field(default=(), max_length=8)
     root_tool: str | None = None
 
     @model_validator(mode="before")
@@ -87,6 +87,16 @@ class CompactDecision(Record):
         data = dict(data)
         if isinstance(data.get("goal"), str) and len(data["goal"]) > 240:
             data["goal"] = data["goal"][:240]
+        if isinstance(data.get("rationale"), str) and len(data["rationale"]) > 320:
+            # Auto-truncate LLM tool call rationale so turns aren't rejected due to length
+            if not isinstance(data.get("action"), ProposedAction):
+                data["rationale"] = data["rationale"][:320]
+        if isinstance(data.get("evidence_ids"), (list, tuple)) and len(data["evidence_ids"]) > 16:
+            data["evidence_ids"] = list(data["evidence_ids"])[:16]
+        if isinstance(data.get("considered_claim_ids"), (list, tuple)) and len(data["considered_claim_ids"]) > 16:
+            data["considered_claim_ids"] = list(data["considered_claim_ids"])[:16]
+        if isinstance(data.get("output_expectations"), (list, tuple)) and len(data["output_expectations"]) > 8:
+            data["output_expectations"] = list(data["output_expectations"])[:8]
         if "arguments" in data and isinstance(data["arguments"], dict) and "tool" in data["arguments"] and not data.get("tool"):
             data["tool"] = data["arguments"].pop("tool")
 
