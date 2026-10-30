@@ -7,11 +7,14 @@ Strictly decoupled from benchmark task IDs and internal metadata.
 
 from __future__ import annotations
 
+import hashlib
 import heapq
 import json
 import math
+import random
 import re
 from collections import Counter, defaultdict
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit
@@ -20,6 +23,11 @@ from .behavior import endpoint_contract, request_target
 from .knowledge import Claim, Episode, Scope
 from .retrieval import terms
 from .store import KnowledgeStore
+
+# Thompson draws are keyed by (salt, edge, posterior): stable while a task's posterior is
+# unchanged, so the recommended path does not flip between turns, and reproducible across
+# reruns. A new salt per task or iteration gives fresh exploration draws.
+SAMPLING_SALT: ContextVar[str] = ContextVar("thompson_sampling_salt", default="")
 
 # Stopwords and URL/domain noise terms to filter out during intent matching
 GRAPH_STOPWORDS = {
@@ -173,8 +181,9 @@ class TransitionEdge:
         return (self.alpha * self.beta) / (ab * ab * (ab + 1.0))
 
     def sample_beta(self) -> float:
-        import random
-        return random.betavariate(max(self.alpha, 1e-3), max(self.beta, 1e-3))
+        key = f"{SAMPLING_SALT.get()}|{self.source}|{self.target}|{self.alpha}|{self.beta}"
+        rng = random.Random(hashlib.sha256(key.encode()).digest())
+        return rng.betavariate(max(self.alpha, 1e-3), max(self.beta, 1e-3))
 
     def certainty(self) -> float:
         """Continuous certainty score in [0.0, 1.0] that increases as the edge is used more with success.

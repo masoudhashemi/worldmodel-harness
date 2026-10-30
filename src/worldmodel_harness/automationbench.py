@@ -194,6 +194,11 @@ class AutomationBenchAdapter:
             # An exception does not establish whether a mutation happened.
             raw = json.dumps({"error": "transport_failure", "outcome": "unknown"})
             outcome = "unknown"
+        except Exception as exc:  # noqa: BLE001 -- upstream ToolEnv returns tool errors to the model
+            # Match upstream: the message is the tool result and the episode continues.
+            # A raising write may have partially applied, so only reads are plain errors.
+            raw = str(exc)
+            outcome = "error" if effect == "read" else "unknown"
         else:
             outcome = "success"
         tool_elapsed = perf_counter() - tool_started

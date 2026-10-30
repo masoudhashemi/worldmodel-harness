@@ -227,6 +227,11 @@ def operational_tools(
         decision = Decision.model_validate(data)
         adapter.active_decision = decision
         result = await dispatch(decision, available)
+        fallback = getattr(adapter, "baseline_fallback", None)
+        if fallback is not None:
+            notice = fallback.observe(audit)
+            if notice:
+                return ToolResult(content=result.content + notice, success=result.success)
         known = set(adapter.evidence_aliases.values())
         new_verifiable = None
         for event in adapter.evidence.episodes(adapter.scope):

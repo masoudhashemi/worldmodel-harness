@@ -62,6 +62,11 @@ class ExperimentSettings(BaseModel):
     retrieval_chars: int = Field(default=12000, ge=1)
     timeout_seconds: int | None = Field(default=300, ge=1)
     gated_graph: bool = False
+    # When the operational layers trap the agent, finish the episode as the baseline.
+    baseline_fallback: bool = False
+    # Baseline tools and loop plus one small, fixed note of confirmed routes.
+    advisory: bool = False
+    sampling_seed: int = 0
     shift: ResponseShift | None = None
 
     @model_validator(mode="after")
@@ -81,6 +86,8 @@ class ExperimentSettings(BaseModel):
             )
         if self.semantic_learning and not self.operational:
             raise ValueError("Semantic learning currently requires operational mode")
+        if self.advisory and (self.operational or self.memory not in ("flat", "graph")):
+            raise ValueError("Advisory memory uses the baseline tools and a claim store")
         if self.operational and self.memory not in ("flat", "graph"):
             raise ValueError("Operational decisions require a claim-based working graph")
         if self.allow_experimental and (self.phase != "online" or not self.adaptive):
@@ -168,6 +175,26 @@ class KnowledgeClient:
         self._completed_operations = set()
         self._current_operation = None
         self._last_processed_interaction_index = 0
+        self.advisory = None
+
+    def _advisory_messages(self, messages):
+        """Inject the fixed advisory note; withdraw it for good once the agent loops."""
+        from .advisory import build_advisory_block, recent_tool_rows
+        from .baseline_fallback import detect_trap
+
+        if self.advisory is None:
+            started = perf_counter()
+            task_text = " ".join(m["content"] for m in self.adapter.task.prompt)
+            block, info = build_advisory_block(self.knowledge, self.adapter.scope, task_text)
+            self.advisory = {**info, "block": block, "withdrawn": None}
+            self.adapter.ledger.compute_seconds += perf_counter() - started
+        if self.advisory["withdrawn"] is None:
+            trap = detect_trap(recent_tool_rows(messages))
+            if trap is not None:
+                self.advisory["withdrawn"] = {**trap, "model_call_index": len(self.model_call_costs)}
+        if self.advisory["withdrawn"] is not None or not self.advisory["block"]:
+            return list(messages)
+        return _inject_operational_context(messages, self.advisory["block"], "Advisory Memory")
 
     async def _generate(self, messages, tools):
         self.last_messages = list(messages)
@@ -196,9 +223,20 @@ class KnowledgeClient:
         return self.client.context_window_tokens
 
     async def generate(self, messages, tools):
+        if self.settings.advisory:
+            return await self._generate(self._advisory_messages(messages), tools)
+        fallback = getattr(self.adapter, "baseline_fallback", None)
+        if fallback is not None and fallback.active:
+            # `tools` is the agent's live tool map; the swap persists for later turns.
+            fallback.install(tools)
+            return await self._generate(list(messages), tools)
         if self.online_learner is not None:
             await self.online_learner.before_decision()
-        selected_messages = _prune_historical_tool_outputs(messages)
+        # Pruning is part of the operational execution layer; the baseline keeps the
+        # upstream loop's full history.
+        selected_messages = (
+            _prune_historical_tool_outputs(messages) if self.settings.operational else list(messages)
+        )
         if self.settings.memory != "none":
             started = perf_counter()
             user_msgs = [m["content"] for m in self.adapter.task.prompt if m.get("role") != "system"]
@@ -477,7 +515,9 @@ async def run_automationbench(
     settings: ExperimentSettings,
     knowledge_path: Path | None = None,
     output_dir: Path | None = None,
+    trial_label: str | None = None,
 ) -> dict:
+    """`trial_label` separates repeated trials of one task (arm, iteration) under output_dir."""
     model_settings = load_settings(root)
     client = build_client(model_settings, load_api_key(root, model_settings))
     semantic_client = None
@@ -615,7 +655,23 @@ async def run_automationbench(
                     )
                 )
             decision_audit, refresh_audit, lookup_audit = [], [], []
+            plain_finish = Tool(
+                name="finish",
+                description="Finish the task and summarize the result.",
+                parameters=Finish,
+                executor=lambda _: ToolResult(content="Finished"),
+            )
             if settings.operational:
+                from .baseline_fallback import BaselineFallback
+                from .goal_checks import CheckedFinish
+
+                # Stirrup validates finish arguments against the session's registered
+                # finish schema, so the unchecked fallback finish accepts the same one.
+                adapter.baseline_fallback = BaselineFallback(
+                    settings.baseline_fallback,
+                    baseline_tools=tools,
+                    finish_tool=plain_finish.model_copy(update={"parameters": CheckedFinish}),
+                )
                 from .operational_tools import operational_tools
 
                 tools = operational_tools(
@@ -644,12 +700,7 @@ async def run_automationbench(
                         allow_experimental=settings.allow_experimental,
                     )
                 )
-            finish_tool = Tool(
-                name="finish",
-                description="Finish the task and summarize the result.",
-                parameters=Finish,
-                executor=lambda _: ToolResult(content="Finished"),
-            )
+            finish_tool = plain_finish
             if settings.operational:
                 finish_tool = adapter.goal_tracker.finish_tool()
             from .interactions import InteractionRecorder
@@ -693,10 +744,15 @@ async def run_automationbench(
                 )
             if output_dir is not None:
                 task_output = output / "trajectories" / adapter.task.task_id
+                if trial_label:
+                    task_output = task_output / trial_label
             else:
                 task_output = output / adapter.scope.task_id
             task_output.mkdir(parents=True, exist_ok=True)
             result = {"task_name": adapter.task.task_id, "scope": adapter.scope.model_dump()}
+            from .trajectory_graph import SAMPLING_SALT
+
+            SAMPLING_SALT.set(f"{settings.sampling_seed}:{adapter.task.task_id}")
             try:
                 async with agent.session(
                     output_dir=task_output, cache_on_interrupt=False
@@ -799,6 +855,8 @@ async def run_automationbench(
             result["retrievals"] = wrapper.retrievals
             if wrapper.gating_decision is not None:
                 result["gating_decision"] = wrapper.gating_decision
+            if settings.advisory:
+                result["advisory"] = wrapper.advisory
             result["prediction_assessments"] = adapter.prediction_assessments
             if settings.operational:
                 result["decision_audit"] = decision_audit
@@ -808,6 +866,7 @@ async def run_automationbench(
                 result["completion_evidence_status"] = getattr(
                     adapter.goal_tracker, "completion_status", "not_finished"
                 )
+                result["baseline_fallback"] = adapter.baseline_fallback.report()
                 result["artifact_reuse"] = adapter.artifact_audit
                 result["refresh_audit"] = refresh_audit
                 result["lookup_audit"] = lookup_audit
@@ -825,13 +884,18 @@ async def run_automationbench(
                 result["controlled_shift"] = adapter.shift.report()
             results.append(result)
             if output_dir is not None:
-                import shutil
                 (task_output / "result.json").write_text(json.dumps(result, indent=2) + "\n")
                 if result.get("grading_details"):
                     (task_output / "rubric.json").write_text(json.dumps(result["grading_details"], indent=2) + "\n")
-                ev_file = output / "evidence.sqlite"
-                if ev_file.exists():
-                    shutil.copy2(ev_file, task_output / "evidence.sqlite")
+                # The run-level evidence store accumulates every trial; keep only this one's.
+                trial_evidence_path = task_output / "evidence.sqlite"
+                trial_evidence_path.unlink(missing_ok=True)
+                trial_evidence = KnowledgeStore(trial_evidence_path)
+                try:
+                    for episode in evidence.episodes(adapter.scope):
+                        trial_evidence.append_episode(episode)
+                finally:
+                    trial_evidence.close()
             (output / "summary.json").write_text(json.dumps(report, indent=2) + "\n")
         scored = [r["task_completed_correctly"] for r in results if "task_completed_correctly" in r]
         report["mean_strict_success"] = sum(scored) / len(scored) if scored else None

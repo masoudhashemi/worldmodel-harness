@@ -1,10 +1,18 @@
 """Iterative World Model Evaluation across multiple tasks per domain.
 
 Protocol:
-1. Baseline (WITHOUT_WM): Evaluates each task once from a fresh, empty knowledge store.
+1. Baseline (WITHOUT_WM): Evaluates each task from a fresh, empty knowledge store,
+   `--baseline-repeats` times. Agent runs are stochastic, so a single baseline run
+   (or a task subset selected on one run's outcomes) is not a stable reference.
 2. World Model (WITH_WM): Evaluates each task over N iterations (default: 3), carrying
    and reusing the persistent knowledge store across tasks and iterations to measure
    whether the learned World Model accumulates knowledge and improves execution.
+3. Harness only (`--harness-only-arm`): the same operational execution layers as WITH_WM,
+   but every trial starts from a fresh, empty store. WITH_WM minus HARNESS_ONLY isolates
+   the contribution of carried knowledge from that of the execution layers.
+4. Advisory (`--advisory`): replaces WITH_WM with the baseline tools and loop plus one
+   small, fixed note of routes confirmed in earlier tasks, from the carried store.
+   `--baseline-from` reuses baseline trials from an earlier run's summary.
 """
 
 import argparse
@@ -13,6 +21,7 @@ import json
 import os
 import sys
 import time
+from collections import defaultdict
 from pathlib import Path
 
 from worldmodel_harness.checkpoint import copy_checkpoint
@@ -164,6 +173,39 @@ def parse_args():
         help="Enable pre-flight feasibility and entity collision gating with discovery plateau cutoff",
     )
     parser.add_argument(
+        "--baseline-repeats",
+        type=int,
+        default=1,
+        help="Independent baseline trials per task (use >=3 to estimate run-to-run variance)",
+    )
+    parser.add_argument(
+        "--harness-only-arm",
+        action="store_true",
+        help="Also run each WM iteration with the execution layers but no carried store",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="Seed for Thompson path sampling (combined with iteration and task name)",
+    )
+    parser.add_argument(
+        "--no-baseline-fallback",
+        action="store_true",
+        help="Keep the operational layers engaged even when they trap the agent",
+    )
+    parser.add_argument(
+        "--advisory",
+        action="store_true",
+        help="Run the advisory arm (baseline tools plus a small route note) instead of WITH_WM",
+    )
+    parser.add_argument(
+        "--baseline-from",
+        type=Path,
+        default=None,
+        help="Reuse baseline trials from this earlier summary.json instead of running them",
+    )
+    parser.add_argument(
         "--resume",
         action="store_true",
         help="Resume an existing run, reusing completed trials and the carried store",
@@ -184,28 +226,50 @@ async def run_trial(
     semantic_learning: bool = False,
     retrieval_chars: int = 12000,
     gated_graph: bool = False,
+    seed: int = 0,
+    baseline_fallback: bool = True,
 ) -> dict:
     domain = task_name.split(".", 1)[0]
     is_baseline = (arm == "baseline")
-    settings = ExperimentSettings(
-        domain=domain,
-        task_names=(task_name,),
-        limit=1,
-        max_turns=max_turns,
-        max_environment_calls=max_env_calls,
-        timeout_seconds=timeout,
-        memory="none" if is_baseline else "graph",
-        operational=not is_baseline,
-        resolve_execution_frontier=not is_baseline,
-        successful_transition_graph=not is_baseline,
-        phase="test",  # Enables learning from trajectories into the store
-        semantic_learning=False if is_baseline else semantic_learning,
-        adaptive=not is_baseline,
-        retrieval_chars=retrieval_chars,
-        gated_graph=False if is_baseline else gated_graph,
-    )
+    if arm == "advisory":
+        settings = ExperimentSettings(
+            domain=domain,
+            task_names=(task_name,),
+            limit=1,
+            max_turns=max_turns,
+            max_environment_calls=max_env_calls,
+            timeout_seconds=timeout,
+            memory="graph",
+            phase="test",
+            advisory=True,
+            retrieval_chars=retrieval_chars,
+        )
+    else:
+        settings = ExperimentSettings(
+            domain=domain,
+            task_names=(task_name,),
+            limit=1,
+            max_turns=max_turns,
+            max_environment_calls=max_env_calls,
+            timeout_seconds=timeout,
+            memory="none" if is_baseline else "graph",
+            operational=not is_baseline,
+            resolve_execution_frontier=not is_baseline,
+            successful_transition_graph=not is_baseline,
+            phase="test",  # Enables learning from trajectories into the store
+            semantic_learning=False if is_baseline else semantic_learning,
+            adaptive=not is_baseline,
+            retrieval_chars=retrieval_chars,
+            gated_graph=False if is_baseline else gated_graph,
+            baseline_fallback=not is_baseline and baseline_fallback,
+            # A distinct salt per iteration gives fresh Thompson draws; reruns reproduce them.
+            sampling_seed=seed * 1000 + iteration,
+        )
+    trial_label = f"{arm}-iter{iteration}"
     start_time = time.perf_counter()
-    report = await run_automationbench(root, settings, store_path, output_dir=output_dir)
+    report = await run_automationbench(
+        root, settings, store_path, output_dir=output_dir, trial_label=trial_label
+    )
     duration = time.perf_counter() - start_time
 
     res = report["results"][0] if report.get("results") else {}
@@ -229,7 +293,7 @@ async def run_trial(
     trajectory_path = None
     if output_dir:
         for name in ("trajectory.json", "history.json", "partial_history.json"):
-            cand = output_dir / "trajectories" / task_name / name
+            cand = output_dir / "trajectories" / task_name / trial_label / name
             if cand.exists():
                 trajectory_path = str(cand)
                 break
@@ -258,6 +322,9 @@ async def run_trial(
         "store_claims": store_claims,
         "store_episodes": store_episodes,
         "error_type": res.get("error_type"),
+        "baseline_fallback": (res.get("baseline_fallback") or {}).get("trigger")
+        or (res.get("advisory") or {}).get("withdrawn"),
+        "advisory_chars": (res.get("advisory") or {}).get("chars"),
         "duration_seconds": round(duration, 1),
     }
 
@@ -278,6 +345,14 @@ class TeeWriter:
         self.file.flush()
 
 
+ARM_LABELS = {
+    "baseline": "BASELINE",
+    "with_worldmodel": "WM",
+    "harness_only": "HARNESS",
+    "advisory": "ADVISORY",
+}
+
+
 def print_scorecard(results: list[dict]):
     print("\n" + "=" * 90)
     print("ITERATIVE WORLD MODEL EVALUATION SCORECARD")
@@ -286,7 +361,7 @@ def print_scorecard(results: list[dict]):
     print("-" * 90)
     for r in results:
         t_short = r["task"].split(".")[-1][:33]
-        phase = "BASELINE" if r["arm"] == "baseline" else f"WM Iter {r['iteration']}"
+        phase = f"{ARM_LABELS.get(r['arm'], r['arm'])} #{r['iteration']}"
         strict = "PASS" if r.get("strict_eval") else "FAIL"
         partial = f"{r.get('partial_credit', 0.0):.2f}"
         disc = str(r.get("discovery_calls", "-"))
@@ -295,6 +370,47 @@ def print_scorecard(results: list[dict]):
         dur = f"{r.get('duration_seconds', 0.0)}s"
         print(f"{t_short:<35} | {phase:<15} | {strict:<7} | {partial:<8} | {disc:<5} | {env:<5} | {claims:<6} | {dur}")
     print("=" * 90)
+
+
+def _summarize(rows: list[dict]) -> dict:
+    by_task = defaultdict(list)
+    for r in rows:
+        by_task[r["task"]].append(bool(r.get("strict_eval")))
+    n = len(rows)
+    return {
+        "trials": n,
+        "tasks": len(by_task),
+        "strict_rate": sum(bool(r.get("strict_eval")) for r in rows) / n,
+        "mean_partial_credit": sum(r.get("partial_credit", 0.0) for r in rows) / n,
+        "mean_environment_calls": sum(r.get("environment_calls", 0) for r in rows) / n,
+        "mean_discovery_calls": sum(r.get("discovery_calls", 0) for r in rows) / n,
+        # pass^k: share of tasks solved on every one of their trials.
+        "tasks_passing_every_trial": sum(all(v) for v in by_task.values()) / len(by_task),
+        "tasks_passing_any_trial": sum(any(v) for v in by_task.values()) / len(by_task),
+        "baseline_fallback_rate": sum(bool(r.get("baseline_fallback")) for r in rows) / n,
+    }
+
+
+def aggregate(results: list[dict]) -> dict:
+    """Per arm and iteration, plus pooled rows for arms whose trials are replicates."""
+    groups = defaultdict(list)
+    for r in results:
+        groups[f"{r['arm']}#{r['iteration']}"].append(r)
+        if r["arm"] in ("baseline", "harness_only"):
+            # Neither arm carries knowledge between trials, so its trials are replicates.
+            groups[f"{r['arm']}#pooled"].append(r)
+    return {key: _summarize(rows) for key, rows in sorted(groups.items())}
+
+
+def print_aggregates(aggregates: dict):
+    print(f"\n{'Arm':<22} | {'Trials':<6} | {'Strict':<6} | {'Pass^k':<6} | {'Partial':<7} | {'Env':<5} | {'Disc':<5}")
+    print("-" * 75)
+    for key, a in aggregates.items():
+        print(
+            f"{key:<22} | {a['trials']:<6} | {a['strict_rate']:<6.1%} | "
+            f"{a['tasks_passing_every_trial']:<6.1%} | {a['mean_partial_credit']:<7.3f} | "
+            f"{a['mean_environment_calls']:<5.1f} | {a['mean_discovery_calls']:<5.1f}"
+        )
 
 
 async def main():
@@ -373,60 +489,86 @@ async def main():
         except Exception as e:
             print(f"Warning: could not parse existing summary file: {e}")
 
+    if args.baseline_from is not None:
+        prior = json.loads(args.baseline_from.read_text()).get("results", [])
+        reused = [
+            r for r in prior
+            if r["arm"] == "baseline" and r["task"] in task_list
+            and ("baseline", r["iteration"], r["task"]) not in completed_trials
+        ]
+        all_results.extend(reused)
+        completed_trials.update(("baseline", r["iteration"], r["task"]) for r in reused)
+        print(f"\n>>> Reusing {len(reused)} baseline trials from {args.baseline_from} <<<")
+
+    def write_summary():
+        summary_file.write_text(
+            json.dumps({"results": all_results, "aggregates": aggregate(all_results)}, indent=2)
+        )
+
+    async def run_and_record(task_name: str, arm: str, iteration: int, store_path: Path):
+        label = f"{ARM_LABELS[arm]} #{iteration}"
+        print(f"\n[{label}] Task: {task_name}")
+        try:
+            metrics = await run_trial(
+                Path.cwd(),
+                task_name,
+                arm=arm,
+                iteration=iteration,
+                store_path=store_path,
+                max_turns=args.max_turns,
+                max_env_calls=args.max_env_calls,
+                timeout=args.timeout,
+                output_dir=args.output_dir,
+                semantic_learning=False if arm == "baseline" else args.semantic_learning,
+                retrieval_chars=args.retrieval_chars,
+                gated_graph=args.gated_graph,
+                seed=args.seed,
+                baseline_fallback=not args.no_baseline_fallback,
+            )
+            all_results.append(metrics)
+            completed_trials.add((arm, iteration, task_name))
+            print(
+                f"  -> Result: strict={metrics['strict_eval']} | "
+                f"partial={metrics['partial_credit']:.2f} | "
+                f"disc={metrics['discovery_calls']} | env={metrics['environment_calls']} | "
+                f"claims_in_store={metrics['store_claims']} | "
+                f"time={metrics['duration_seconds']}s"
+            )
+        except Exception as e:
+            print(f"  -> ERROR in {task_name} {label}: {e}")
+            all_results.append({
+                "task": task_name,
+                "arm": arm,
+                "iteration": iteration,
+                "error": str(e),
+                "strict_eval": False,
+                "partial_credit": 0.0,
+            })
+        write_summary()
+
+    def fresh_store(task_name: str, arm: str) -> Path:
+        path = stores_dir / f"{task_name.replace('.', '_')}_{arm}.sqlite"
+        path.unlink(missing_ok=True)
+        KnowledgeStore(path).close()
+        return path
+
     # -------------------------------------------------------------
-    # PHASE 1: Baseline (WITHOUT_WM) - Cold start once per task
+    # PHASE 1: Baseline (WITHOUT_WM) - Cold start, repeated per task
     # -------------------------------------------------------------
     if not args.skip_baseline:
         print("\n>>> PHASE 1: COLD-START BASELINE (WITHOUT_WM) <<<")
-        for task_name in task_list:
-            if ("baseline", 0, task_name) in completed_trials:
-                print(f"\n[BASELINE] Task: {task_name} (Already completed, skipping)")
-                continue
-
-            print(f"\n[BASELINE] Task: {task_name}")
-            baseline_store = stores_dir / f"{task_name.replace('.', '_')}_baseline.sqlite"
-            if baseline_store.exists():
-                baseline_store.unlink()
-            KnowledgeStore(baseline_store).close()
-
-            try:
-                metrics = await run_trial(
-                    Path.cwd(),
-                    task_name,
-                    arm="baseline",
-                    iteration=0,
-                    store_path=baseline_store,
-                    max_turns=args.max_turns,
-                    max_env_calls=args.max_env_calls,
-                    timeout=args.timeout,
-                    output_dir=args.output_dir,
-                    semantic_learning=False,
-                    retrieval_chars=args.retrieval_chars,
-                    gated_graph=args.gated_graph,
+        for repeat in range(args.baseline_repeats):
+            for task_name in task_list:
+                if ("baseline", repeat, task_name) in completed_trials:
+                    print(f"\n[BASELINE #{repeat}] Task: {task_name} (Already completed, skipping)")
+                    continue
+                await run_and_record(
+                    task_name, "baseline", repeat, fresh_store(task_name, "baseline")
                 )
-                all_results.append(metrics)
-                completed_trials.add(("baseline", 0, task_name))
-                print(
-                    f"  -> Result: strict={metrics['strict_eval']} | "
-                    f"partial={metrics['partial_credit']:.2f} | "
-                    f"disc={metrics['discovery_calls']} | env={metrics['environment_calls']} | "
-                    f"time={metrics['duration_seconds']}s"
-                )
-            except Exception as e:
-                print(f"  -> ERROR in {task_name} baseline: {e}")
-                all_results.append({
-                    "task": task_name,
-                    "arm": "baseline",
-                    "iteration": 0,
-                    "error": str(e),
-                    "strict_eval": False,
-                    "partial_credit": 0.0,
-                })
-
-            summary_file.write_text(json.dumps({"results": all_results}, indent=2))
 
         if args.only_baseline:
             print_scorecard(all_results)
+            print_aggregates(aggregate(all_results))
             print(f"\nBaseline results saved to: {summary_file}")
             return
 
@@ -452,50 +594,19 @@ async def main():
         print(f"{'='*75}")
 
         for task_name in task_list:
-            if ("with_worldmodel", iteration, task_name) in completed_trials:
-                print(f"\n[WM ITERATION {iteration}] Task: {task_name} (Already completed, skipping)")
-                continue
-
-            print(f"\n[WM ITERATION {iteration}] Task: {task_name}")
-            try:
-                metrics = await run_trial(
-                    Path.cwd(),
-                    task_name,
-                    arm="with_worldmodel",
-                    iteration=iteration,
-                    store_path=carried_store,
-                    max_turns=args.max_turns,
-                    max_env_calls=args.max_env_calls,
-                    timeout=args.timeout,
-                    output_dir=args.output_dir,
-                    semantic_learning=args.semantic_learning,
-                    retrieval_chars=args.retrieval_chars,
-                    gated_graph=args.gated_graph,
-                )
-                all_results.append(metrics)
-                completed_trials.add(("with_worldmodel", iteration, task_name))
-                print(
-                    f"  -> Result: strict={metrics['strict_eval']} | "
-                    f"partial={metrics['partial_credit']:.2f} | "
-                    f"disc={metrics['discovery_calls']} | env={metrics['environment_calls']} | "
-                    f"claims_in_store={metrics['store_claims']} | "
-                    f"time={metrics['duration_seconds']}s"
-                )
-            except Exception as e:
-                print(f"  -> ERROR in {task_name} WM Iter {iteration}: {e}")
-                all_results.append({
-                    "task": task_name,
-                    "arm": "with_worldmodel",
-                    "iteration": iteration,
-                    "error": str(e),
-                    "strict_eval": False,
-                    "partial_credit": 0.0,
-                })
-
-            summary_file.write_text(json.dumps({"results": all_results}, indent=2))
+            # Interleave arms per task so cluster load and drift affect both alike.
+            arms = ["advisory" if args.advisory else "with_worldmodel"]
+            arms += ["harness_only"] if args.harness_only_arm else []
+            for arm in arms:
+                if (arm, iteration, task_name) in completed_trials:
+                    print(f"\n[{ARM_LABELS[arm]} #{iteration}] Task: {task_name} (Already completed, skipping)")
+                    continue
+                store = carried_store if arm != "harness_only" else fresh_store(task_name, arm)
+                await run_and_record(task_name, arm, iteration, store)
 
     # Final summary scorecard
     print_scorecard(all_results)
+    print_aggregates(aggregate(all_results))
     print(f"\nComplete results and learning trajectory saved to: {summary_file}")
 
 

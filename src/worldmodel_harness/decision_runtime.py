@@ -153,17 +153,6 @@ def count_consecutive_empty_queries(
     return count
 
 
-def count_discovery_searches_in_episode(
-    evidence_store: KnowledgeStore | None,
-    scope: Scope,
-) -> int:
-    """Count how many total api_search / discovery calls have occurred in this episode."""
-    if evidence_store is None:
-        return 0
-    episodes = evidence_store.episodes(scope)
-    return sum(1 for ep in episodes if ep.operation in ("api_search", "lookup_knowledge"))
-
-
 def extract_query_target(arguments: dict[str, Any]) -> str | None:
     """Extract semantic target identifier from query arguments (e.g. title, search string)."""
     params = arguments.get("params") or arguments.get("body")

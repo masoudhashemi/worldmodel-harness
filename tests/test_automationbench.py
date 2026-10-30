@@ -61,6 +61,34 @@ def test_budget_applies_before_environment_call(tmp_path):
     asyncio.run(scenario())
 
 
+def test_tool_exception_is_returned_to_the_agent_like_upstream(tmp_path):
+    async def scenario():
+        from automationbench.tools.api import api_fetch
+
+        store = KnowledgeStore(tmp_path / "evidence.sqlite")
+        row = next(
+            r for r in dataset("operations")
+            if json.loads(r["info"])["task_name"] == "operations.asana_fire_drill"
+        )
+        adapter = AutomationBenchAdapter(row, "operations", store, Ledger())
+        # A path parameter repeated in params makes the upstream route raise TypeError.
+        arguments = {
+            "method": "GET",
+            "url": "https://sheets.googleapis.com/v4/spreadsheets/ss_ops_policy/values/ws_email_rules!A1:Z100",
+            "params": json.dumps({"range": "ws_email_rules!A1:Z100", "spreadsheetId": "ss_ops_policy"}),
+        }
+        with pytest.raises(TypeError) as upstream:
+            api_fetch(world=adapter._state["world"].model_copy(deep=True), **arguments)
+        result = await adapter.execute(api_fetch, arguments)
+        assert not result.success
+        assert result.content == str(upstream.value)
+        (episode,) = store.episodes(adapter.scope)
+        assert episode.outcome == "error"
+        store.close()
+
+    asyncio.run(scenario())
+
+
 def test_episode_arm_retains_raw_evidence_without_consolidating(tmp_path):
     async def scenario():
         from automationbench.tools.api import api_search

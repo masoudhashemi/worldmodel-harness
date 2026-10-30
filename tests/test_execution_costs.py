@@ -16,7 +16,7 @@ def test_model_costs_survive_failure_and_cancellation(failure):
                 raise failure("sensitive SDK detail")
             return AssistantMessage(blocks=[TextBlock(text="done")])
 
-    wrapper = KnowledgeClient(Client(), None, None, SimpleNamespace(memory="none"))
+    wrapper = KnowledgeClient(Client(), None, None, SimpleNamespace(memory="none", operational=False, advisory=False))
     if failure:
         with pytest.raises(failure):
             asyncio.run(wrapper.generate([], {}))

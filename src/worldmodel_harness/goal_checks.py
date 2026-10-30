@@ -13,6 +13,9 @@ from .knowledge import OutputExpectation, Record
 from .observable_predictions import compare_expectations, inspect_path
 from .operation_semantics import is_observation_read
 
+# Finish refusals before an unverified write or missing value is accepted as "unverified".
+MAX_VERIFICATION_REFUSALS = 2
+
 
 class OutcomeContract(Record):
     """Fixed target, separate from the observation used to verify it."""
@@ -519,16 +522,49 @@ class GoalTracker:
             )
             return result
         has_failing_checks = any(r.get("result") != "matched" for r in rows)
-        prior_finish_attempts = sum(1 for a in self.finish_audit if not a.get("success"))
+        # Entity-obligation refusals are a different guard; only verification refusals count.
+        verification_refusals = sum(
+            1
+            for a in self.finish_audit
+            if not a.get("success") and a.get("reason") == "needs_verification"
+        )
+        # Soft completion never overrides a contradicting check or open obligations. Without
+        # outstanding value slots one reminder suffices; an unverified write or missing value
+        # gets a bounded number of specific reminders so verification cannot spiral.
         can_soft_complete = (
-            (prior_finish_attempts >= 1 or getattr(self, "_empty_checks_warning_given", False))
-            and not pending
+            not pending
             and not pending_entities
             and not has_failing_checks
+            and verification_refusals >= (
+                1 if not missing and not unverified_written else MAX_VERIFICATION_REFUSALS
+            )
         )
         if not verified and not params.unresolved and not can_soft_complete:
-            if not rows:
-                self._empty_checks_warning_given = True
+            if all_matched and (missing or unverified_written):
+                next_step = (
+                    "The task changes a "
+                    + " and ".join(missing or unverified_written)
+                    + " value. A matched identity/NAME check does not verify it. "
+                    "Check the field holding that value on the current record."
+                )
+            elif missing or unverified_written:
+                next_step = (
+                    "Unverified task values: "
+                    + ", ".join(missing + unverified_written)
+                    + ". Read the current record and call check_effect for each: supply "
+                    "requirement_id, exact task_quote, the read's episode_id, modified field "
+                    "path, exact expected value from task/source, and task-quoted identity "
+                    "anchor_text. Do not repeat a successful write."
+                )
+            else:
+                next_step = (
+                    "If you have completed all task mutations and requirements, call finish "
+                    "again to finalize immediately. Alternatively, call check_effect directly "
+                    "before finish: supply requirement_id, exact task_quote, latest known "
+                    "non-mutating read episode_id, modified field path, exact expected value "
+                    "from task/source, and task-quoted identity anchor_text. Do not repeat a "
+                    "successful write."
+                )
             result = ToolResult(
                 content=json.dumps(
                     {
@@ -537,21 +573,12 @@ class GoalTracker:
                         "checks": rows,
                         "verification_tool": "check_effect",
                         "public_task": " ".join(m["content"] for m in getattr(getattr(self.adapter, "task", None), "prompt", []) if m.get("role") != "system"),
-                        "next": (
-                            "The task changes a "
-                            + " and ".join(missing or unverified_written)
-                            + " value. A matched identity/NAME check does not verify it. "
-                            "Check the field holding that value on the current record."
-                            if all_matched and (missing or unverified_written)
-                            else (
-                                "If you have completed all task mutations and requirements, call finish again to finalize immediately. "
-                                "Alternatively, call check_effect directly before finish: supply requirement_id, exact task_quote, latest known non-mutating read episode_id, modified field path, exact expected value from task/source, and task-quoted identity anchor_text. Do not repeat a successful write."
-                            )
-                        ),
+                        "next": next_step,
                     }
                 ),
                 success=False,
             )
+            refusal_reason = "needs_verification"
         else:
             self.completion_status = (
                 "unresolved"
@@ -561,10 +588,12 @@ class GoalTracker:
             result = ToolResult(
                 content=json.dumps({"status": self.completion_status, **slots, "checks": rows})
             )
+            refusal_reason = None
         self.finish_audit.append(
             {
                 "request": params.model_dump(mode="json"),
                 "success": result.success,
+                "reason": refusal_reason,
                 "shadow_unresolved": pending,
                 **slots,
             }

@@ -5,6 +5,7 @@ import pytest
 from worldmodel_harness.knowledge import Claim, Episode, Layer, Scope
 from worldmodel_harness.store import KnowledgeStore
 from worldmodel_harness.trajectory_graph import (
+    SAMPLING_SALT,
     OperationNode,
     TrajectoryGraph,
     TransitionEdge,
@@ -261,9 +262,14 @@ def test_thompson_sampling_favors_high_confidence_while_exploring():
 
     high_wins = 0
     total_draws = 1000
-    for _ in range(total_draws):
-        s_high = edge_high.sample_beta()
-        s_low = edge_low.sample_beta()
+    # Draws are fixed within one salt (task/iteration) and explore across salts.
+    for draw in range(total_draws):
+        token = SAMPLING_SALT.set(f"draw-{draw}")
+        try:
+            s_high = edge_high.sample_beta()
+            s_low = edge_low.sample_beta()
+        finally:
+            SAMPLING_SALT.reset(token)
         if s_high > s_low:
             high_wins += 1
 
