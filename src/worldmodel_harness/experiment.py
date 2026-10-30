@@ -5,6 +5,7 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 from time import perf_counter
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from stirrup.core.models import SystemMessage, TokenUsage, Tool, ToolResult, UserMessage
@@ -23,6 +24,9 @@ class TrialSettings(BaseModel):
     task_name: str
     # Baseline when False: no store, no note, nothing learned.
     advisory: bool = False
+    # "system" appends the note to the system prompt; "user" sends it as its own
+    # message after the task, leaving the system prompt identical to the baseline's.
+    note_placement: Literal["system", "user"] = "system"
     max_turns: int = Field(default=50, ge=1)
     max_environment_calls: int | None = Field(default=None, ge=1)
     timeout_seconds: int | None = Field(default=1200, ge=1)
@@ -32,8 +36,12 @@ class Finish(BaseModel):
     summary: str
 
 
-def _with_note(messages: list, note: str) -> list:
+def _with_note(messages: list, note: str, placement: str = "system") -> list:
     updated = list(messages)
+    if placement == "user":
+        task = next((i for i, m in enumerate(updated) if m.role == "user"), len(updated) - 1)
+        updated.insert(task + 1, UserMessage(content="### Advisory Memory\n" + note))
+        return updated
     header = "\n\n### Advisory Memory\n"
     if updated and updated[0].role == "system":
         updated[0] = SystemMessage(content=updated[0].content + header + note)
@@ -45,9 +53,10 @@ def _with_note(messages: list, note: str) -> list:
 class AdvisoryClient:
     """Records per-call model cost; in advisory mode adds the fixed note until the agent loops."""
 
-    def __init__(self, client, note: str = ""):
+    def __init__(self, client, note: str = "", placement: str = "system"):
         self.client = client
         self.note = note
+        self.placement = placement
         self.withdrawn = None
         self.model_call_costs = []
         self.last_messages = []
@@ -65,7 +74,7 @@ class AdvisoryClient:
             loop = detect_loop(messages)
             if loop is not None:
                 self.withdrawn = {**loop, "model_call_index": len(self.model_call_costs)}
-        sent = _with_note(messages, self.note) if self.note and self.withdrawn is None else list(messages)
+        sent = _with_note(messages, self.note, self.placement) if self.note and self.withdrawn is None else list(messages)
         self.last_messages = list(messages)
         started = perf_counter()
         cost = {"usage_available": False}
@@ -105,7 +114,11 @@ async def run_trial(
             note, info = build_note(store, adapter.scope, task_text)
             ledger.compute_seconds += perf_counter() - started
             result["advisory"] = {**info, "note": note}
-        client = AdvisoryClient(build_client(model_settings, load_api_key(root, model_settings)), note)
+        client = AdvisoryClient(
+            build_client(model_settings, load_api_key(root, model_settings)),
+            note,
+            settings.note_placement,
+        )
         tools = adapter.tools()
         finish_tool = Tool(
             name="finish",

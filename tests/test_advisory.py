@@ -148,3 +148,16 @@ def test_baseline_trial_has_no_store_and_no_note(tmp_path, monkeypatch):
     assert result["finished"] and "advisory" not in result
     assert "Advisory Memory" not in client.systems[0]
     assert not list(tmp_path.glob("**/*.sqlite"))
+
+
+def test_user_placement_leaves_the_system_prompt_unchanged():
+    from stirrup.core.models import SystemMessage, UserMessage
+
+    from worldmodel_harness.experiment import _with_note
+
+    messages = [SystemMessage(content="agent"), SystemMessage(content="rules"), UserMessage(content="task")]
+    system = _with_note(messages, "hint", "system")
+    assert system[0].content.endswith("### Advisory Memory\nhint") and len(system) == 3
+    user = _with_note(messages, "hint", "user")
+    assert [m.content for m in user[:3]] == ["agent", "rules", "task"]
+    assert user[3].role == "user" and user[3].content == "### Advisory Memory\nhint"
