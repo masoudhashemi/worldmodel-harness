@@ -1,7 +1,7 @@
 import base64
 import json
 
-from worldmodel_harness.ledger import Ledger, is_write, observe, render
+from worldmodel_harness.ledger import EntityLedger, is_write, observe, render
 
 SHEET_URL = "https://sheets.googleapis.com/v4/spreadsheets/ss_deals/values/Deals!A1:Z10"
 SHEET = {
@@ -25,7 +25,7 @@ def _gmail(to: str, body: str) -> dict:
 
 
 def test_review_lists_each_row_with_its_status_and_what_was_written():
-    ledger = Ledger()
+    ledger = EntityLedger()
     observe(ledger, {"method": "GET", "url": SHEET_URL}, json.dumps(SHEET), True)
     observe(ledger, _gmail("alice@company.example.com", "Your commission is 1,200"), "{}", True)
     observe(ledger, _gmail("dave@company.example.com", "Your commission is 0"), "{}", True)
@@ -40,7 +40,7 @@ def test_review_lists_each_row_with_its_status_and_what_was_written():
 
 
 def test_range_writes_touch_rows_by_number():
-    ledger = Ledger()
+    ledger = EntityLedger()
     observe(ledger, {"method": "GET", "url": SHEET_URL}, json.dumps(SHEET), True)
     update = {"method": "PUT", "url": "https://sheets.googleapis.com/v4/spreadsheets/ss_deals/values/Deals!C3:C4"}
     observe(ledger, update, "{}", True)
@@ -51,6 +51,6 @@ def test_range_writes_touch_rows_by_number():
 def test_searches_sent_as_post_are_reads_and_no_writes_means_no_review():
     search = {"method": "POST", "url": "https://api.hubapi.com/crm/v3/objects/contacts/search"}
     assert not is_write(search)
-    ledger = Ledger()
+    ledger = EntityLedger()
     observe(ledger, search, json.dumps({"results": [{"id": "c1", "email": "a@b.example.com"}]}), True)
     assert ledger.entities and render(ledger) == ""

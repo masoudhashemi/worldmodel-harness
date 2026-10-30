@@ -14,6 +14,7 @@ from .advisory import build_note, detect_loop
 from .automationbench import AutomationBenchAdapter, task_row
 from .budget import Ledger
 from .config import load_api_key, load_settings
+from .ledger import EntityLedger, observe, render
 from .repairing_agent import RepairingAgent
 from .runtime import build_client
 from .store import KnowledgeStore
@@ -27,6 +28,8 @@ class TrialSettings(BaseModel):
     # "system" appends the note to the system prompt; "user" sends it as its own
     # message after the task, leaving the system prompt identical to the baseline's.
     note_placement: Literal["system", "user"] = "system"
+    # Hold the first finish once with the entity-ledger review (no-op if it is empty).
+    review: bool = False
     max_turns: int = Field(default=50, ge=1)
     max_environment_calls: int | None = Field(default=None, ge=1)
     timeout_seconds: int | None = Field(default=1200, ge=1)
@@ -34,6 +37,12 @@ class TrialSettings(BaseModel):
 
 class Finish(BaseModel):
     summary: str
+
+
+REVIEW_FOOTER = (
+    "Fix anything that does not match the task, then call finish again. "
+    "If everything already matches, call finish again now."
+)
 
 
 def _with_note(messages: list, note: str, placement: str = "system") -> list:
@@ -132,11 +141,25 @@ async def run_trial(
             settings.note_placement,
         )
         tools = adapter.tools()
+        entities = EntityLedger()
+        if settings.review:
+            adapter.fetch_observers.append(lambda *call: observe(entities, *call))
+            result["review"] = None
+
+        def finish(_):
+            # Stirrup ends the run only on a successful finish; a failed one returns the review.
+            if settings.review and result["review"] is None:
+                review = render(entities)
+                result["review"] = {"text": review, "model_call_index": len(client.model_call_costs)}
+                if review:
+                    return ToolResult(content=review + "\n" + REVIEW_FOOTER, success=False)
+            return ToolResult(content="Finished")
+
         finish_tool = Tool(
             name="finish",
             description="Finish the task and summarize the result.",
             parameters=Finish,
-            executor=lambda _: ToolResult(content="Finished"),
+            executor=finish,
         )
         agent = RepairingAgent(
             repair_schemas={t.name: t.parameters for t in [*tools, finish_tool]},

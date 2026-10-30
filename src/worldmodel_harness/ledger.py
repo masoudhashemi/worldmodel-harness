@@ -18,7 +18,7 @@ EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 KEY_FIELDS = ("id", "email", "emailaddress", "key", "sid", "number", "name", "title", "subject")
 READ_VERBS = ("search", "find", "query", "lookup")
 MAX_ATTRIBUTE_CHARS = 40
-MAX_ATTRIBUTES = 5
+MAX_ATTRIBUTES = 6
 MAX_ROWS = 40
 
 
@@ -41,7 +41,7 @@ class Write:
 
 
 @dataclass
-class Ledger:
+class EntityLedger:
     entities: dict[tuple[str, str], Entity] = field(default_factory=dict)
     writes: list[Write] = field(default_factory=list)
 
@@ -147,7 +147,7 @@ def is_write(arguments: dict) -> bool:
     return method != "GET" and not any(verb in path.rsplit("/", 1)[-1] for verb in READ_VERBS)
 
 
-def observe(ledger: Ledger, arguments: dict, response: str, success: bool) -> None:
+def observe(ledger: "EntityLedger", arguments: dict, response: str, success: bool) -> None:
     """Fold one api_fetch call and its response into the ledger."""
     if not success:
         return
@@ -176,15 +176,21 @@ def observe(ledger: Ledger, arguments: dict, response: str, success: bool) -> No
 
 
 def _deciding(entities: list[Entity]) -> list[str]:
-    """Attributes worth showing: short, and varying across entities of a kind."""
+    """Attributes worth showing: short, varying, and not identity.
+
+    Rules select items by categories (a status, a type, a flag), so fields with few
+    distinct values come first; the naming field and ids are already in the key.
+    """
     counts: dict[str, Counter] = {}
     for entity in entities:
+        first = next(iter(entity.attributes), None)
         for name, value in entity.attributes.items():
-            if len(value) <= MAX_ATTRIBUTE_CHARS:
+            identity = name == first or name.lower().endswith("id")
+            if len(value) <= MAX_ATTRIBUTE_CHARS and not identity:
                 counts.setdefault(name, Counter())[value] += 1
     ranked = sorted(
         (name for name, c in counts.items() if len(c) > 1 or len(entities) == 1),
-        key=lambda name: (-sum(counts[name].values()), name),
+        key=lambda name: (len(counts[name]) / sum(counts[name].values()), -sum(counts[name].values()), name),
     )
     return ranked[:MAX_ATTRIBUTES]
 
@@ -195,7 +201,7 @@ def _summary(write: Write) -> str:
     return f"#{write.index + 1} {write.method} {service}" + (f" to {', '.join(recipients)}" if recipients else "")
 
 
-def render(ledger: Ledger, max_rows: int = MAX_ROWS) -> str:
+def render(ledger: "EntityLedger", max_rows: int = MAX_ROWS) -> str:
     """The finish review: entities that writes could be about, grouped by kind."""
     if not ledger.writes:
         return ""

@@ -25,7 +25,7 @@ from classify_failures import (
     trial_text,
 )
 
-from worldmodel_harness.ledger import Ledger, observe, render
+from worldmodel_harness.ledger import EntityLedger, observe, render
 
 
 def visible(check: dict, label: str, review: str) -> bool:
@@ -50,7 +50,7 @@ def main():
     seen, shown, sizes = Counter(), Counter(), {True: [], False: []}
     for trial in sorted((run_dir / "trajectories").glob(f"*/{arm}-r{rnd}")):
         msgs = messages(trial / "trajectory.json")
-        ledger = Ledger()
+        ledger = EntityLedger()
         for arguments, response, success in fetches(msgs):
             observe(ledger, arguments, response, success)
         review = render(ledger)

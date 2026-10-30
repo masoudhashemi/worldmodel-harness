@@ -102,6 +102,8 @@ class AutomationBenchAdapter:
         self.store = store
         self.learner = Learner(store) if store is not None else None
         self.episodes: list[Episode] = []
+        # Called with (arguments, raw response, success) after every api_fetch.
+        self.fetch_observers: list = []
 
     def tools(self) -> list[Tool]:
         from automationbench.tools.api import API_TOOLS
@@ -171,6 +173,9 @@ class AutomationBenchAdapter:
             learning_started = perf_counter()
             self._learn(operation, arguments, response, outcome, purpose, elapsed)
             self.ledger.compute_seconds += perf_counter() - learning_started
+        if operation == "api_fetch":
+            for observe in self.fetch_observers:
+                observe(arguments, raw, outcome == "success")
         return ToolResult(content=raw, success=outcome == "success")
 
     def _learn(self, operation, arguments, response, outcome, purpose, elapsed) -> None:
