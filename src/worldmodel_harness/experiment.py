@@ -94,11 +94,21 @@ class AdvisoryClient:
 
 
 async def run_trial(
-    root: Path, settings: TrialSettings, output_dir: Path, store_path: Path | None = None
+    root: Path,
+    settings: TrialSettings,
+    output_dir: Path,
+    store_path: Path | None = None,
+    note: str | None = None,
 ) -> dict:
-    """One task. With advisory memory the store at `store_path` is read and updated."""
+    """One task. With advisory memory the store at `store_path` is read and updated.
+
+    `note` instead supplies a fixed note built elsewhere; it is shown the same way and
+    nothing is learned during the trial.
+    """
     if settings.advisory and store_path is None:
         raise ValueError("Advisory memory needs a store")
+    if settings.advisory and note is not None:
+        raise ValueError("A fixed note replaces advisory memory; pass one or the other")
     model_settings = load_settings(root)
     output_dir.mkdir(parents=True, exist_ok=True)
     row = task_row(settings.task_name)
@@ -107,7 +117,9 @@ async def run_trial(
         ledger = Ledger(max_environment_calls=settings.max_environment_calls)
         adapter = AutomationBenchAdapter(row, settings.task_name.split(".", 1)[0], ledger, store)
         result = {"task_name": adapter.task.task_id, "scope": adapter.scope.model_dump()}
-        note = ""
+        if note is not None:
+            result["fixed_note"] = {"note": note, "chars": len(note)}
+        note = note or ""
         if store is not None:
             started = perf_counter()
             task_text = " ".join(m["content"] for m in adapter.task.prompt)
@@ -153,8 +165,9 @@ async def run_trial(
             result.update(finished=False, error_type=type(exc).__name__)
             trajectory = [[m.model_dump(mode="json") for m in client.last_messages]]
         (output_dir / "trajectory.json").write_text(json.dumps(trajectory, indent=2))
-        if "advisory" in result:
-            result["advisory"]["withdrawn"] = client.withdrawn
+        for key in ("advisory", "fixed_note"):
+            if key in result:
+                result[key]["withdrawn"] = client.withdrawn
         result["model_call_costs"] = client.model_call_costs
         result["outer_validation_audit"] = agent.outer_validation_audit
         # Score only after interaction; the score is never written to the store.
