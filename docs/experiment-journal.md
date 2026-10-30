@@ -921,9 +921,126 @@ Evaluate longitudinal stability, call efficiency, and autonomous capability tran
 - **`operations.asana_fire_drill`**: 0.00 baseline (nested section trap) $\to$ **0.80 partial credit** in 17 calls.
 - **`operations.pipefy_slack_purchase_request`**: 0.00 baseline (synthetic ID trap) $\to$ **0.50 partial credit** in 15 calls.
 
+### Correction (added 2026-10-30)
+
+E013's comparison is biased. Group 1 was selected *because* those 27 tasks passed in one E012 run, so their 100% baseline is regression to the mean in reverse: on a fresh baseline (E014, 3 repeats) the same 27 tasks pass 69.1% of trials, not 100%. The "baseline" column is also E012 reused (53/53 identical run IDs), and E012 included 30 trials killed by an adapter crash (see E014), so its 4.47% understates the true baseline. The iteration-to-iteration recovery numbers above should not be read as world-model gains.
+
 ---
 
-## Master Empirical Research Scorecard (Milestones E007 – E013)
+## E014 — Controlled Baseline, World Model and Harness-Only Comparison
+
+Status: stopped by decision on 2026-10-30 after the baseline phase and part of iteration 1.
+
+### Goal
+Fix E013's protocol and separate the contribution of carried knowledge from that of the operational layer.
+
+### Method
+- 53-task mix (`configs/eval_53_tasks.json`), Gemma-4-31B, Stirrup, `max_turns=50`, `timeout=1200s`.
+- Baseline repeated 3 times per task (fresh, no memory).
+- Phase 2 interleaved per task: **world model** (carried store seeded from `runs/focused-env-audit`) and **harness-only** (the same operational layer with a fresh empty store per trial).
+- Fixes made before or during the run: upstream tool exceptions are returned to the agent as the upstream `ToolEnv` does (previously they crashed the trial: 30 E012 trials and 6 E014 trials); bounded finish-verification refusals; salted Thompson draws; per-trial evidence stores.
+- A baseline fallback was added mid-run: when the decision audit showed the same action 3 times in the last 6 decisions, or 3 consecutive blocks, the rest of the episode ran as the baseline.
+- Artifacts: `runs/e014-controlled/` (`summary.json`, `provenance.txt`, `uncommitted.diff`).
+
+### Results
+The baseline is nearly deterministic within one run: pass/fail differs across the 3 repeats on only 2 of 53 tasks (18 always pass, 33 never). Phase 2 covered 29 tasks (27 from Group 1) before it was stopped:
+
+| Group 1, 27 tasks | Strict | Partial | Env calls | Input tokens | Time/task |
+|---|---|---|---|---|---|
+| Baseline (3 repeats) | **69%** | 0.83 | 29.5 | 270k | 68 s |
+| Harness only | 59% | 0.68 | 21.8 | 465k | 290 s |
+| World model | 52% | 0.68 | **17.4** | 428k | 256 s |
+
+### Key Findings
+1. The world model cut environment calls by about 40% but took about 65% more model turns (one action per turn through `execute_decision`), about 1.6× the tokens and about 4× the time, at lower accuracy.
+2. Root causes, traced in trajectories:
+   - **Narrow exploration** in both operational arms: a single lookup, then commitment; the second data source was missed (an activity-log sheet, a second spreadsheet, another channel, a sibling tab).
+   - **Output-discipline slips** (naming excluded items), far more often with the 11–15k-character per-turn memory.
+   - **Familiar routes used in place of the needed one**: the graph listed `messages.send` but no draft endpoint, reported `unresolved_gap_count: 0`, and told the agent to skip `api_search`.
+   - **Junk hypotheses**: semantic learning injected claims about the harness's own tools and other tasks' values.
+   - **Self-reinforcement**: repeated identical searches raised a claim's support count.
+3. `repairing_agent.py` rewrote `execute_decision` calls using hard-coded task values (Jira project `INC`, the name "Alex Rivera", a fixed SMS timestamp). This affected only the operational arms; the code is removed on the `lean-advisory` branch.
+
+### Decision
+Stop the operational design. Keep the baseline repeats as the reference and test a lean memory that keeps the baseline's tools and loop.
+
+---
+
+## E015 — Lean Advisory Memory (Routes Note)
+
+Status: completed 2026-10-30. Branch `lean-advisory`.
+
+### Goal
+Keep the baseline loop and tools; add one small fixed note built from the carried store:
+- endpoints that succeeded in at least 2 earlier tasks, for the services the task names, with the request format of write endpoints;
+- observed value flows between them;
+- services and resources with no confirmed route ("gmail draft").
+
+The note is withdrawn if the agent repeats a call 3 times in its last 6 calls.
+
+### Method and results
+- **E015 pilot** (`runs/e015-advisory-pilot`): 15 tasks against E014's baseline repeats from the previous day. 5 of 11 passed before it was stopped, at lower cost. This comparison is confounded by the day.
+- **E015b, same-day controlled pilot** (`runs/e015b-controlled-pilot`): the same 15 tasks, baseline and advisory back to back per task.
+
+  | | Strict | Env calls | Turns | Input tokens (mean) | Median time |
+  |---|---|---|---|---|---|
+  | Baseline | **10/15** | 30.4 | 24.5 | 316k | 70 s |
+  | Advisory | 7/15 | **21.0** | **16.8** | **124k** | **50 s** |
+
+- **E015c, note placement** (`runs/e015c-note-placement`): the 4 tasks advisory lost, 3 rounds, the note in the system prompt or as a message after the task; every advisory trial starts from a fresh copy of the same seed.
+
+  | | Strict | Env calls | Turns | Median time |
+  |---|---|---|---|---|
+  | Baseline | **12/12** | 24.5 | 20.3 | 59 s |
+  | Note in system prompt | 4/12 | 13.2 | 10.8 | 44 s |
+  | Note after the task | 2/12 | 18.2 | 16.3 | 50 s |
+
+### Key Findings
+1. Same-day controls are required. Baseline results from another day differ far more than repeats within one run (11 of 15 tasks changed between E012 and later runs; several E014 3/3 tasks failed on E015 days).
+2. Placement does not matter; the note's content changes behaviour. The savings come from skipped exploration, and the skipped reads held the deciding details:
+   - `cross_modal`: the account record was skipped and the agent emailed a contact who should be excluded (5/6 note trials, 0/3 baseline);
+   - `standup`: the agent spent its effort on the calendar listed in the note and read the other channel too shallowly to find "standup is optional" (6/6 against 0/3);
+   - `content_localization`: the agent named the excluded countries (6/6 against 0/3).
+3. The note never led to a wrong endpoint. It led the agent away from data.
+4. Runaway malformed-call loops (writes without a body, or calls missing method/url, about 30 s per call for long base64 output) appear in both arms, about once per pilot. They come from Gemma or tool-call parsing, not from the note.
+
+---
+
+## E015d — Check Memory vs. a Generic Checklist
+
+Status: completed 2026-10-30. `runs/e015d-check-memory`.
+
+### Goal
+Test memory that **adds** checks instead of shortcuts. From saved trajectories (tool calls only, never grades), learn which sources earlier runs read before each kind of write. Leave the current task out, so the note cannot encode its own answer. A fixed generic checklist is the prompt-only control.
+
+### Method
+8 tasks (the 4 E015c losses plus 4 second-source tasks), 2 rounds, three arms back to back per task. The checks were learned with `scripts/learn_checks.py` from E014's 159 baseline trajectories; 87% of 4,907 calls resolved to documented endpoints.
+
+### Results
+| | Strict | Partial | Env calls | Turns | Median time | Median tokens |
+|---|---|---|---|---|---|---|
+| Baseline | 12/16 | 0.77 | 31.6 | 25.0 | 65 s | 158k |
+| Generic checklist | **15/16** | **0.94** | 22.1 | 18.1 | 50 s | 134k |
+| Learned checks | 10/16 | 0.93 | **20.2** | **15.3** | **49 s** | **78k** |
+
+### Key Findings
+1. The learned checks are mostly generic: the reads that recur across tasks (spreadsheet values, Drive listings) dominate, while deciding reads are task-specific and rarely recur in 2 other tasks. They did not beat the baseline.
+2. The fixed checklist did best on accuracy and cost, recovering the two tasks the same-day baseline failed in both rounds. But it was written after analysing these exact tasks, so this result is in-sample (see E016).
+3. On this benchmark with Gemma, no learned memory (routes or checks) has beaten a fixed instruction.
+
+---
+
+## E016 — Generic Checklist on Held-Out Tasks
+
+Status: in progress (started 2026-10-30). `runs/e016-checklist-heldout`.
+
+The 45 tasks of the 53-task set not used in E015d, 2 rounds, baseline and checklist back to back per task. It tests whether the E015d checklist result holds on tasks it was not written from.
+
+---
+
+## Master Empirical Research Scorecard (Milestones E007 – E016)
+
+The E007–E013 rows predate same-day controls; read them with the E013 correction and the E014–E015 findings in mind.
 
 Comprehensive synthesis of the empirical World Model Harness evaluated on `openai/gemma-4-31B-it` via the internal Toolkit cluster:
 
@@ -941,3 +1058,6 @@ Comprehensive synthesis of the empirical World Model Harness evaluated on `opena
 
 
 
+| **E014 (Controlled)** | Baseline ×3 vs. world model vs. harness-only | 53-task mix (29 reached in phase 2) | **69% Strict (G1)** | 52% Strict (G1), 17.4 calls | −17 pts accuracy, ~4× time | The operational layer narrows exploration; a large per-turn memory adds output slips. Stopped. |
+| **E015 (Lean advisory)** | Routes note, same-day controls | 15-task pilot; 4-task placement test | **10/15; 12/12** | 7/15; 4/12 and 2/12 | −31% calls, −29% time, lower accuracy | The note's savings come from skipped exploration that held deciding details; placement does not matter. |
+| **E015d (Check memory)** | Learned checks vs. generic checklist | 8 tasks × 2 rounds | 12/16 | Checks 10/16; checklist **15/16** | Checklist: −30% calls, −23% time | Learned checks are generic and did not help; a fixed checklist did, but in-sample (E016 tests held-out tasks). |
