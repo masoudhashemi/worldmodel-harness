@@ -7,6 +7,7 @@ rubric unchanged; Stirrup replaces only the upstream model/execution loop.
 import copy
 import inspect
 import json
+import urllib.parse
 from dataclasses import dataclass
 from time import perf_counter
 from typing import Any, get_type_hints
@@ -15,16 +16,11 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, create_model
 from stirrup.core.models import Tool, ToolResult
 
-from .behavior import BehaviorLearner, predict
+from .behavior import BehaviorLearner
 from .budget import Ledger
 from .composition import CompositionLearner
-from .information import CURRENT_INFORMATION
-from .interactions import CURRENT_INTERACTION
-from .knowledge import Episode, LiveState, Scope, response_coverage
+from .knowledge import Episode, Scope, response_coverage
 from .learning import Learner
-from .observable_predictions import CURRENT_EXPECTATIONS, compare_expectations
-from .procedures import CURRENT_ARTIFACT
-from .shift import ResponseShift, ShiftController
 from .store import KnowledgeStore
 
 UPSTREAM_COMMIT = "4a8e1061254004d9dac807054eed33fad7d1ff14"
@@ -39,29 +35,45 @@ class PublicTask:
 
 def dataset(domain: str):
     from automationbench.domains import PUBLIC_DOMAINS, get_combined_dataset, get_domain_dataset
-    from .isomorphic_tasks import get_isomorphic_tasks_for_domain
 
     if domain == "public":
-        base = list(get_combined_dataset(PUBLIC_DOMAINS))
-    else:
-        base = list(get_domain_dataset(domain))
-    custom = get_isomorphic_tasks_for_domain(domain)
-    return base + custom
+        return list(get_combined_dataset(PUBLIC_DOMAINS))
+    return list(get_domain_dataset(domain))
+
+
+def task_row(task_name: str) -> dict:
+    domain = task_name.split(".", 1)[0]
+    for row in dataset(domain):
+        if json.loads(row["info"])["task_name"] == task_name:
+            return row
+    raise ValueError(f"Unknown task name: {task_name}")
+
+
+def _split_query(kwargs: dict) -> None:
+    """Move a query string in the URL into params, as the upstream routes expect."""
+    parsed = urllib.parse.urlsplit(str(kwargs["url"]))
+    kwargs["url"] = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+    if not parsed.query:
+        return
+    query = {k: v[0] if len(v) == 1 else v for k, v in urllib.parse.parse_qs(parsed.query).items()}
+    existing = kwargs.get("params")
+    if not existing:
+        kwargs["params"] = json.dumps(query)
+    elif isinstance(existing, str):
+        try:
+            loaded = json.loads(existing)
+        except ValueError:
+            return
+        if isinstance(loaded, dict):
+            kwargs["params"] = json.dumps({**query, **loaded})
+    elif isinstance(existing, dict):
+        kwargs["params"] = json.dumps({**query, **existing})
 
 
 class AutomationBenchAdapter:
-    def __init__(
-        self,
-        row: dict,
-        domain: str,
-        evidence: KnowledgeStore,
-        ledger: Ledger,
-        learner: Learner | None = None,
-        knowledge: KnowledgeStore | None = None,
-        purpose_override: str | None = None,
-        retain_interactions: bool = False,
-        shift: ResponseShift | None = None,
-    ):
+    """Runs upstream tools on a private world. With a store, every call is learned from."""
+
+    def __init__(self, row: dict, domain: str, ledger: Ledger, store: KnowledgeStore | None = None):
         from automationbench.runner import compute_allowed_services, strip_none_values
         from automationbench.schema.world import WorldState
 
@@ -86,16 +98,10 @@ class AutomationBenchAdapter:
             tenant=self.task.task_id,
             task_id=uuid4().hex,
         )
-        self.live = LiveState(self.scope.task_id)
-        self.evidence = evidence
         self.ledger = ledger
-        self.learner = learner
-        self.knowledge = knowledge or (learner.store if learner else evidence)
-        self.prediction_assessments: list[dict] = []
-        self.interaction_history: list[Any] = []
-        self.purpose_override = purpose_override
-        self.retain_interactions = retain_interactions
-        self.shift = ShiftController(shift) if shift is not None else None
+        self.store = store
+        self.learner = Learner(store) if store is not None else None
+        self.episodes: list[Episode] = []
 
     def tools(self) -> list[Tool]:
         from automationbench.tools.api import API_TOOLS
@@ -126,166 +132,72 @@ class AutomationBenchAdapter:
             )
         return result
 
-    async def execute(self, function, arguments: dict, purpose: str = "task") -> ToolResult:
+    async def execute(self, function, arguments: dict) -> ToolResult:
         operation = function.__name__
-        purpose = self.purpose_override or (
-            "discovery" if operation == "api_search" and purpose == "task" else purpose
-        )
+        purpose = "discovery" if operation == "api_search" else "task"
         # Match the upstream empty-object-as-omitted convention.
         arguments = {k: v for k, v in arguments.items() if v != {} or not isinstance(v, dict)}
         if operation == "base64_encode":
             self.ledger.utility_calls += 1
         else:
             self.ledger.charge_environment(purpose)
-        started = perf_counter()
-        predictions = (
-            predict(self.knowledge, self.scope, arguments) if operation == "api_fetch" else ()
-        )
-        proposed = CURRENT_EXPECTATIONS.get()
-        expectations = proposed[1] if proposed is not None and proposed[0] == operation else ()
-        pre_evidence = tuple(dict.fromkeys(f.episode_id for f in self.live.facts()))
-        effect, effect_claim = "unknown", None
-        if operation == "api_fetch":
-            from .operation_semantics import interpret_effect
-
-            effect, effect_claim = await interpret_effect(self, arguments)
-        if operation == "api_fetch" and effect != "read":
-            from .resource_invalidation import invalidation_keys
-
-            # Include queries/collections and known cross-service dependents;
-            # unknown write identity falls back to broad invalidation.
-            self.live.invalidate(
-                invalidation_keys(self, arguments),
-                "pending-write",
-            )
         kwargs = dict(arguments)
-        if operation == "api_fetch" and "url" in kwargs and "?" in str(kwargs["url"]):
-            import urllib.parse
-
-            parsed = urllib.parse.urlsplit(str(kwargs["url"]))
-            clean_url = urllib.parse.urlunsplit(
-                (parsed.scheme, parsed.netloc, parsed.path, "", "")
-            )
-            kwargs["url"] = clean_url
-            if parsed.query:
-                qs_dict = {
-                    k: v[0] if len(v) == 1 else v
-                    for k, v in urllib.parse.parse_qs(parsed.query).items()
-                }
-                existing_params = kwargs.get("params")
-                if not existing_params:
-                    kwargs["params"] = json.dumps(qs_dict)
-                elif isinstance(existing_params, str):
-                    try:
-                        p_dict = json.loads(existing_params)
-                        if isinstance(p_dict, dict):
-                            kwargs["params"] = json.dumps({**qs_dict, **p_dict})
-                    except Exception:
-                        pass
-                elif isinstance(existing_params, dict):
-                    kwargs["params"] = json.dumps({**qs_dict, **existing_params})
+        if operation == "api_fetch" and "?" in str(kwargs.get("url", "")):
+            _split_query(kwargs)
         if "world" in inspect.signature(function).parameters:
             kwargs["world"] = self._state["world"]
-        self.ledger.compute_seconds += perf_counter() - started
-        tool_started = perf_counter()
+        started = perf_counter()
         try:
             raw = function(**kwargs)
+            outcome = "success"
         except (TimeoutError, ConnectionError):
             # An exception does not establish whether a mutation happened.
             raw = json.dumps({"error": "transport_failure", "outcome": "unknown"})
             outcome = "unknown"
         except Exception as exc:  # noqa: BLE001 -- upstream ToolEnv returns tool errors to the model
             # Match upstream: the message is the tool result and the episode continues.
-            # A raising write may have partially applied, so only reads are plain errors.
             raw = str(exc)
-            outcome = "error" if effect == "read" else "unknown"
-        else:
-            outcome = "success"
-        tool_elapsed = perf_counter() - tool_started
+            outcome = "error"
+        elapsed = perf_counter() - started
         if operation == "base64_encode":
-            self.ledger.compute_seconds += tool_elapsed
+            self.ledger.compute_seconds += elapsed
         try:
             response = json.loads(raw)
         except (json.JSONDecodeError, TypeError):
             response = raw
-        if isinstance(response, dict) and "error" in response and outcome != "unknown":
+        if isinstance(response, dict) and "error" in response and outcome == "success":
             outcome = "error"
-        shifted = False
-        if self.shift is not None:
-            response, shifted = self.shift.apply(operation, arguments, response, outcome)
-            if shifted:
-                raw = json.dumps(response)
+        if self.store is not None:
+            learning_started = perf_counter()
+            self._learn(operation, arguments, response, outcome, purpose, elapsed)
+            self.ledger.compute_seconds += perf_counter() - learning_started
+        return ToolResult(content=raw, success=outcome == "success")
+
+    def _learn(self, operation, arguments, response, outcome, purpose, elapsed) -> None:
+        # The latest successful read of each URL; a repeated read would make values ambiguous.
+        latest = {
+            str(e.arguments.get("url")): e.episode_id
+            for e in self.episodes
+            if e.operation == "api_fetch" and e.outcome == "success"
+        }
         episode = Episode(
-            effect_kind=effect,
-            effect_source_claim_id=effect_claim,
-            interaction_id=CURRENT_INTERACTION.get(),
-            environment_called=True,
-            task_id=self.live.task_id,
+            task_id=self.scope.task_id,
             scope=self.scope,
             operation=operation,
             arguments=arguments,
             response=response,
             outcome=outcome,
             coverage=response_coverage(response),
+            pre_evidence=tuple(latest.values()),
             purpose=purpose,
-            elapsed_seconds=tool_elapsed,
-            predictions=predictions,
-            output_expectations=expectations,
-            pre_evidence=pre_evidence,
-            information_request=CURRENT_INFORMATION.get(),
-            **(CURRENT_ARTIFACT.get() or {}),
+            elapsed_seconds=elapsed,
         )
-        self.evidence.append_episode(episode)
-        if expectations:
-            self.prediction_assessments.append(
-                {
-                    "episode_id": episode.episode_id,
-                    "proposed_output_assessments": compare_expectations(episode),
-                    "interpretation": "Observed response checks, not causal or task-success proof",
-                }
-            )
-        if (
-            self.retain_interactions
-            and self.learner is None
-            and self.knowledge is not self.evidence
-        ):
-            self.knowledge.append_episode(episode)
-        self.live.observe(episode)
-        assessments = {}
-        if self.learner:
-            learning_started = perf_counter()
-            if self.learner.store is not self.evidence:
-                self.learner.store.append_episode(episode)
-            assessments = self.learner.compare(episode)
-            BehaviorLearner(self.learner).observe(episode)
-            CompositionLearner(self.learner).observe(episode)
-            from .rule_tests import observe_rules
-
-            tested_rules = observe_rules(self.knowledge, episode)
-            if tested_rules:
-                assessments["tested_response_rules"] = tested_rules
-            self.prediction_assessments.append(
-                {"episode_id": episode.episode_id, "assessments": assessments}
-            )
-            self.ledger.compute_seconds += perf_counter() - learning_started
-        elif predictions:
-            from .learning import assess_prediction
-
-            assessments = {p.claim_id: assess_prediction(p, episode) for p in predictions}
-            self.prediction_assessments.append(
-                {
-                    "episode_id": episode.episode_id,
-                    "assessments": assessments,
-                }
-            )
-        documenter = self.learner or getattr(self, "documentation_learner", None)
-        if documenter and operation == "api_search" and outcome == "success":
-            learning_started = perf_counter()
-            if self.learner is None and documenter.store is not self.evidence:
-                documenter.store.append_episode(episode)
+        self.store.append_episode(episode)
+        self.episodes.append(episode)
+        if operation == "api_search" and outcome == "success":
             reusable = Scope(environment=self.scope.environment, version=self.scope.version)
             for endpoint in response.get("results", []):
-                documenter.document(
+                self.learner.document(
                     episode,
                     relation="endpoint_contract",
                     participants=(endpoint["id"], endpoint["url"], endpoint["method"]),
@@ -293,15 +205,8 @@ class AutomationBenchAdapter:
                     payload=endpoint,
                     scope=reusable,
                 )
-            self.ledger.compute_seconds += perf_counter() - learning_started
-        if self.shift is not None:
-            self.shift.record(
-                episode,
-                applied=shifted,
-                call_index=self.ledger.environment_calls,
-                assessments=assessments,
-            )
-        return ToolResult(content=raw, success=outcome == "success")
+        BehaviorLearner(self.learner).observe(episode)
+        CompositionLearner(self.learner).observe(episode)
 
     def score(self) -> dict[str, float]:
         from automationbench.rubric import partial_credit, task_completed_correctly

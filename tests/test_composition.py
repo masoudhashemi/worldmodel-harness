@@ -15,7 +15,7 @@ def setup(tmp_path):
         event = Episode(
             task_id="schema",
             scope=scope,
-            operation="tool_schema",
+            operation="api_search",
             arguments={},
             response=endpoint,
             outcome="success",

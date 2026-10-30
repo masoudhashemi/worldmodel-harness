@@ -1,7 +1,7 @@
 [project]
 name = "worldmodel-harness"
 version = "0.1.0"
-description = "Operational world-model research on the Stirrup harness"
+description = "Advisory operational memory for agents on the Stirrup harness"
 requires-python = ">=3.13"
 dependencies = ["stirrup[litellm,mcp]==0.2.0", "python-dotenv>=1.0,<2"]
 
@@ -10,9 +10,6 @@ automationbench = ["automation-bench @ git+https://github.com/zapier/AutomationB
 
 [tool.hatch.metadata]
 allow-direct-references = true
-
-[project.scripts]
-worldmodel = "worldmodel_harness.cli:main"
 
 [build-system]
 requires = ["hatchling"]

@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-from time import perf_counter
 
 from pydantic import SecretStr
 from stirrup.clients.litellm_client import LiteLLMClient
@@ -314,29 +313,3 @@ def build_client(settings: ModelSettings, api_key: SecretStr) -> BoundedClient:
         },
     )
     return BoundedClient(client, settings.timeout_seconds)
-
-
-class MeteredClient:
-    """Record returned usage and failed-call latency without SDK error strings."""
-
-    def __init__(self, client):
-        self.client = client
-        self.calls = []
-
-    def __getattr__(self, name):
-        return getattr(self.client, name)
-
-    async def generate(self, messages, tools):
-        started = perf_counter()
-        cost = {"usage_available": False}
-        try:
-            response = await self.client.generate(messages, tools)
-            cost["token_usage"] = response.token_usage.model_dump()
-            cost["usage_available"] = True
-            return response
-        except BaseException as exc:
-            cost["error_type"] = type(exc).__name__
-            raise
-        finally:
-            cost["elapsed_seconds"] = perf_counter() - started
-            self.calls.append(cost)

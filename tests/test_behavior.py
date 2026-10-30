@@ -1,6 +1,6 @@
-from worldmodel_harness.behavior import BehaviorLearner, endpoint_contract, predict
+from worldmodel_harness.behavior import BehaviorLearner, endpoint_contract
 from worldmodel_harness.knowledge import Episode, Scope
-from worldmodel_harness.learning import Learner, assess_prediction
+from worldmodel_harness.learning import Learner
 from worldmodel_harness.store import KnowledgeStore
 
 
@@ -50,7 +50,6 @@ def test_one_instance_is_not_a_general_rule_or_reusable_identifier(tmp_path):
     assert claim.status == "hypothesis"
     assert "secret-live-value" not in claim.model_dump_json()
     assert "private-id" not in claim.model_dump_json()
-    assert not predict(store, scope, episode.arguments)
     store.close()
 
 
@@ -65,7 +64,7 @@ def test_multiple_reads_in_one_task_do_not_promote(tmp_path):
     store.close()
 
 
-def test_independent_tasks_support_prediction_and_contradiction_disputes(tmp_path):
+def test_independent_tasks_promote_an_output_type(tmp_path):
     store, learner, scope = setup(tmp_path)
     behavior = BehaviorLearner(learner)
     for target in (scope, scope.model_copy(update={"tenant": "b", "task_id": "second"})):
@@ -73,53 +72,22 @@ def test_independent_tasks_support_prediction_and_contradiction_disputes(tmp_pat
         store.append_episode(episode)
         claim = behavior.observe(episode)[0]
     assert claim.status == "supported"
-    predictions = predict(store, scope, episode.arguments)
-    assert len(predictions) == 1
-    contradicted = observation(scope, value=123, predictions=predictions)
-    store.append_episode(contradicted)
-    learner.compare(contradicted)
-    assert store.claim(claim.claim_id).status == "disputed"
-    assert not predict(store, scope, episode.arguments)
-    assert store.claim(claim.claim_id, 1).status == "hypothesis"
+    assert claim.payload == {
+        "endpoint": "records.get", "request_shape": (), "field": "id", "type": "string"
+    }
     store.close()
 
 
-def test_absent_field_stays_unobserved(tmp_path):
+def test_errors_do_not_train_behavior(tmp_path):
     store, learner, scope = setup(tmp_path)
-    behavior = BehaviorLearner(learner)
-    for tenant in ("a", "b"):
-        episode = observation(scope.model_copy(update={"tenant": tenant, "task_id": tenant}))
-        store.append_episode(episode)
-        behavior.observe(episode)
-    prediction = predict(store, scope, episode.arguments)[0]
-    omitted = observation(scope, response={}, coverage=())
-    assert assess_prediction(prediction, omitted) == "unobserved"
-    store.close()
-
-
-def test_recovery_sequence_is_not_causal_and_has_both_episode_links(tmp_path):
-    store, learner, scope = setup(tmp_path)
-    behavior = BehaviorLearner(learner)
     failed = observation(
         scope,
-        arguments={
-            "method": "GET",
-            "url": "https://test/records/private-id",
-            "params": '{"wrong":"private-value"}',
-        },
         outcome="error",
         response={"error": {"code": 400, "message": "private-value"}},
         coverage=("error",),
     )
     store.append_episode(failed)
-    behavior.observe(failed)
-    success = observation(scope)
-    store.append_episode(success)
-    claims = behavior.observe(success)
-    recovery = next(c for c in claims if c.relation == "recovery_sequence")
-    assert recovery.status == "hypothesis"
-    assert recovery.supporting_episodes == (failed.episode_id, success.episode_id)
-    assert "private-value" not in recovery.model_dump_json()
+    assert BehaviorLearner(learner).observe(failed) == []
     store.close()
 
 
@@ -196,12 +164,7 @@ def test_same_route_with_another_endpoint_id_stays_one_contract(tmp_path):
     store.close()
 
 
-def test_same_route_conflicting_schema_keeps_both_and_blocks(tmp_path):
-    import pytest
-
-    from worldmodel_harness.decisions import ProposedAction, UnresolvedRequirements
-    from worldmodel_harness.operational_requirements import api_requirements
-
+def test_same_route_conflicting_schema_keeps_both_and_grounds_neither(tmp_path):
     store, learner, scope = setup(tmp_path)
     search = next(e for e in store.episodes(scope) if e.operation == "api_search")
     payload = {"id": "other", "method": "GET", "url": "https://test/records/{id}",
@@ -212,10 +175,6 @@ def test_same_route_conflicting_schema_keeps_both_and_blocks(tmp_path):
     assert len([c for c in store.claims() if c.relation == "endpoint_contract"]) == 2
     args = {"method": "GET", "url": "https://test/records/1"}
     assert endpoint_contract(store, scope, args) is None
-    with pytest.raises(UnresolvedRequirements) as caught:
-        api_requirements(store, scope, ProposedAction(tool="api_fetch", arguments=args))
-    assert "schemas and scopes" in caught.value.details["instruction"]
-    assert len(caught.value.details["matching_contracts"]) == 2
     store.close()
 
 

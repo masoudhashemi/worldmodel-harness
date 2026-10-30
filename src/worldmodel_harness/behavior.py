@@ -7,14 +7,12 @@ are qualified empirical regularities, never assertions of causal effects.
 import json
 import re
 
-from .knowledge import Claim, Dependency, Episode, Layer, Prediction, Scope, utc_now
+from .knowledge import Claim, Dependency, Episode, Layer, Scope, utc_now
 from .learning import Learner, claim_identity
 from .store import KnowledgeStore
 
-SEMANTIC_KINDS = frozenset({"phone", "email", "url", "identifier", "date", "name"})
 PHONE_FIELDS = frozenset({"phone", "mobile", "tel", "telephone", "fax"})
 NAME_FIELDS = frozenset({"name", "firstname", "lastname", "fullname", "displayname"})
-_EMAIL = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 _EMAIL_EXACT = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
 _NAME_SPAN = re.compile(
     r"\b[A-Z][a-z]+(?:['’][A-Z][a-z]+)?(?:\s+[A-Z][a-z]+(?:['’][A-Z][a-z]+)?){1,2}\b"
@@ -85,62 +83,6 @@ def _person_name(text: str, field_name: str) -> bool:
     if len(tokens) >= 2 and _NAME_SPAN.fullmatch(text):
         return True
     return field_name in NAME_FIELDS and all(token[:1].isalpha() for token in tokens)
-
-
-def value_format(value, field_name: str | None = None) -> str | None:
-    """Normalized slot format. The literal value is not part of the format."""
-    kind = value_kind(value, field_name)
-    if kind in SEMANTIC_KINDS:
-        return kind.upper()
-    return None
-
-
-def text_formats(text: str) -> set[str]:
-    """Same formats as value_format, read from unstructured text rather than a scalar field."""
-    found = set()
-    if not isinstance(text, str) or not text.strip():
-        return found
-    if _EMAIL.search(text):
-        found.add("EMAIL")
-    if _NAME_SPAN.search(text):
-        found.add("NAME")
-    if re.search(r"\d{4}-\d{2}-\d{2}", text):
-        found.add("DATE")
-    if re.search(r"https?://\S+", text):
-        found.add("URL")
-    for chunk in re.findall(r"\+?\d[\d\s().-]{6,}\d", text):
-        if value_kind(chunk) == "phone":
-            found.add("PHONE")
-    if _UUID.search(text) or re.search(
-        r"\b(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?\b", text
-    ):
-        found.add("IDENTIFIER")
-    return found
-
-
-_CHANGED_SLOT_NOUNS = (
-    ("PHONE", re.compile(r"\b(?:phone|mobile|telephone|fax)\b", re.IGNORECASE)),
-    ("EMAIL", re.compile(r"\be-?mail\s+address(?:es)?\b", re.IGNORECASE)),
-    ("URL", re.compile(r"\b(?:url|website|webpage|homepage)\b", re.IGNORECASE)),
-    ("DATE", re.compile(r"\b(?:date|deadline|birthdate|birthday|due\s+date)\b", re.IGNORECASE)),
-)
-
-
-def requested_change_formats(text: str) -> set[str]:
-    """Slot formats a public task names as the target attribute type.
-
-    Conservative lexical detection of typed attribute nouns (as distinct from
-    the communication channel carrying the request, such as a bare 'email').
-    """
-    if not isinstance(text, str):
-        return set()
-    return {label for label, pattern in _CHANGED_SLOT_NOUNS if pattern.search(text)}
-
-
-def name_tokens(value) -> int:
-    if not isinstance(value, str):
-        return 0
-    return len(re.findall(r"[A-Za-z]+(?:['’][A-Za-z]+)?", value))
 
 
 def request_shape(arguments: dict) -> tuple[str, ...]:
@@ -235,38 +177,6 @@ def endpoint_contract(store: KnowledgeStore, scope: Scope, arguments: dict) -> C
     return chosen
 
 
-def predict(store: KnowledgeStore, scope: Scope, arguments: dict) -> tuple[Prediction, ...]:
-    contract = endpoint_contract(store, scope, arguments)
-    if contract is None:
-        return ()
-    shape = request_shape(arguments)
-    predictions = []
-    for claim in store.claims(scope):
-        if (
-            claim.relation != "observed_output_type"
-            or claim.status != "supported"
-            or claim.needs_review
-            or (claim.valid_until is not None and claim.valid_until <= utc_now())
-            or claim.payload["endpoint"] != contract.payload["id"]
-            or tuple(claim.payload["request_shape"]) != shape
-        ):
-            continue
-        if any(
-            d.mode == "requires" and not store.dependency_compatible(d) for d in claim.dependencies
-        ):
-            continue
-        predictions.append(
-            Prediction(
-                claim_id=claim.claim_id,
-                claim_version=claim.version,
-                path=claim.payload["field"],
-                expected=claim.payload["type"],
-                predicate="type",
-            )
-        )
-    return tuple(predictions)
-
-
 class BehaviorLearner:
     def __init__(self, learner: Learner):
         self.learner = learner
@@ -279,8 +189,6 @@ class BehaviorLearner:
         relation: str,
         payload: dict,
         evidence_ids: tuple[str, ...],
-        *,
-        promotable: bool,
     ) -> Claim:
         scope = Scope(
             environment=episode.scope.environment,
@@ -309,7 +217,7 @@ class BehaviorLearner:
         evidence = [self.store.episode(i) for i in ids]
         independent = {(e.scope.tenant, e.task_id) for e in evidence}
         tenants = {e.scope.tenant for e in evidence if e.scope.tenant is not None}
-        supported = promotable and len(independent) >= 2 and len(tenants) >= 2
+        supported = len(independent) >= 2 and len(tenants) >= 2
         status = "supported" if supported else "hypothesis"
         contradicting = previous.contradicting_episodes if previous else ()
         if (
@@ -345,7 +253,7 @@ class BehaviorLearner:
         return claim
 
     def observe(self, episode: Episode) -> list[Claim]:
-        if episode.operation != "api_fetch" or episode.outcome in ("unknown", "blocked"):
+        if episode.operation != "api_fetch" or episode.outcome != "success":
             return []
         contract = endpoint_contract(self.store, episode.scope, episode.arguments)
         if contract is None:
@@ -355,7 +263,7 @@ class BehaviorLearner:
             "request_shape": request_shape(episode.arguments),
         }
         claims = []
-        if episode.outcome == "success" and isinstance(episode.response, dict):
+        if isinstance(episode.response, dict):
             for field in episode.coverage:
                 if field not in episode.response:
                     continue
@@ -370,46 +278,6 @@ class BehaviorLearner:
                             "type": value_kind(episode.response[field], field),
                         },
                         (episode.episode_id,),
-                        promotable=True,
                     )
                 )
-        if episode.outcome == "error":
-            error = episode.response.get("error", {}) if isinstance(episode.response, dict) else {}
-            code = error.get("code") if isinstance(error, dict) else None
-            # Error messages may contain live identifiers; retain only the code.
-            if isinstance(code, (int, str)) and str(code).isdigit():
-                claims.append(
-                    self._retain(
-                        episode,
-                        contract,
-                        "error_observed",
-                        common | {"error_code": str(code)},
-                        (episode.episode_id,),
-                        promotable=False,
-                    )
-                )
-        if episode.outcome == "success":
-            previous = self.store.episodes(episode.scope)
-            for failure in reversed(previous):
-                if failure.episode_id == episode.episode_id or failure.operation != "api_fetch":
-                    continue
-                # Do not attribute a recovery across unrelated records or tasks.
-                if failure.arguments.get("url") != episode.arguments.get(
-                    "url"
-                ) or failure.arguments.get("method") != episode.arguments.get("method"):
-                    continue
-                if failure.outcome == "error" and request_shape(failure.arguments) != request_shape(
-                    episode.arguments
-                ):
-                    claims.append(
-                        self._retain(
-                            episode,
-                            contract,
-                            "recovery_sequence",
-                            common | {"previous_request_shape": request_shape(failure.arguments)},
-                            (failure.episode_id, episode.episode_id),
-                            promotable=False,
-                        )
-                    )
-                break
         return claims

@@ -1,15 +1,11 @@
-"""Typed records shared by learning, retrieval, and checked execution.
-
-Layers describe information lifetimes. Functional models consume these records;
-they do not each own an independent graph.
-"""
+"""Typed records for observed episodes and the claims learned from them."""
 
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Annotated, Any, Literal
+from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 
 def utc_now() -> datetime:
@@ -50,9 +46,6 @@ class Layer(StrEnum):
     INTERFACE = "interface"
     CONFIGURATION = "configuration"
     BEHAVIOR = "behavior"
-    PROCEDURES = "procedures"
-    LIVE = "live"
-    EVIDENCE = "evidence"
 
 
 class Scope(Record):
@@ -72,62 +65,13 @@ class Scope(Record):
         )
 
 
-class Prediction(Record):
-    claim_id: str
-    claim_version: int = Field(ge=1)
-    path: str
-    expected: Any
-    predicate: Literal["equals", "present", "type"] = "equals"
-
-
-class InformationRequest(Record):
-    """Declared intent, never evidence that uncertainty was actually resolved."""
-
-    uncertainty: str = Field(min_length=1, max_length=1000)
-    distinguishing_outcomes: tuple[str, ...] = Field(min_length=2, max_length=8)
-    intended_use: Literal["current_task", "future_tasks"] = "current_task"
-    target_claim_id: str | None = None
-
-
-class OutputExpectation(Record):
-    """A proposed observable prediction, not a supported world claim."""
-
-    path: tuple[str | Annotated[int, Field(strict=True, ge=0)], ...] = ()
-    predicate: Literal["equals", "present", "type", "format"] = "equals"
-    expected: Any = None
-
-    @model_validator(mode="before")
-    @classmethod
-    def normalize_expectation(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            data = dict(data)
-            if "field" in data and "path" not in data:
-                data["path"] = (data.pop("field"),)
-            elif "field" in data:
-                data.pop("field")
-            if "path" in data and isinstance(data["path"], (str, int)):
-                data["path"] = (data["path"],)
-            if "type" in data:
-                type_val = data.pop("type")
-                if "predicate" not in data or data["predicate"] == "equals":
-                    data["predicate"] = "type"
-                if "expected" not in data or data["expected"] is None:
-                    data["expected"] = type_val
-        return data
-
-
 class Episode(Record):
+    # Stores written by earlier harness versions carry fields this version ignores.
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
     episode_id: str = Field(default_factory=lambda: uuid4().hex)
     # Repeated reads/duplicate logging of one event do not supply independent support.
     event_id: str = Field(default_factory=lambda: uuid4().hex)
-    # Harness observations and environment responses have different authority.
-    origin: Literal["environment", "harness"] = "environment"
-    interaction_id: str | None = None
-    previous_interaction_id: str | None = None
-    related_episode_ids: tuple[str, ...] = ()
-    environment_called: bool | None = None
-    effect_kind: Literal["read", "write", "unknown"] = "unknown"
-    effect_source_claim_id: str | None = None
     task_id: str
     scope: Scope
     operation: str
@@ -135,14 +79,8 @@ class Episode(Record):
     response: Any
     outcome: Literal["success", "error", "unknown", "blocked"]
     coverage: tuple[str, ...] = ()
-    predictions: tuple[Prediction, ...] = ()
-    output_expectations: tuple[OutputExpectation, ...] = ()
+    # Earlier task-local episodes whose values a call may reuse.
     pre_evidence: tuple[str, ...] = ()
-    information_request: InformationRequest | None = None
-    artifact_id: str | None = None
-    artifact_version: int | None = None
-    artifact_step: str | None = None
-    artifact_execution_id: str | None = None
     purpose: Literal["task", "refresh", "probe", "validation", "discovery"] = "task"
     elapsed_seconds: float = Field(default=0, ge=0)
     timestamp: datetime = Field(default_factory=utc_now)
@@ -155,18 +93,6 @@ def response_coverage(response: Any) -> tuple[str, ...]:
     if isinstance(response, list):
         return tuple(str(index) for index in range(len(response)))
     return ()
-
-
-def covered_path(episode: Episode, path) -> bool:
-    if not path:
-        return True
-    root = path[0]
-    if isinstance(episode.response, list):
-        if type(root) is int or isinstance(root, str) and root.isascii() and root.isdigit():
-            root = str(root)
-        else:
-            return False
-    return root in episode.coverage
 
 
 class Dependency(Record):
@@ -196,65 +122,3 @@ class Claim(Record):
     valid_until: datetime | None = None
     invalidation_events: tuple[str, ...] = ()
     needs_review: bool = False
-
-
-class LiveFact(Record):
-    key: str
-    value: Any
-    episode_id: str
-    observed_at: datetime
-    valid_until: datetime | None = None
-    invalidated_by: str | None = None
-
-
-class WorkingGraph(Record):
-    scope: Scope
-    claims: tuple[Claim, ...] = ()
-    facts: tuple[LiveFact, ...] = ()
-    gaps: tuple[str, ...] = ()
-    # True means a missing mandatory dependency prevented a usable selection.
-    blocked: bool = False
-    stages: tuple[str, ...] = ()
-    reasons: dict[str, tuple[str, ...]] = Field(default_factory=dict)
-
-
-class LiveState:
-    """An explicitly task-local overlay; it is never serialized as durable claims."""
-
-    def __init__(self, task_id: str):
-        self.task_id = task_id
-        self._facts: dict[str, LiveFact] = {}
-        self.pending: dict[str, str] = {}
-
-    def observe(self, episode: Episode) -> None:
-        if episode.task_id != self.task_id:
-            raise ValueError("Cannot import another task's live state")
-        if episode.outcome == "unknown":
-            self.pending[episode.event_id] = episode.operation
-        # Different API resources must not share one "api_fetch:id" binding.
-        namespace = episode.operation
-        if "url" in episode.arguments:
-            namespace += ":" + str(episode.arguments["url"])
-        if isinstance(episode.response, (dict, list)):
-            values = (episode.response if isinstance(episode.response, dict)
-                      else {str(i): value for i, value in enumerate(episode.response)})
-            for key in episode.coverage:
-                if key in values:
-                    self._facts[f"{namespace}:{key}"] = LiveFact(
-                        key=f"{namespace}:{key}",
-                        value=values[key],
-                        episode_id=episode.episode_id,
-                        observed_at=episode.timestamp,
-                    )
-
-    def invalidate(self, keys: set[str], event_id: str) -> None:
-        for key in keys & self._facts.keys():
-            self._facts[key] = self._facts[key].model_copy(update={"invalidated_by": event_id})
-
-    def facts(self, now: datetime | None = None) -> tuple[LiveFact, ...]:
-        now = now or utc_now()
-        return tuple(
-            f
-            for f in self._facts.values()
-            if f.invalidated_by is None and (f.valid_until is None or f.valid_until > now)
-        )
