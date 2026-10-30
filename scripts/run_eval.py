@@ -1,11 +1,15 @@
 """Baseline vs. advisory memory on AutomationBench.
 
 1. Baseline: every task `--baseline-repeats` times with no memory. Agent runs are
-   stochastic, so one run is not a stable reference. `--baseline-from` reuses the
-   baseline trials of an earlier summary.json instead.
+   stochastic, so one run is not a stable reference.
 2. Advisory: every task `--iterations` times in order, with one store carried
    across all tasks and iterations (seeded from `--seed-store`). Each trial reads
    a short note from the store and adds what it observes back to it.
+
+The arms are interleaved: in round r each task runs its r-th baseline trial and its
+r-th advisory trial back to back, so both see the same model-serving conditions.
+`--baseline-from` reuses baseline trials of an earlier summary.json; those were run
+under other conditions, so compare against them only with that caveat.
 
 Results go to <output-dir>/summary.json as {"results": [...], "aggregates": {...}}.
 """
@@ -163,21 +167,21 @@ async def main():
               f"withdrawn={bool(row['note_withdrawn'])} error={row['error_type']}", flush=True)
         summary_file.write_text(json.dumps({"results": results, "aggregates": aggregate(results)}, indent=2))
 
-    for repeat in range(args.baseline_repeats):
+    store_path = args.output_dir / "advisory.sqlite"
+    iterations = 0 if args.skip_advisory else args.iterations
+    if iterations and not (args.resume and store_path.exists()):
+        store_path.unlink(missing_ok=True)
+        if args.seed_store is not None:
+            copy_checkpoint(args.seed_store, store_path)
+        else:
+            KnowledgeStore(store_path).close()
+    # Arms run back to back on each task, so drift in model serving affects both alike.
+    for rnd in range(max(args.baseline_repeats, iterations)):
         for task in task_list:
-            await run(task, "baseline", repeat)
-
-    if not args.skip_advisory:
-        store_path = args.output_dir / "advisory.sqlite"
-        if not (args.resume and store_path.exists()):
-            store_path.unlink(missing_ok=True)
-            if args.seed_store is not None:
-                copy_checkpoint(args.seed_store, store_path)
-            else:
-                KnowledgeStore(store_path).close()
-        for iteration in range(1, args.iterations + 1):
-            for task in task_list:
-                await run(task, "advisory", iteration, store_path)
+            if rnd < args.baseline_repeats:
+                await run(task, "baseline", rnd)
+            if rnd < iterations:
+                await run(task, "advisory", rnd + 1, store_path)
 
     aggregates = aggregate(results)
     summary_file.write_text(json.dumps({"results": results, "aggregates": aggregates}, indent=2))
