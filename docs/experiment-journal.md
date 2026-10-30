@@ -1032,9 +1032,21 @@ Test memory that **adds** checks instead of shortcuts. From saved trajectories (
 
 ## E016 — Generic Checklist on Held-Out Tasks
 
-Status: in progress (started 2026-10-30). `runs/e016-checklist-heldout`.
+Status: complete (2026-10-30). `runs/e016-checklist-heldout`, 180 trials.
 
 The 45 tasks of the 53-task set not used in E015d, 2 rounds, baseline and checklist back to back per task. It tests whether the E015d checklist result holds on tasks it was not written from.
+
+| Arm | Strict | pass^2 | Partial | Env calls | Model calls | Median time | Median input tokens |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| Baseline | 21/90 (23%) | 10/45 | 0.54 | 41.4 | 25.3 | 71 s | 201k |
+| Checklist | **29/90 (32%)** | **14/45** | 0.59 | 43.1 | 28.0 | 82 s | 340k |
+
+- **Rounds are not independent.** 38/45 baseline tasks and 37/45 checklist tasks gave the same grade and call count in both rounds, so the effective sample is about 45 tasks, not 90 trials. Per task (round 0), the checklist wins 7 and loses 2 (sign test p ≈ 0.18). Over all trial pairs it is 12 vs 4 (p ≈ 0.08), but that count double-counts repeated outcomes.
+- **Gains:** `finance.cash_flow_forecast`, `finance.grant_expense_tracking`, `hr.headcount_planning`, `marketing.campaign_attribution` and `marketing.patent_monitoring` (0/2 → 2/2); `sales.zoom_calendar_conflict` (1/2 → 2/2); `support.zendesk_customer_360` (0/2 → 1/2).
+- **Losses:** `operations.airtable_gmail_visitor_followup` (missed the Airtable comment, 8 calls) and `operations.notion_slack_playbook` (68 calls, 0 partial credit vs. a 16-call pass), both 2/2 → 0/2.
+- **Cost is not lower on held-out tasks.** The E015d saving (−30% calls, −23% time) does not transfer. The checklist uses +4% environment calls, +11% model calls, +16% median time and +69% median input tokens. Its mean time is lower (103 s vs. 125 s) only because the baseline hit the 1200 s timeout on `hr.data_migration_validation` in both rounds. The median paired time ratio is 1.01.
+
+Conclusion: on unseen tasks, the generic checklist plausibly improves accuracy (about +9 points strict) but costs more time and tokens, and the accuracy gain is not statistically established at this sample size. It is a stronger default prompt to compare against, not a free win. The E015d cost reduction was in-sample.
 
 ---
 
@@ -1061,3 +1073,4 @@ Comprehensive synthesis of the empirical World Model Harness evaluated on `opena
 | **E014 (Controlled)** | Baseline ×3 vs. world model vs. harness-only | 53-task mix (29 reached in phase 2) | **69% Strict (G1)** | 52% Strict (G1), 17.4 calls | −17 pts accuracy, ~4× time | The operational layer narrows exploration; a large per-turn memory adds output slips. Stopped. |
 | **E015 (Lean advisory)** | Routes note, same-day controls | 15-task pilot; 4-task placement test | **10/15; 12/12** | 7/15; 4/12 and 2/12 | −31% calls, −29% time, lower accuracy | The note's savings come from skipped exploration that held deciding details; placement does not matter. |
 | **E015d (Check memory)** | Learned checks vs. generic checklist | 8 tasks × 2 rounds | 12/16 | Checks 10/16; checklist **15/16** | Checklist: −30% calls, −23% time | Learned checks are generic and did not help; a fixed checklist did, but in-sample (E016 tests held-out tasks). |
+| **E016 (Checklist held-out)** | Generic checklist on unseen tasks | 45 tasks × 2 rounds | 21/90 (pass^2 10/45) | **29/90** (pass^2 14/45) | +16% median time, +69% median tokens | Accuracy gain partly holds (7 tasks won, 2 lost, p ≈ 0.18); the in-sample cost saving does not. |
