@@ -181,6 +181,29 @@ This is an upper bound on what the review can fix: being visible does not mean t
 
 Next: wire the review into the agent loop at the first `finish`, then run the live development comparison (§7, step 1).
 
+## 8b. Step 1 result: live development comparison, E017 (2026-10-30)
+
+Baseline 15/45, checklist 14/45, checklist + review 14/45 strict. Review vs. checklist: +2 / −2 per task. Median time was 66 s, 78 s and 82 s respectively. See the E017 entry in `docs/experiment-journal.md`.
+
+- The review was shown in 34 trials. The agent made an API call after it in 4 and finished immediately in 30.
+- The only grade the review changed got worse. In `operations.twilio_production_incident`, a "nothing written" row for an excluded incident led to pages, a ticket and Slack posts for it (class A).
+- **Stop rule met.** The review does not beat the checklist, so no further components (observation model, error → fix memory) are added on top of it.
+
+What this says about the formulation:
+- Offline visibility measured whether the deciding fact is on the page. It did not measure whether the model compares the page against the rules, and Gemma does not.
+- A list of states acts as a to-do list. Highlighting untouched items pushes toward action and does nothing for omissions the model already considers done.
+- Any next step has to make the comparison itself, not show more state. For example, code checks an explicit predicate extracted from the task against the ledger and raises only contradictions. Without that, the ledger is diagnostic tooling (offline failure analysis), not an agent intervention.
+
+## 8c. Error -> fix memory, E018 (2026-10-31)
+
+`src/worldmodel_harness/fixes.py`, built by `scripts/build_fix_memory.py`. Result: accuracy is unchanged (12/45 in both arms). Where a note fired (23 tasks), environment calls fell 26% and time 20%. Median time fell 7% and p90 time 30%. Details are in the E018 journal entry.
+
+It worked where the review did not, for two reasons:
+- Code makes the comparison: the failed request against one that worked, on the same endpoint and error.
+- The note names a concrete defect in the agent's last call ("no `body` argument"). It never asks the agent to judge its own work against the task.
+
+Wording mattered more than content: the same information as an abstract shape comparison was ignored.
+
 ## 9. Research questions, restated
 
 - **Q1 (retained knowledge)**: does a learned observation model (cross-task) make the episode state more complete and accuracy higher than generic parsing?

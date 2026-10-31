@@ -1050,6 +1050,67 @@ Conclusion: on unseen tasks, the generic checklist plausibly improves accuracy (
 
 ---
 
+## E017 — Entity-Ledger Finish Review (Live)
+
+Status: complete (2026-10-30). `runs/e017-ledger-review`, 135 trials, commit 76abcbf.
+
+The 45 E016 tasks, one round, three arms back to back per task with the order rotated: baseline, the generic checklist, and the checklist plus the entity-ledger review. The review holds the first `finish` once and shows what was read and what each write touched (`docs/world-model-v2.md` §3).
+
+| Arm | Strict | Partial | Median time | Median env calls | Median model calls | Median input tokens |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|
+| Baseline | 15/45 | 0.59 | 66 s | 30 | 20 | 159k |
+| Checklist | 14/45 | 0.59 | 78 s | 40 | 26 | 288k |
+| Checklist + review | 14/45 | 0.61 | 82 s | 30 | 19 | 190k |
+
+- **No accuracy effect.** Per task, review vs. checklist is +2 / −2, and checklist vs. baseline is +5 / −6 (sign tests p = 1.0). The E016 checklist gain did not repeat on this day.
+- **The review almost never changed behaviour.** It was shown in 34/45 trials. After it, the agent made an API call in 4 trials and finished without any call in 30. Both review wins (`hr.headcount_planning`, `operations.notion_slack_playbook`) and one loss (`finance.cash_flow_forecast`) made no call after the review, so those differences come from earlier in the run (run-to-run variance), not from the review.
+- **The one causal effect was harmful (class A).** In `operations.twilio_production_incident` the review listed "Database Replication Lag [Production, SEV1, Triggered] -> nothing written". The agent then paged, ticketed and posted for that incident, which the task excluded. The checklist arm passed; the review arm dropped to 0.75. The other three post-review actions did not change the grade.
+- **Cost:** median time +4 s over the checklist. Fewer model calls and tokens than the checklist arm, but this is variance between arms, not the review's doing (it adds at most one turn).
+
+Conclusion: the stop rule from §7 applies. The review does not beat the checklist, and the agent treats it as confirmation of work already done. When it does act, "nothing written" on a row that resembles the targets reads as a to-do and invites exclusion violations. Showing state does not make Gemma check that state against the task's rules. Offline visibility (70%) was not a useful predictor.
+
+---
+
+## E018 — Error -> Fix Memory (Live)
+
+Status: complete (2026-10-31). `runs/e018-fix-memory`, 90 trials, base commit 76abcbf plus the uncommitted fix memory (`src/worldmodel_harness/fixes.py`).
+
+The 45 E016 tasks, one round, baseline and fix memory back to back per task with the order rotated. Design:
+- **What is stored:** for each failed api_fetch, the endpoint, the error message (normalized) and the request's shape (keys and value formats, no values). It is paired with the shape of the next call to that endpoint that worked.
+- **Where it came from:** 741 earlier trajectories that exclude these 45 tasks, giving 11 fixes seen at least twice (`runs/fix-memory.json`).
+- **When it speaks:** on a failure, code appends a plain-words note to the tool result. It names the missing or wrong argument and gives a call to copy, using this task's own earlier success if there is one. After 3 identical failures it also says that resending will fail.
+
+Before the run, two findings came from replaying a looping moment against the model:
+- The loops are not format slips. Gemma emits Gmail, Slack and Sheets writes with no `body` argument at all; this was checked in the raw output, so the parser is not the cause. It then repeats that call.
+- The wording decides whether the note works. An abstract shape comparison was ignored, and so was "your call had no `body` argument". Adding "set to a JSON string, for example body='{...}'" made it re-send every call with a body, in every sample.
+
+| Arm | Strict | Partial | Median time | Mean time | p90 time | Mean env calls | Median input tokens |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| Baseline | 12/45 | 0.60 | 72 s | 153 s | 222 s | 39.2 | 159k |
+| Fix memory | 12/45 | 0.61 | 67 s | 117 s | 155 s | 35.0 | 127k |
+
+- **Accuracy is unchanged overall:** +2 / −2 per task. The median paired time ratio is 0.94.
+- **On the 23 tasks where a note fired**, compared with the baseline on the same tasks:
+  - strict 3 → 5, partial 0.59 → 0.64;
+  - environment calls −26% (1144 → 842), time −20% (2186 s → 1753 s).
+- **Largest changes:**
+  - `support.gorgias_quality_audit`: 211 → 24 calls, partial 0 → 0.94.
+  - `support.hiver_slack_digest`: 141 → 21 calls, 222 s → 67 s.
+  - `support.zendesk_customer_360`: 94 → 30 calls; it now passes.
+  - `finance.commission_calculation`: 52 → 24 calls; it now passes.
+  - `hr.referral_bonus_processing`: partial 0.17 → 0.83.
+- **On the 22 tasks where no note fired**, the arms are identical in effect, so this half is an A/A test: strict 9 vs. 7, and the time differences come from the model server. Run-to-run noise on this set is about ±2 tasks.
+- **Two large partial-credit drops had a note**:
+  - `support.helpscout_reamaze_migration` (0.60 → 0);
+  - `support.zendesk_freshdesk_sync` (0.93 → 0.20).
+
+  In both, the note fired only on the final Slack post, which it fixed, and the failed checks are earlier ticket writes. The note did not cause them.
+- **Timeouts:** the 1200 s timeouts, two in the baseline and one in the fix-memory arm, are model-server stalls with 3–36 calls and no notes.
+
+Conclusion: the first intervention in this project that reduces time without measurable harm. It works where it fires and stays silent otherwise. Its accuracy effect (+2 strict on 23 tasks) is within the noise at this size. Write loops are a real time sink; the fix memory removes most of them because code makes the comparison and the note names the exact missing argument.
+
+---
+
 ## Master Empirical Research Scorecard (Milestones E007 – E016)
 
 The E007–E013 rows predate same-day controls; read them with the E013 correction and the E014–E015 findings in mind.
@@ -1074,3 +1135,5 @@ Comprehensive synthesis of the empirical World Model Harness evaluated on `opena
 | **E015 (Lean advisory)** | Routes note, same-day controls | 15-task pilot; 4-task placement test | **10/15; 12/12** | 7/15; 4/12 and 2/12 | −31% calls, −29% time, lower accuracy | The note's savings come from skipped exploration that held deciding details; placement does not matter. |
 | **E015d (Check memory)** | Learned checks vs. generic checklist | 8 tasks × 2 rounds | 12/16 | Checks 10/16; checklist **15/16** | Checklist: −30% calls, −23% time | Learned checks are generic and did not help; a fixed checklist did, but in-sample (E016 tests held-out tasks). |
 | **E016 (Checklist held-out)** | Generic checklist on unseen tasks | 45 tasks × 2 rounds | 21/90 (pass^2 10/45) | **29/90** (pass^2 14/45) | +16% median time, +69% median tokens | Accuracy gain partly holds (7 tasks won, 2 lost, p ≈ 0.18); the in-sample cost saving does not. |
+| **E017 (Ledger review)** | Finish review from the entity ledger | 45 tasks × 1 round, 3 arms | 15/45 (checklist 14/45) | 14/45 | +2/−2 vs. checklist; +4 s median | Shown in 34/45 trials, acted on in 4; the only causal change was an exclusion violation. Stopped. |
+| **E018 (Fix memory)** | Error -> fix notes on failed writes | 45 tasks × 1 round | 12/45 | 12/45 | −26% calls and −20% time where notes fired; median time −7%, p90 −30% | Loops are body-less writes; a plain-words note naming the missing argument breaks them. No measurable harm. |

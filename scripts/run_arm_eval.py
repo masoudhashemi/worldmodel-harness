@@ -1,8 +1,9 @@
-"""Same-day comparison: baseline, checklist, and checklist plus the entity-ledger review.
+"""Same-day comparison of arms: baseline, checklist, ledger review, fix memory.
 
-All arms run back to back per task, in an order rotated across tasks, for the given
-number of rounds. Results are appended to <out>/summary.json, so an interrupted run
-resumes where it stopped. Usage: run_review_eval.py <out-dir> <tasks.json> [rounds]
+The chosen arms run back to back per task, in an order rotated across tasks, for the
+given number of rounds. Results are appended to <out>/summary.json, so an interrupted
+run resumes where it stopped.
+Usage: run_arm_eval.py <out-dir> <tasks.json> [rounds] [arm,arm,...]
 """
 
 import asyncio
@@ -14,10 +15,12 @@ from pathlib import Path
 from worldmodel_harness.checks import GENERIC_CHECKS
 from worldmodel_harness.experiment import TrialSettings, run_trial
 
+FIX_MEMORY = "runs/fix-memory.json"
 ARMS = {
-    "baseline": {"note": None, "review": False},
-    "checklist": {"note": GENERIC_CHECKS, "review": False},
+    "baseline": {"note": None},
+    "checklist": {"note": GENERIC_CHECKS},
     "checklist_review": {"note": GENERIC_CHECKS, "review": True},
+    "fixes": {"note": None, "fixes": True, "fix_memory": FIX_MEMORY},
 }
 
 
@@ -39,6 +42,8 @@ def _row(task: str, arm: str, rnd: int, result: dict, seconds: float) -> dict:
         "input_tokens": (result.get("token_usage") or {}).get("input"),
         "review_shown": bool(review.get("text")),
         "review_chars": len(review.get("text") or ""),
+        "fix_notes": sum(bool(set(e["kinds"]) - {"loop"}) for e in result.get("fixes", [])),
+        "loop_notes": sum("loop" in e["kinds"] for e in result.get("fixes", [])),
         "error_type": result.get("error_type"),
         "duration_seconds": round(seconds, 1),
     }
@@ -51,7 +56,7 @@ async def main():
     summary = out / "summary.json"
     rows = json.loads(summary.read_text())["results"] if summary.exists() else []
     done = {(r["task"], r["arm"], r["round"]) for r in rows}
-    names = list(ARMS)
+    names = sys.argv[4].split(",") if len(sys.argv) > 4 else ["baseline", "checklist", "checklist_review"]
     for rnd in range(rounds):
         for index, task in enumerate(tasks):
             shift = (index + rnd) % len(names)
@@ -60,7 +65,8 @@ async def main():
                     continue
                 print(f"[{arm} r{rnd}] {task}", flush=True)
                 started = time.perf_counter()
-                settings = TrialSettings(task_name=task, review=ARMS[arm]["review"])
+                options = {k: v for k, v in ARMS[arm].items() if k != "note"}
+                settings = TrialSettings(task_name=task, **options)
                 try:
                     result = await run_trial(
                         Path.cwd(), settings, out / "trajectories" / task / f"{arm}-r{rnd}", note=ARMS[arm]["note"]
@@ -72,6 +78,7 @@ async def main():
                 print(
                     f"  -> strict={row['strict_eval']} partial={row['partial_credit']:.2f} "
                     f"env={row['environment_calls']} turns={row['model_calls']} review={row['review_shown']} "
+                    f"fix_notes={row['fix_notes']} loop_notes={row['loop_notes']} "
                     f"time={row['duration_seconds']}s error={row['error_type']}",
                     flush=True,
                 )

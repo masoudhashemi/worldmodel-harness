@@ -104,6 +104,8 @@ class AutomationBenchAdapter:
         self.episodes: list[Episode] = []
         # Called with (arguments, raw response, success) after every api_fetch.
         self.fetch_observers: list = []
+        # Annotates failed api_fetch results with known fixes (fixes.FixAdvisor).
+        self.fix_advisor = None
 
     def tools(self) -> list[Tool]:
         from automationbench.tools.api import API_TOOLS
@@ -176,6 +178,8 @@ class AutomationBenchAdapter:
         if operation == "api_fetch":
             for observe in self.fetch_observers:
                 observe(arguments, raw, outcome == "success")
+            if self.fix_advisor is not None:
+                raw = self.fix_advisor.annotate(arguments, raw, outcome == "success")
         return ToolResult(content=raw, success=outcome == "success")
 
     def _learn(self, operation, arguments, response, outcome, purpose, elapsed) -> None:

@@ -14,6 +14,7 @@ from .advisory import build_note, detect_loop
 from .automationbench import AutomationBenchAdapter, task_row
 from .budget import Ledger
 from .config import load_api_key, load_settings
+from .fixes import FixAdvisor, FixMemory
 from .ledger import EntityLedger, observe, render
 from .repairing_agent import RepairingAgent
 from .runtime import build_client
@@ -30,6 +31,10 @@ class TrialSettings(BaseModel):
     note_placement: Literal["system", "user"] = "system"
     # Hold the first finish once with the entity-ledger review (no-op if it is empty).
     review: bool = False
+    # Annotate failed api_fetch results with fixes: from this task, and from the
+    # memory file at this path (read only) when one is given.
+    fixes: bool = False
+    fix_memory: str | None = None
     max_turns: int = Field(default=50, ge=1)
     max_environment_calls: int | None = Field(default=None, ge=1)
     timeout_seconds: int | None = Field(default=1200, ge=1)
@@ -140,6 +145,9 @@ async def run_trial(
             note,
             settings.note_placement,
         )
+        if settings.fixes:
+            memory = FixMemory.load(root / settings.fix_memory) if settings.fix_memory else None
+            adapter.fix_advisor = FixAdvisor(memory)
         tools = adapter.tools()
         entities = EntityLedger()
         if settings.review:
@@ -191,6 +199,8 @@ async def run_trial(
         for key in ("advisory", "fixed_note"):
             if key in result:
                 result[key]["withdrawn"] = client.withdrawn
+        if adapter.fix_advisor is not None:
+            result["fixes"] = adapter.fix_advisor.log
         result["model_call_costs"] = client.model_call_costs
         result["outer_validation_audit"] = agent.outer_validation_audit
         # Score only after interaction; the score is never written to the store.
