@@ -1,14 +1,19 @@
-"""Error -> fix memory: what changed between a failed write and the call that worked.
+"""Error -> fix memory: a recovery graph from stuck points to what moved earlier runs on.
 
-Built by code from tool I/O, never by the model. A fix is keyed by the endpoint, the
-normalized error message and the shape of the failed request; it stores the shape of
-the request that later succeeded on the same endpoint. Shapes keep keys and value
-formats (base64url, form-encoded text, a 2D array) but no literal values, so a fix
-learned on one task carries no data into another.
+Built by code from tool I/O, never by the model, and never from grades. A node is a
+failed api_fetch: its endpoint, normalized error message and request shape. Edges say
+what came next in earlier episodes, and "moved on" means a later successful call on
+the same service:
+- shape: the same endpoint succeeded with a differently shaped request;
+- route: the endpoint never succeeded, but another endpoint of the service did;
+- dead end: no call to the service succeeded after this error, in any episode.
+Shapes keep keys and value formats (base64url, form-encoded text, a 2D array) and
+routes keep URL templates, never literal values, so nothing learned on one task
+carries data into another.
 
 During a task the advisor appends to a failed api_fetch result, in this order:
 - the last request that worked on this endpoint in this task, if any;
-- otherwise a remembered fix whose working shape differs from this request's shape;
+- otherwise a remembered shape fix, else a route, else a dead-end notice;
 - after LOOP_REPEATS identical failures, a plain statement that repeating will fail.
 Successful calls are never changed.
 """
@@ -21,6 +26,7 @@ from pathlib import Path
 
 LOOP_REPEATS = 3
 MIN_SUPPORT = 2  # a remembered fix must have worked in at least this many episodes
+MIN_DEAD_ENDS = 3  # episodes in which a service never recovered from an error
 MAX_EXAMPLE_CHARS = 80
 
 BASE64URL = re.compile(r"[A-Za-z0-9_-]{16,}={0,2}")
@@ -35,6 +41,23 @@ def endpoint(arguments: dict) -> str:
         "{}" if re.search(r"\d|_|^\{", s) or len(s) > 40 else s for s in path.split("/")
     ]
     return f"{str(arguments.get('method') or 'GET').upper()} {'/'.join(segments)}"
+
+
+def service(point: str) -> str:
+    """The host of an endpoint key such as 'GET sheets.googleapis.com/{}/spreadsheets'."""
+    return point.split(" ", 1)[-1].split("/", 1)[0]
+
+
+def template(arguments: dict) -> str:
+    """Method and URL with ids, names and ranges replaced by {id}; versions are kept."""
+    url = str(arguments.get("url", "")).split("?", 1)[0]
+    scheme, _, path = url.rpartition("//")
+    segments = []
+    for s in path.split("/"):
+        version = re.fullmatch(r"v\d+(\.\d+)?|\d{4}-\d{2}-\d{2}|\d+\.\d+", s)
+        idlike = "_" in s or "!" in s or len(s) > 40 or (re.search(r"\d", s) and not version)
+        segments.append("{id}" if idlike and not s.startswith("{") else s)
+    return f"{str(arguments.get('method') or 'GET').upper()} {scheme + '//' if scheme else ''}{'/'.join(segments)}"
 
 
 def signature(raw: str) -> str:
@@ -142,25 +165,38 @@ def describe(current: str, working: str) -> list[str]:
 
 @dataclass
 class FixMemory:
-    """(endpoint, error signature, failed shape) -> Counter of working shapes."""
+    """The recovery graph, with one edge table per kind of edge."""
 
+    # (endpoint, error, failed shape) -> Counter of shapes that then worked there
     fixes: dict[tuple[str, str, str], Counter] = field(default_factory=lambda: defaultdict(Counter))
+    # (endpoint, error) -> Counter of URL templates on the same service that then worked
+    routes: dict[tuple[str, str], Counter] = field(default_factory=lambda: defaultdict(Counter))
+    # (service, error) -> [episodes where the service never recovered, episodes where it did]
+    outcomes: dict[tuple[str, str], list[int]] = field(default_factory=lambda: defaultdict(lambda: [0, 0]))
 
     def learn(self, calls: list[tuple[dict, str, bool]]) -> None:
         """One episode's api_fetch calls: (arguments, raw response, success)."""
-        seen = set()
+        # Each node counts once per episode, at its first occurrence.
+        nodes, errors, services = set(), set(), set()
         for i, (arguments, raw, success) in enumerate(calls):
-            if success:
+            point, error, failed = endpoint(arguments), signature(raw), shape(arguments)
+            if success or (point, error, failed) in nodes:
                 continue
-            key = (endpoint(arguments), signature(raw), shape(arguments))
-            if key in seen:
+            nodes.add((point, error, failed))
+            later = [a for a, _, ok in calls[i + 1 :] if ok and service(endpoint(a)) == service(point)]
+            if (service(point), error) not in services:
+                services.add((service(point), error))
+                self.outcomes[(service(point), error)][bool(later)] += 1
+            here = next((shape(a) for a in later if endpoint(a) == point), None)
+            if here is not None:
+                if here != failed:
+                    self.fixes[(point, error, failed)][here] += 1
                 continue
-            working = next(
-                (shape(a) for a, _, ok in calls[i + 1 :] if ok and endpoint(a) == key[0]), None
-            )
-            if working is not None and working != key[2]:
-                self.fixes[key][working] += 1
-                seen.add(key)
+            method = point.split(" ", 1)[0]
+            other = next((a for a in later if endpoint(a).split(" ", 1)[0] == method), None)
+            if other is not None and (point, error) not in errors:
+                errors.add((point, error))
+                self.routes[(point, error)][template(other)] += 1
 
     def lookup(self, arguments: dict, raw: str) -> str | None:
         """The most supported working shape for this error, different from this request's."""
@@ -174,10 +210,32 @@ class FixMemory:
                 return working
         return None
 
+    def route(self, arguments: dict, raw: str) -> str | None:
+        """The URL template most earlier episodes moved on to, if it is a clear majority."""
+        edges = self.routes.get((endpoint(arguments), signature(raw)))
+        if not edges:
+            return None
+        target, support = edges.most_common(1)[0]
+        return target if support >= MIN_SUPPORT and 2 * support > sum(edges.values()) else None
+
+    def dead_end(self, arguments: dict, raw: str) -> bool:
+        """True if the service never recovered from this error in earlier episodes."""
+        host = service(endpoint(arguments))
+        never, recovered = self.outcomes.get((host, signature(raw)), (0, 0))
+        return bool(host) and never >= MIN_DEAD_ENDS and recovered == 0
+
     def save(self, path: Path) -> None:
         rows = [
-            {"endpoint": p, "error": e, "failed": f, "working": dict(c)}
+            {"kind": "shape", "endpoint": p, "error": e, "failed": f, "working": dict(c)}
             for (p, e, f), c in sorted(self.fixes.items())
+        ]
+        rows += [
+            {"kind": "route", "endpoint": p, "error": e, "working": dict(c)}
+            for (p, e), c in sorted(self.routes.items())
+        ]
+        rows += [
+            {"kind": "outcome", "service": s, "error": e, "never": n, "recovered": r}
+            for (s, e), (n, r) in sorted(self.outcomes.items())
         ]
         path.write_text(json.dumps(rows, indent=1) + "\n")
 
@@ -185,7 +243,13 @@ class FixMemory:
     def load(cls, path: Path) -> "FixMemory":
         memory = cls()
         for row in json.loads(path.read_text()):
-            memory.fixes[(row["endpoint"], row["error"], row["failed"])].update(row["working"])
+            kind = row.get("kind", "shape")
+            if kind == "shape":
+                memory.fixes[(row["endpoint"], row["error"], row["failed"])].update(row["working"])
+            elif kind == "route":
+                memory.routes[(row["endpoint"], row["error"])].update(row["working"])
+            else:
+                memory.outcomes[(row["service"], row["error"])] = [row["never"], row["recovered"]]
         return memory
 
 
@@ -216,6 +280,21 @@ class FixAdvisor:
             notes += describe(current, working) or [
                 f"In earlier tasks this error was fixed by sending a request shaped like {working}."
             ]
+        elif (target := self.memory.route(arguments, raw)) is not None:
+            kinds.append("route")
+            method, url = target.split(" ", 1)
+            notes.append(
+                "Earlier runs that got this error moved on by calling a different endpoint: "
+                f"call api_fetch with method='{method}' and url='{url}', replacing each {{id}} "
+                "with this task's ids."
+            )
+        elif self.memory.dead_end(arguments, raw):
+            kinds.append("dead_end")
+            notes.append(
+                f"In earlier runs no call to {service(point)} ever succeeded after this error. "
+                "Do not retry this service: get the information from another source the task "
+                "names, or skip this step."
+            )
         if repeats >= LOOP_REPEATS:
             kinds.append("loop")
             notes.append(

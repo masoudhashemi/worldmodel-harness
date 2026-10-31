@@ -9,7 +9,7 @@ import json
 import sys
 from pathlib import Path
 
-from worldmodel_harness.fixes import MIN_SUPPORT, FixMemory
+from worldmodel_harness.fixes import MIN_DEAD_ENDS, MIN_SUPPORT, FixMemory
 
 
 def api_fetches(path: Path) -> list[tuple[dict, str, bool]]:
@@ -51,8 +51,12 @@ def main():
             memory.learn(api_fetches(path))
             used += 1
     memory.save(out)
-    supported = sum(any(n >= MIN_SUPPORT for n in c.values()) for c in memory.fixes.values())
-    print(f"{used} trajectories, {len(memory.fixes)} failure shapes, {supported} with a supported fix")
+    fixes = sum(any(n >= MIN_SUPPORT for n in c.values()) for c in memory.fixes.values())
+    routes = sum(
+        (n := c.most_common(1)[0][1]) >= MIN_SUPPORT and 2 * n > sum(c.values()) for c in memory.routes.values()
+    )
+    dead = sum(n >= MIN_DEAD_ENDS and not r for (host, _), (n, r) in memory.outcomes.items() if host)
+    print(f"{used} trajectories: {fixes} shape fixes, {routes} routes, {dead} dead ends")
 
 
 if __name__ == "__main__":

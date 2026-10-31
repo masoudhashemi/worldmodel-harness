@@ -21,6 +21,8 @@ ARMS = {
     "checklist": {"note": GENERIC_CHECKS},
     "checklist_review": {"note": GENERIC_CHECKS, "review": True},
     "fixes": {"note": None, "fixes": True, "fix_memory": FIX_MEMORY},
+    # Adds route and dead-end edges to the shape fixes (the recovery graph).
+    "graph": {"note": None, "fixes": True, "fix_memory": "runs/fix-memory-graph.json"},
 }
 
 

@@ -1,6 +1,15 @@
 import json
 
-from worldmodel_harness.fixes import LOOP_REPEATS, FixAdvisor, FixMemory, describe, endpoint, shape
+from worldmodel_harness.fixes import (
+    LOOP_REPEATS,
+    MIN_DEAD_ENDS,
+    FixAdvisor,
+    FixMemory,
+    describe,
+    endpoint,
+    shape,
+    template,
+)
 
 SEND = "https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
 NO_TO = json.dumps({"error": {"code": 400, "message": "Recipient address required. No 'to' was found"}})
@@ -64,3 +73,35 @@ def test_describe_names_only_what_differs():
     both = '{"body": {"values": [["<text>"]]}, "params": {"valueInputOption": "<text>"}}'
     said = " ".join(describe('{"params": {"valueInputOption": "<text>"}}', both))
     assert "no `body` argument" in said and "params=" not in said
+
+
+SHEETS = "https://sheets.googleapis.com/v4/spreadsheets"
+NO_HANDLER = json.dumps({"error": {"code": 404, "message": "No handler for GET sheets/v4/spreadsheets"}})
+NO_ACCOUNT = json.dumps({"error": "No hubspot account is connected to this workspace"})
+
+
+def test_route_edge_suggests_the_endpoint_that_worked_next():
+    episode = [
+        ({"method": "GET", "url": SHEETS}, NO_HANDLER, False),
+        ({"method": "GET", "url": SHEETS + "/ss_budget"}, "{}", True),
+    ]
+    memory = FixMemory()
+    memory.learn(episode)
+    assert memory.route({"method": "GET", "url": SHEETS}, NO_HANDLER) is None  # needs support
+    memory.learn(episode)
+    note = FixAdvisor(memory).annotate({"method": "GET", "url": SHEETS}, NO_HANDLER, False)
+    assert "url='https://sheets.googleapis.com/v4/spreadsheets/{id}'" in note and "ss_budget" not in note
+    assert template({"method": "GET", "url": "https://api.intercom.io/contacts/6501"}).endswith("contacts/{id}")
+
+
+def test_dead_end_only_when_the_service_never_recovered():
+    hub = {"method": "GET", "url": "https://api.hubapi.com/crm/v3/objects/deals"}
+    memory = FixMemory()
+    for _ in range(MIN_DEAD_ENDS):
+        memory.learn([(hub, NO_ACCOUNT, False), (hub, NO_ACCOUNT, False)])
+    assert list(memory.outcomes.values()) == [[MIN_DEAD_ENDS, 0]]  # one count per episode
+    advisor = FixAdvisor(memory)
+    assert "Do not retry this service" in advisor.annotate(hub, NO_ACCOUNT, False)
+    assert advisor.log[0]["kinds"] == ["dead_end"]
+    memory.learn([(hub, NO_ACCOUNT, False), (hub, "{}", True)])
+    assert not memory.dead_end(hub, NO_ACCOUNT)
