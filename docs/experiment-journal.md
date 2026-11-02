@@ -1192,6 +1192,119 @@ Conclusion: keep the cap, the retry and the repeat-only unavailable note. They r
 
 ---
 
+## E022 — Learning Stream on Renamed Variants (Live)
+
+**Question.** Does a graph that keeps learning from its own runs make Gemma more accurate or faster as a workflow recurs with different names and ids?
+
+**Phase A (2026-10-31, `runs/e022a-variant-baseline`).**
+- Setup: the baseline only, on variants v1–v3 of the 45 held-out tasks (135 trials).
+- Results: v1 11/45 strict (partial 0.46); v2 13/45 (0.50); v3 9/45 (0.44). Strict is close to the originals.
+- Offline curves on these trajectories: world-model-v3.md §9.4–9.5.
+  - Endpoint prediction carries over to renamed variants (0.66–0.72).
+  - Argument fill-in learns across variants (calls fully right 0.05 → 0.11 → 0.17), but its precision (0.67–0.76) is too low to apply without a gate.
+  - The earlier same-task figure (0.46) was inflated by values the agent repeats at temperature 0.
+
+**Design (agreed 2026-11-01).**
+- The transition graph holds no task values.
+- Each edge holds the next action and, for each argument, its source: the query, the response of a named earlier action, or the agent.
+- A run's own query and responses resolve the sources (`src/worldmodel_harness/experience.py`).
+
+**Phase B setup (`runs/e022-learning-stream`).**
+- Stream: 135 tasks in round order (v1 of all 45 workflows, then v2, then v3).
+- Three arms, interleaved per task:
+  - **baseline;**
+  - **fixes:** E018 memory, frozen;
+  - **learning:** fixes plus local plans.
+- Learning arm:
+  - starts from a graph of all earlier runs outside these 45 workflows;
+  - adds each of its own trials after the trial ends, from tool calls and results only (no grades);
+  - after an `api_search`, may append a local plan of up to 3 next distinct endpoints. A plan is shown only for this workflow's template, with the Wilson lower bound ≥ 0.35 (one consistent earlier run is enough).
+  - The first plan step is filled in from the run's state where its source resolves; other values are shown as `<...>` placeholders.
+- Measures: per round, learning minus fixes and minus baseline, for strict, partial credit, median and mean time, and environment calls.
+  - A learning effect is a gap that grows from v1 (no plans possible) to v3.
+  - The ±5-task noise of one round applies to each round.
+
+**Phase B results (finished 2026-11-02, 405 trials).**
+
+| Round | Arm | Strict | Partial | Median t | Mean t | Env calls | Input tokens | Plans shown |
+|---|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
+| v1 | baseline | 9 | 0.46 | 83 s | 117 s | 45.7 | 428k | |
+| v1 | fixes | 11 | 0.53 | 60 s | 159 s | 40.6 | 358k | |
+| v1 | learning | 9 | 0.49 | 63 s | 135 s | 40.4 | 348k | 0/45 |
+| v2 | baseline | 15 | 0.53 | 83 s | 90 s | 45.9 | 457k | |
+| v2 | fixes | 14 | 0.61 | 64 s | 102 s | 36.3 | 347k | |
+| v2 | learning | 16 | 0.65 | 62 s | 113 s | 31.6 | 254k | 32/45 |
+| v3 | baseline | 12 | 0.46 | 82 s | 116 s | 47.0 | 376k | |
+| v3 | fixes | 13 | 0.57 | 63 s | 121 s | 38.9 | 390k | |
+| v3 | learning | 13 | 0.59 | 61 s | 102 s | 34.7 | 325k | 30/45 |
+
+Learning minus fixes, paired by task:
+
+| Round | Strict | Partial (better / worse) | Median t | Env calls |
+|---|:-:|:-:|:-:|:-:|
+| v1 (no plans) | −2 | −0.037 (2 / 8) | 0 s | −0.2 |
+| v2 | +2 | +0.038 (6 / 8) | 0 s | −4.7 |
+| v3 | 0 | +0.027 (9 / 6) | 0 s | −4.2 |
+
+**Findings.**
+- Plans cut environment calls by about 12% (−4.2 to −4.7 per task) and input tokens by 17–27% against fixes in v2 and v3. In v1, where no plans were possible, the two arms were level (−0.2).
+- Time did not improve. The median is unchanged, and model calls fell by only 1–4 per task, so latency stays dominated by per-turn generation.
+- Accuracy moved +0.03 to +0.04 in partial credit and between −2 and +2 strict, all within the run's noise. The gap did not grow from v2 to v3.
+- Verdict by the accuracy-and-time criterion: no win yet. The graph makes runs cheaper, not faster or more accurate.
+
+**Plan adherence (offline, `scripts/e022_plan_adherence.py`, v2 + v3).**
+- Wall time ≈ model time (median difference 0.5 s), at about 4–5 s per turn. Time follows turns, not API calls: Gemma averages about 1.8 tool calls per turn, and the calls plans removed were mostly parallel searches. Tool calls fell 13% (3905 → 3403), turns only 10% (2144 → 1930), and the paired median saving is 0.5–1 turn per task.
+- Reaction on the turn after 105 plans: step 1 called 33%, searched again 41%, another fetch 16%, other 10%. Fully resolved steps were followed 51% of the time (23/45), steps with placeholders 23% (10/43).
+- "Searched again" was mostly discovery for parts of the task the plan did not cover (write endpoints, Slack), often four searches in one turn. Plans predict the next 1–3 reads, which Gemma would make anyway.
+- Ceiling of auto-executing resolved GET steps: at most about 23 turns over 90 trials (about 1 s per task). Not worth building.
+- The remaining lever for time is sequential discovery: fixes spends about 7 of 24 turns per task on search-only turns. Next: bound offline how many of those look up endpoints the graph already knows for the workflow (handoff doc, `docs/handoff-2026-11-02.md`).
+
+## E023 — Discovery Prefill Bound (Offline, 2026-11-02)
+
+**Question.** If the API docs for every endpoint the graph knows for a workflow came back with Gemma's first search, how many later search turns could go away? Go/no-go for a live discovery-prefill arm; the threshold was about 2 turns (about 10 s) per task.
+
+**Method (`scripts/e023_discovery_bound.py`, E022 trajectories, no live runs).**
+- Replay the E022 stream in run order. Use the learning graph as it stood just before each task's learning trial, and judge both arms of that task against it. Arm order rotates, so a fixes trial that ran later would otherwise see the same task's learning run. The first pass had this leak and overstated the fixes arm (38/45 tasks with known endpoints instead of 32/45).
+- A search-only turn after the run's first search turn is avoidable when every endpoint fetched next (from the next fetching turn up to the following search turn) was already known to the graph for the task's template. This is an upper bound: it assumes Gemma would not search anyway.
+
+**Results (v2 and v3, 45 tasks each; 32/45 have known endpoints).**
+
+| Round | Arm | Turns/task | Later search-only/task | Avoidable/task mean | Median | Capped at 5 | Share of turns |
+|---|---|:-:|:-:|:-:|:-:|:-:|:-:|
+| v2 | fixes | 23.2 | 6.9 | 1.98 | 0 | 1.38 | 8.5% |
+| v2 | learning | 22.2 | 4.3 | 1.00 | 0 | 0.98 | 4.5% |
+| v3 | fixes | 25.3 | 5.8 | 1.84 | 0 | 1.24 | 7.3% |
+| v3 | learning | 21.2 | 6.1 | 2.47 | 1 | 1.18 | 11.6% |
+
+- Distribution (fixes, v2 + v3): 47 of 90 tasks have none; the mean is carried by three search loops (`hr.headcount_planning` 30 and 20, `hr.benefits_enrollment_review` 15; in learning v3 also `hr.recruitment_channel_roi` 34). These loop despite having the docs already, so prefill would not end them.
+- Without the loops, the bound is about 1.2–1.4 turns per task, about 5–6 s against a 60 s median.
+- Prefill size: median 4 known endpoints per workflow (max 9), about 3.5k characters of docs (max 9k); docs were found in trajectories for 120 of 178.
+
+**Verdict: no-go.** Even as an upper bound, prefill is under the 2-turn threshold once the loops are set aside. The plan line stops here: the v3 graph's value is lower cost (fewer API calls and input tokens), not time. The search loops are a separate, larger time sink.
+
+## E025 — Pre-Send Check Bound (Offline, 2026-11-02)
+
+**Question (handoff 6.4).** Would a check before each write, naming arguments that disagree with what the graph confidently resolves from the run's own state, catch the near misses that make up most failures?
+
+**Method (`scripts/e025_presend_bound.py`, E022 v2 and v3, all three arms).**
+- For each write call (POST, PUT, PATCH, DELETE), compare every short argument with the graph's value. The graph is the learning arm's, as it stood before the task's first trial.
+- Confident: the first level that knows the slot has a non-`Agent` top source with support ≥ 2 and share ≥ 0.8. Strict: additionally only `Query(..)` or an anchored `Resp(x|key=..)` / `Resp(x|key@query)` from a different endpoint, never from search docs.
+- Grades only for diagnosis: does a disagreement name a value a failed check wanted?
+
+**Results.**
+
+| Rules | Trials | Write slots | Confident | Agree | Disagree |
+|---|---|:-:|:-:|:-:|:-:|
+| confident | passed | 1527 | 132 | 17 | 115 |
+| confident | failed | 5736 | 851 | 94 | 757 |
+| strict | passed | 1527 | 8 | 6 | 2 |
+| strict | failed | 5736 | 59 | 58 | 1 |
+
+- Without the strict filter, confident rules are learning artifacts: "the id from the previous PUT" (iterating over Zendesk organizations), an unanchored `Resp(values)` that picks the sheet's header cell, and the first enum value in the API docs (`valueInputOption=RAW`). They disagree in 115 of 132 cases even in passed trials. Their apparent overlap with failed checks (384) is spurious: those checks list every organization id.
+- With the strict filter, Gemma already sends the graph's value in 58 of 59 cases in failed trials. The one disagreement is benign (a channel id where the query gave its name).
+
+**Verdict: no-go.** Where the graph knows an argument's source, Gemma already gets it right. The near misses are in values Gemma computes or chooses (`Agent` in the graph), which a pre-send check from argument sources cannot judge.
+
 ## Master Empirical Research Scorecard (Milestones E007 – E016)
 
 The E007–E013 rows predate same-day controls; read them with the E013 correction and the E014–E015 findings in mind.

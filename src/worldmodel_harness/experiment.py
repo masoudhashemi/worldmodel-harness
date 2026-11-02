@@ -14,6 +14,7 @@ from .advisory import build_note, detect_loop
 from .automationbench import AutomationBenchAdapter, task_row
 from .budget import Ledger
 from .config import load_api_key, load_settings
+from .experience import ExperienceAdvisor, Model
 from .fixes import FixAdvisor, FixMemory
 from .ledger import EntityLedger, observe, render
 from .repairing_agent import RepairingAgent
@@ -37,6 +38,8 @@ class TrialSettings(BaseModel):
     fix_memory: str | None = None
     # Name a service once it has said no account is connected and is called again.
     fix_unavailable: bool = True
+    # Show local plans from the experience graph passed to run_trial after api_search.
+    experience: bool = False
     # Overrides configs/model.toml, for comparing output limits on the same day.
     max_tokens: int | None = Field(default=None, ge=1)
     max_turns: int = Field(default=50, ge=1)
@@ -117,12 +120,16 @@ async def run_trial(
     output_dir: Path,
     store_path: Path | None = None,
     note: str | None = None,
+    graph: Model | None = None,
 ) -> dict:
     """One task. With advisory memory the store at `store_path` is read and updated.
 
     `note` instead supplies a fixed note built elsewhere; it is shown the same way and
-    nothing is learned during the trial.
+    nothing is learned during the trial. With `settings.experience`, `graph` speaks
+    through local plans; the caller decides what the graph learns afterwards.
     """
+    if settings.experience and graph is None:
+        raise ValueError("Experience plans need a graph")
     if settings.advisory and store_path is None:
         raise ValueError("Advisory memory needs a store")
     if settings.advisory and note is not None:
@@ -154,6 +161,11 @@ async def run_trial(
         if settings.fixes:
             memory = FixMemory.load(root / settings.fix_memory) if settings.fix_memory else None
             adapter.fix_advisor = FixAdvisor(memory, unavailable=settings.fix_unavailable)
+        if settings.experience:
+            query = next(m["content"] for m in adapter.task.prompt if m["role"] == "user")
+            advisor = ExperienceAdvisor(graph, query)
+            adapter.fetch_observers.append(advisor.observe)
+            adapter.search_advisor = advisor
         tools = adapter.tools()
         entities = EntityLedger()
         if settings.review:
@@ -207,6 +219,8 @@ async def run_trial(
                 result[key]["withdrawn"] = client.withdrawn
         if adapter.fix_advisor is not None:
             result["fixes"] = adapter.fix_advisor.log
+        if adapter.search_advisor is not None:
+            result["experience"] = adapter.search_advisor.log
         result["model_call_costs"] = client.model_call_costs
         result["outer_validation_audit"] = agent.outer_validation_audit
         # Score only after interaction; the score is never written to the store.

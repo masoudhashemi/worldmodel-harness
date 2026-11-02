@@ -42,6 +42,12 @@ def dataset(domain: str):
 
 
 def task_row(task_name: str) -> dict:
+    """A dataset row by name; "name~vN" is surface variant N of that task (variants.py)."""
+    if "~v" in task_name:
+        from worldmodel_harness.variants import known_first_names, make_variant
+
+        base, seed = task_name.rsplit("~v", 1)
+        return make_variant(task_row(base), int(seed), known_first_names(dataset("public")))[0]
     domain = task_name.split(".", 1)[0]
     for row in dataset(domain):
         if json.loads(row["info"])["task_name"] == task_name:
@@ -106,6 +112,8 @@ class AutomationBenchAdapter:
         self.fetch_observers: list = []
         # Annotates failed api_fetch results with known fixes (fixes.FixAdvisor).
         self.fix_advisor = None
+        # Annotates api_search results with a local plan (experience.ExperienceAdvisor).
+        self.search_advisor = None
 
     def tools(self) -> list[Tool]:
         from automationbench.tools.api import API_TOOLS
@@ -180,6 +188,8 @@ class AutomationBenchAdapter:
                 observe(arguments, raw, outcome == "success")
             if self.fix_advisor is not None:
                 raw = self.fix_advisor.annotate(arguments, raw, outcome == "success")
+        if operation == "api_search" and self.search_advisor is not None:
+            raw = self.search_advisor.annotate_search(raw)
         return ToolResult(content=raw, success=outcome == "success")
 
     def _learn(self, operation, arguments, response, outcome, purpose, elapsed) -> None:

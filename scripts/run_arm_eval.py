@@ -13,7 +13,9 @@ import time
 from pathlib import Path
 
 from worldmodel_harness.checks import GENERIC_CHECKS
+from worldmodel_harness.experience import Model, load, workflow
 from worldmodel_harness.experiment import TrialSettings, run_trial
+from worldmodel_harness.lifting import episode
 
 FIX_MEMORY = "runs/fix-memory.json"
 ARMS = {
@@ -27,7 +29,28 @@ ARMS = {
     "fixes_e020": {"note": None, "fixes": True, "fix_memory": FIX_MEMORY, "fix_unavailable": False, "max_tokens": 12000},
     # Shape fixes plus dead ends only: routes added nothing in E019.
     "dead_end": {"note": None, "fixes": True, "fix_memory": "runs/fix-memory-dead-end.json"},
+    # Fixes plus local plans from an experience graph that learns from this arm's runs.
+    "learning": {"note": None, "fixes": True, "fix_memory": FIX_MEMORY, "experience": True},
 }
+
+
+def experience_graph(out: Path, tasks: list[str], rows: list[dict]) -> Model:
+    """The graph at the start of the stream: every earlier run outside these workflows,
+    then the learning arm's own runs so far, in order (so a resumed stream is the same)."""
+    flows = {workflow(t) for t in tasks}
+    others = [p for p in Path("runs").iterdir() if p.is_dir() and p.resolve() != out.resolve()]
+    graph = Model(load(others, lambda t: workflow(t) not in flows))
+    for row in rows:
+        if row["arm"] == "learning":
+            learn(graph, out, row["task"], row["round"])
+    return graph
+
+
+def learn(graph: Model, out: Path, task: str, rnd: int):
+    """Add one learning-arm trial to the graph, from its tool calls and results only."""
+    found = episode(out / "trajectories" / task / f"learning-r{rnd}" / "trajectory.json", task)
+    if found and found.steps:
+        graph.add(found)
 
 
 def _row(task: str, arm: str, rnd: int, result: dict, seconds: float) -> dict:
@@ -50,6 +73,7 @@ def _row(task: str, arm: str, rnd: int, result: dict, seconds: float) -> dict:
         "review_chars": len(review.get("text") or ""),
         "fix_notes": sum(bool(set(e["kinds"]) - {"loop"}) for e in result.get("fixes", [])),
         "loop_notes": sum("loop" in e["kinds"] for e in result.get("fixes", [])),
+        "plans_shown": len(result.get("experience", [])),
         "error_type": result.get("error_type"),
         "duration_seconds": round(seconds, 1),
     }
@@ -63,6 +87,7 @@ async def main():
     rows = json.loads(summary.read_text())["results"] if summary.exists() else []
     done = {(r["task"], r["arm"], r["round"]) for r in rows}
     names = sys.argv[4].split(",") if len(sys.argv) > 4 else ["baseline", "checklist", "checklist_review"]
+    graph = experience_graph(out, tasks, rows) if any(ARMS[n].get("experience") for n in names) else None
     for rnd in range(rounds):
         for index, task in enumerate(tasks):
             shift = (index + rnd) % len(names)
@@ -75,16 +100,22 @@ async def main():
                 settings = TrialSettings(task_name=task, **options)
                 try:
                     result = await run_trial(
-                        Path.cwd(), settings, out / "trajectories" / task / f"{arm}-r{rnd}", note=ARMS[arm]["note"]
+                        Path.cwd(),
+                        settings,
+                        out / "trajectories" / task / f"{arm}-r{rnd}",
+                        note=ARMS[arm]["note"],
+                        graph=graph,
                     )
                 except Exception as exc:  # noqa: BLE001 -- record and continue with the next trial
                     result = {"error_type": type(exc).__name__}
                 row = _row(task, arm, rnd, result, time.perf_counter() - started)
                 rows.append(row)
+                if settings.experience:
+                    learn(graph, out, task, rnd)
                 print(
                     f"  -> strict={row['strict_eval']} partial={row['partial_credit']:.2f} "
                     f"env={row['environment_calls']} turns={row['model_calls']} review={row['review_shown']} "
-                    f"fix_notes={row['fix_notes']} loop_notes={row['loop_notes']} "
+                    f"fix_notes={row['fix_notes']} loop_notes={row['loop_notes']} plans={row['plans_shown']} "
                     f"time={row['duration_seconds']}s error={row['error_type']}",
                     flush=True,
                 )
