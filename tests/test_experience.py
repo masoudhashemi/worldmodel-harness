@@ -62,3 +62,20 @@ def test_source_gate_counts_an_episode_once_when_it_wrote_found_and_made_up_valu
     steps = [Step("api_fetch", {"method": "GET", "url": inbox}, '{"body": "a@x.com"}', True), Step("api_fetch", send, "{}", True)]
     graph = Model([Episode("hr.p~v1", "Send the plan", steps)])
     assert graph.sources(lift_query("Send the plan")[0], set())[0][3:] == (1, 1)
+
+
+def test_hinted_read_is_chained_through_the_listing_its_id_came_from():
+    import base64
+
+    listing = "https://gmail.googleapis.com/gmail/v1/users/me/messages"
+    raw = base64.urlsafe_b64encode(b"To: a@x.com\r\n\r\nHi").decode()
+    steps = [
+        Step("api_fetch", {"method": "GET", "url": listing}, json.dumps({"messages": [{"id": "msg_1"}]}), True),
+        Step("api_fetch", {"method": "GET", "url": listing + "/msg_1"}, '{"body": "a@x.com"}', True),
+        Step("api_fetch", {"method": "POST", "url": listing + "/send", "body": json.dumps({"raw": raw})}, "{}", True),
+    ]
+    advisor = ExperienceAdvisor(Model([Episode("hr.p~v1", "Send the plan", steps)]), "Send the plan")
+    hint = advisor.source_hint()
+    assert f"GET {listing} and then GET {listing}/<id from the first call>" in hint
+    advisor.observe({"method": "GET", "url": listing}, json.dumps({"messages": [{"id": "msg_9"}]}), True)
+    assert f"GET {listing}/msg_9 (1/1 runs)" in advisor.source_hint()  # listed: the id is filled in

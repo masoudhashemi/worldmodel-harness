@@ -1331,6 +1331,31 @@ Learning minus fixes, paired by task:
 
 **Verdict.** The first learned fix that changes accuracy: where the learned hint is a call Gemma can make as written, Gemma makes it and solves the task (5 of 13 hinted tasks strict, against 1). Where the hint has a placeholder whose source is not named, Gemma ignores it, as with E022's plan steps (placeholders followed 23%). Next: chain the hint through the learned id source (name the listing call first, e.g. `GET .../messages?q=...` then `GET .../messages/<id from it>`), and replicate.
 
+## E028 — Do Value Sources Transfer Across Workflows? (Offline, 2026-11-02)
+
+**Question.** Read as "dynamic skills", the graph should compose query-specific procedures from sub-skills learned in other workflows. Do value sources (which read a written value came from) transfer when the task's own workflow has no history?
+
+**Method (`scripts/e028_cross_workflow_sources.py`).** Sources keyed by (write action, slot) instead of the template. Each workflow is held out in turn; support counts workflows, not episodes; same gate as E026 (Wilson LCB ≥ 0.35).
+1. Prediction: for every write slot whose value a trial first saw in a read, is the held-out top-ranked read that read? (All runs.)
+2. Loops: the 62 looping trials of E022 and E024, at the streak's start. The write slots are those the trial attempted, which is optimistic.
+
+**Results.**
+
+| Slot kind | Writes | Hint | Top-1 right when hinted |
+|---|:-:|:-:|:-:|
+| Path ids of the same service (Zendesk, Help Scout, Intercom, Zoho, HelpCrunch) | ~4,500 | 27–100% | 94–100% |
+| Slack `channel` | 501 | 99% | 78% |
+| Gmail recipient (`raw.to`) | 1,293 | 0% | n/a |
+| Sheet cell values | 5,266 | 99% | 34% |
+| Salesforce / Freshdesk related-record ids | ~1,100 | 100% | 30–34% |
+| All | 22,583 | 56% | 60% |
+
+- Looping trials with their own workflow held out: a hint in 5 of 62, right in 0. With their own workflow's history (E026): 24, right in 21–22.
+
+**Verdict.** Two layers. API mechanics (a resource id comes from listing that resource) transfer across workflows almost perfectly, but Gemma already gets them right (E025). Where things live in a task's data (the CEO's address in a Gmail message, the team lead's in a worksheet) does not transfer, and that is where the loops and most failures are. The useful knowledge comes from the same workflow recurring with other surface details, not from composing general sub-skills. On AutomationBench every task has its own world; in a deployment with one shared workspace, "where things live" could become a workspace-level fact that transfers.
+
+**Also in this commit.** The E027 change: a hinted read that needs an id this run lacks is chained through the read the graph learned the id from (`ExperienceAdvisor._chain`, for example "GET .../messages and then GET .../messages/<id from the first call>"). E027 (live, chained hints vs repeats on the same 36 tasks) is running.
+
 ## E025 — Pre-Send Check Bound (Offline, 2026-11-02)
 
 **Question (handoff 6.4).** Would a check before each write, naming arguments that disagree with what the graph confidently resolves from the run's own state, catch the near misses that make up most failures?

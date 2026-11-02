@@ -336,7 +336,7 @@ class ExperienceAdvisor:
         history = [s.action for s in self.steps if s.success]
         lines = [
             f"- the {slot.rsplit('.', 1)[-1]} of {write} came from the response of "
-            f"{self._call(read, history, [])} ({hits}/{total} runs)"
+            f"{self._chain(read, history)} ({hits}/{total} runs)"
             for write, slot, read, hits, total in self.graph.sources(self.template, set(history))
         ]
         if lines:
@@ -344,13 +344,29 @@ class ExperienceAdvisor:
             return SOURCE_HEADER + "\n" + "\n".join(lines)
         # No value source left to read: the calls earlier runs made that this one has not.
         lines = [
-            f"- {self._call(action, history, [])} ({hits}/{total} runs)"
+            f"- {self._chain(action, history)} ({hits}/{total} runs)"
             for action, hits, total in self.graph.unmade(self.template, set(history))
         ]
         if lines:
             self.log.append({"after_fetches": len(history), "unmade": lines})
             return UNMADE_HEADER + "\n" + "\n".join(lines)
         return ""
+
+    def _chain(self, action: str, history: list[str]) -> str:
+        """An action as a call, preceded by the read that earlier runs took its missing
+        ids from when this run has not made that read yet (E026: a call with an id whose
+        source is not named was ignored)."""
+        nth = sum(a == action for a in history)
+        for slot in self.graph.slots_of(self.template, action):
+            term, value = self.graph.resolve(
+                action, slot, lambda t: fill(t, self.bindings, self.steps, self.query), self.template, nth
+            )
+            first = term.partition(" <- ")[2] if term.startswith("Resp(") else ""
+            if value is None and first.startswith("GET ") and first not in history and first != action:
+                before = [(first, 0, 0)]
+                then = self._call(action, history, before).replace(" from call 1>", " from the first call>")
+                return f"{self._call(first, history, [])} and then {then}"
+        return self._call(action, history, [])
 
     def _call(self, action: str, history: list[str], before: list[tuple]) -> str:
         """An action as a call: values from this run's state, placeholders otherwise."""
