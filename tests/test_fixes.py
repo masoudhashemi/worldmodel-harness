@@ -127,4 +127,4 @@ def test_repeated_search_is_answered_with_a_pointer():
     again = json.loads(repeats.annotate({"query": "Talent  lead EMAIL"}, first))
     assert again["results"] == [] and "search #1" in again["note"]
     assert repeats.annotate({"query": "talent lead email", "limit": 5}, first) == first
-    assert repeats.log == [{"search": 3, "repeats": 1}]
+    assert repeats.log == [{"search": 3, "repeats": 1, "hint": False}]

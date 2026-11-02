@@ -33,24 +33,28 @@ ARMS = {
     "learning": {"note": None, "fixes": True, "fix_memory": FIX_MEMORY, "experience": True},
     # Fixes plus a pointer in place of a word-for-word repeated search (E024).
     "repeats": {"note": None, "fixes": True, "fix_memory": FIX_MEMORY, "search_repeats": True},
+    # The pointer plus learned hints: where earlier runs found values, or calls they made
+    # that this run has not. The graph holds every earlier run and learns from this arm (E026).
+    "sources": {"note": None, "fixes": True, "fix_memory": FIX_MEMORY, "search_repeats": True, "search_sources": True},
 }
 
 
-def experience_graph(out: Path, tasks: list[str], rows: list[dict]) -> Model:
-    """The graph at the start of the stream: every earlier run outside these workflows,
-    then the learning arm's own runs so far, in order (so a resumed stream is the same)."""
+def experience_graph(out: Path, tasks: list[str], rows: list[dict], arm: str) -> Model:
+    """The graph at the start of the run, then the arm's own trials so far, in order (so a
+    resumed run is the same). The learning stream starts from every earlier run outside
+    these workflows; the sources arm from every earlier run."""
     flows = {workflow(t) for t in tasks}
     others = [p for p in Path("runs").iterdir() if p.is_dir() and p.resolve() != out.resolve()]
-    graph = Model(load(others, lambda t: workflow(t) not in flows))
+    graph = Model(load(others, (lambda t: workflow(t) not in flows) if arm == "learning" else (lambda t: True)))
     for row in rows:
-        if row["arm"] == "learning":
-            learn(graph, out, row["task"], row["round"])
+        if row["arm"] == arm:
+            learn(graph, out, row["task"], row["round"], arm)
     return graph
 
 
-def learn(graph: Model, out: Path, task: str, rnd: int):
-    """Add one learning-arm trial to the graph, from its tool calls and results only."""
-    found = episode(out / "trajectories" / task / f"learning-r{rnd}" / "trajectory.json", task)
+def learn(graph: Model, out: Path, task: str, rnd: int, arm: str):
+    """Add one trial of a graph arm to the graph, from its tool calls and results only."""
+    found = episode(out / "trajectories" / task / f"{arm}-r{rnd}" / "trajectory.json", task)
     if found and found.steps:
         graph.add(found)
 
@@ -77,6 +81,7 @@ def _row(task: str, arm: str, rnd: int, result: dict, seconds: float) -> dict:
         "loop_notes": sum("loop" in e["kinds"] for e in result.get("fixes", [])),
         "plans_shown": len(result.get("experience", [])),
         "repeat_notes": len(result.get("search_repeats", [])),
+        "source_hints": sum(e.get("hint", False) for e in result.get("search_repeats", [])),
         "error_type": result.get("error_type"),
         "duration_seconds": round(seconds, 1),
     }
@@ -90,7 +95,8 @@ async def main():
     rows = json.loads(summary.read_text())["results"] if summary.exists() else []
     done = {(r["task"], r["arm"], r["round"]) for r in rows}
     names = sys.argv[4].split(",") if len(sys.argv) > 4 else ["baseline", "checklist", "checklist_review"]
-    graph = experience_graph(out, tasks, rows) if any(ARMS[n].get("experience") for n in names) else None
+    learner = next((n for n in names if ARMS[n].get("experience") or ARMS[n].get("search_sources")), None)
+    graph = experience_graph(out, tasks, rows, learner) if learner else None
     for rnd in range(rounds):
         for index, task in enumerate(tasks):
             shift = (index + rnd) % len(names)
@@ -113,12 +119,12 @@ async def main():
                     result = {"error_type": type(exc).__name__}
                 row = _row(task, arm, rnd, result, time.perf_counter() - started)
                 rows.append(row)
-                if settings.experience:
-                    learn(graph, out, task, rnd)
+                if arm == learner:
+                    learn(graph, out, task, rnd, arm)
                 print(
                     f"  -> strict={row['strict_eval']} partial={row['partial_credit']:.2f} "
                     f"env={row['environment_calls']} turns={row['model_calls']} review={row['review_shown']} "
-                    f"fix_notes={row['fix_notes']} loop_notes={row['loop_notes']} plans={row['plans_shown']} repeats={row['repeat_notes']} "
+                    f"fix_notes={row['fix_notes']} loop_notes={row['loop_notes']} plans={row['plans_shown']} repeats={row['repeat_notes']} hints={row['source_hints']} "
                     f"time={row['duration_seconds']}s error={row['error_type']}",
                     flush=True,
                 )

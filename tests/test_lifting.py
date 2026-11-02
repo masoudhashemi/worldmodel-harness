@@ -63,3 +63,17 @@ def test_query_anchor_fills_only_when_one_record_is_named():
     listing = Step("api_fetch", {}, json.dumps({"files": files}), True)
     assert fill(term, [], [listing], "Compare the Q1 Budget with the Hiring Pipeline") is None
     assert fill(term, [], [listing], "Copy the Hiring Pipeline sheet") == "ss_b"
+
+
+def test_gmail_raw_recipients_are_slots_and_origins_come_from_reads():
+    import base64
+
+    raw = base64.urlsafe_b64encode(b"To: ceo@x.com, cfo@x.com\r\nSubject: Plan\r\n\r\nHi").decode()
+    found = slots({"method": "POST", "url": "https://gmail.googleapis.com/x/send", "body": json.dumps({"raw": raw})})
+    assert [v for s, v in found if s == "body.raw.to"] == ["ceo@x.com", "cfo@x.com"]
+    from worldmodel_harness.lifting import origin
+
+    inbox = Step("api_fetch", {"method": "GET", "url": "https://gmail.googleapis.com/m/1"}, '{"body": "send it to CEO@x.com"}', True)
+    sent = Step("api_fetch", {"method": "POST", "url": "https://slack.com/api/chat.postMessage"}, '{"text": "ceo@x.com"}', True)
+    assert origin("ceo@x.com", [inbox, sent]) == "GET gmail.googleapis.com/m/{}"
+    assert origin("ceo@x.com", [sent]) == "Agent" and origin("ceo@x.com", [inbox], "mail ceo@x.com") == "Query"

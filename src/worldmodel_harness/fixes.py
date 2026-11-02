@@ -326,7 +326,10 @@ class SearchRepeats:
     searches again and again until the turn budget runs out.
     """
 
-    def __init__(self):
+    def __init__(self, hint=None):
+        # Optional learned addition: a callable returning text, e.g. where earlier runs
+        # found what this run is searching for (experience.ExperienceAdvisor.source_hint).
+        self.hint = hint
         self.seen: dict[str, int] = {}  # normalized query -> number of the search that first sent it
         self.searches = 0
         self.log: list[dict] = []
@@ -338,11 +341,12 @@ class SearchRepeats:
             self.seen[key] = self.searches
             return raw
         first = self.seen[key]
-        self.log.append({"search": self.searches, "repeats": first})
-        return json.dumps(
-            {
-                "results": [],
-                "note": f"This is the same search as your search #{first} in this task. The API "
-                "catalog does not change, so its results are the ones already returned there.",
-            }
-        )
+        reply = {
+            "results": [],
+            "note": f"This is the same search as your search #{first} in this task. The API "
+            "catalog does not change, so its results are the ones already returned there.",
+        }
+        if self.hint and (hint := self.hint()):
+            reply["experience"] = hint
+        self.log.append({"search": self.searches, "repeats": first, "hint": "experience" in reply})
+        return json.dumps(reply)

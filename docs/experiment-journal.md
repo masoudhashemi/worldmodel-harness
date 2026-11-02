@@ -1305,6 +1305,32 @@ Learning minus fixes, paired by task:
 
 **Verdict.** A time win where loops occur (paired −52 s on looping tasks, no accuracy loss), but a static rule that makes loops cheap rather than ending them. The loops end only when Gemma reads where the value is. Earlier runs record where that was (Gmail messages in 14 of 15 traced recruitment runs, sheet values in 51 of 65 Gorgias runs). Next: a learned version that names the endpoint earlier runs took the value from, tested offline first.
 
+## E026 — Learned Source Hints on Repeated Searches (Live, 2026-11-02)
+
+**Question.** E024's pointer is a static rule. Does adding what the graph learned from earlier runs (where a written value was found, or calls earlier runs made that this one has not) end the loops?
+
+**What is learned (tool calls and results only, never grades; no task values).**
+- `lifting.origin`: for each value a write sends (including Gmail recipients, now read from the base64 `raw` headers), the latest earlier successful GET whose response contained it, else `Query` or `Agent` (made up).
+- `Model.sources`: per workflow template, write slot -> read action, gated like plan steps (Wilson LCB ≥ 0.35). Episodes whose values were all made up are left out of the count: an invented address is no evidence about where the real one is.
+- `Model.unmade`: if no value source is left, the workflow's well-supported successful calls this run has not made.
+- Delivered only inside the E024 pointer (`SearchRepeats(hint=...)`, arm `sources`). The graph starts from every earlier run and learns from the arm's own trials.
+
+**Offline check (`scripts/e026_source_bound.py`).** Graph from earlier runs only, at the first turn of each ≥ 3 repeat streak in E022 and E024: a hint in 24 of 62 looping trials; in 21–22 of them the named service holds a value the grader expected (diagnosis only). Gemma had made the hinted read later anyway in only 3. No hint for `hr.monday_onboarding_pipeline`, `hr.termination_checklist` or `hr.data_migration_validation`: no earlier run ever made the calls they need.
+
+**Live (`runs/e026-learned-sources`, same 36 tasks, sources vs repeats, same day).** One sources trial (`hr.benefits_enrollment_review~v3`, no hint shown) crashed on a bug, now fixed: an episode that wrote both a found and a made-up recipient was counted as a hit but not in the total, so the Wilson bound took the square root of a negative number. It is left out below.
+
+| Subset | n | Strict R/S | Partial R/S | Turns R/S | Median time R/S | Paired median Δtime | Faster/slower |
+|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
+| all | 35 | 4/8 | 0.36/0.38 | 37.2/33.8 | 94/85 s | 0 s | 19/16 |
+| hint shown | 13 | 1/5 | 0.43/0.48 | 37.2/29.5 | 103/87 s | −32 s | 9/4 |
+| no hint (A/A) | 22 | 3/3 | 0.31/0.32 | 37.2/36.4 | 71/64 s | +1 s | 10/12 |
+
+- Wins where the hint was a complete call: `hr.headcount_planning` v1 and v2 (partial 0.38 -> 1.00, strict; v2 listed Gmail messages, read the approval email and sent to the right address in 16 turns instead of 40), `finance.vendor_spend_analysis` v1 and v3 (strict, from "calls not made yet"), `sales.five_level_conditional~v2` (12 turns instead of 32).
+- Ignored where the hint needed an id from a call it did not name: `GET .../messages/<id from an earlier response>` with no message listing made yet. `hr.recruitment_channel_roi` looped in all three variants (31–33 repeat turns; the repeats arm looped in one of three today), and v1 fell from 0.75 to 0 partial. `hr.headcount_planning~v3` also skipped the Gmail line and looped.
+- The A/A subset is flat, so the accuracy and turn gains sit where hints fired. The +4 strict is at the edge of the noise (about 5 of 45 for two same-day arms), so it needs a replicate.
+
+**Verdict.** The first learned fix that changes accuracy: where the learned hint is a call Gemma can make as written, Gemma makes it and solves the task (5 of 13 hinted tasks strict, against 1). Where the hint has a placeholder whose source is not named, Gemma ignores it, as with E022's plan steps (placeholders followed 23%). Next: chain the hint through the learned id source (name the listing call first, e.g. `GET .../messages?q=...` then `GET .../messages/<id from it>`), and replicate.
+
 ## E025 — Pre-Send Check Bound (Offline, 2026-11-02)
 
 **Question (handoff 6.4).** Would a check before each write, naming arguments that disagree with what the graph confidently resolves from the run's own state, catch the near misses that make up most failures?

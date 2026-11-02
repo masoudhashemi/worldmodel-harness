@@ -42,6 +42,8 @@ class TrialSettings(BaseModel):
     experience: bool = False
     # Answer a word-for-word repeat of an api_search with a pointer to the first one.
     search_repeats: bool = False
+    # With search_repeats: add where earlier runs found what this run lacks (graph needed).
+    search_sources: bool = False
     # Overrides configs/model.toml, for comparing output limits on the same day.
     max_tokens: int | None = Field(default=None, ge=1)
     max_turns: int = Field(default=50, ge=1)
@@ -130,7 +132,7 @@ async def run_trial(
     nothing is learned during the trial. With `settings.experience`, `graph` speaks
     through local plans; the caller decides what the graph learns afterwards.
     """
-    if settings.experience and graph is None:
+    if (settings.experience or settings.search_sources) and graph is None:
         raise ValueError("Experience plans need a graph")
     if settings.advisory and store_path is None:
         raise ValueError("Advisory memory needs a store")
@@ -169,7 +171,14 @@ async def run_trial(
             adapter.fetch_observers.append(advisor.observe)
             adapter.search_advisor = advisor
         if settings.search_repeats:
-            adapter.search_repeats = SearchRepeats()
+            hint = None
+            if settings.search_sources:
+                query = next(m["content"] for m in adapter.task.prompt if m["role"] == "user")
+                sources = ExperienceAdvisor(graph, query)
+                adapter.fetch_observers.append(sources.observe)
+                hint = sources.source_hint
+                result["sources"] = sources.log
+            adapter.search_repeats = SearchRepeats(hint)
         tools = adapter.tools()
         entities = EntityLedger()
         if settings.review:

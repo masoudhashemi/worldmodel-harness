@@ -16,6 +16,7 @@ their endpoint and request shape agree, so a lifted step can be filled in for a 
 task from that task's own query and responses.
 """
 
+import base64
 import json
 import re
 from dataclasses import dataclass, field
@@ -131,7 +132,38 @@ def slots(arguments: dict) -> list[tuple[str, str]]:
     found += [(f"query.{k}", v) for k, v in parse_qsl(url.query)]
     for part in ("params", "body"):
         found += [(f"{part}.{p}", v) for p, v in _leaves(_json(arguments.get(part)), "")]
+    found += _raw_recipients(_json(arguments.get("body")))
     return [(slot, value) for slot, value in found if _traceable(value)]
+
+
+def _raw_recipients(body) -> list[tuple[str, str]]:
+    """Recipients in the headers of a Gmail base64url 'raw' message, as body.raw.to slots."""
+    raw = body.get("raw") if isinstance(body, dict) else None
+    if not isinstance(raw, str):
+        return []
+    try:
+        text = base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)).decode("utf-8", "ignore")
+    except ValueError:
+        return []
+    headers = text.replace("\r\n", "\n").split("\n\n", 1)[0]
+    found = []
+    for name in ("To", "Cc", "Bcc"):
+        for line in re.findall(rf"^{name}:(.*)$", headers, re.MULTILINE | re.IGNORECASE):
+            found += [(f"body.raw.{name.lower()}", email) for email in LITERALS[0][1].findall(line)]
+    return found
+
+
+def origin(value: str, earlier: list[Step], query: str = "") -> str:
+    """Where a written value was first seen: "Query", the latest earlier successful read
+    whose response contains it (anywhere, also inside text), or "Agent"."""
+    needle = value.lower()
+    if needle in query.lower():
+        return "Query"
+    for step in reversed(earlier):
+        read = str(step.arguments.get("method") or "GET").upper() == "GET"
+        if step.success and step.tool == "api_fetch" and read and needle in step.response.lower():
+            return step.action
+    return "Agent"
 
 
 def response_fields(step: Step) -> dict[str, str]:

@@ -14,7 +14,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .lifting import Episode, Step, episode, fill, lift_query, slots, source
+from .lifting import Episode, Step, episode, fill, lift_query, origin, slots, source
 
 # A literal is part of an action's shape (users/me, valueInputOption=RAW) only if it
 # fills the slot in this many different workflows and in most of the slot's uses.
@@ -26,6 +26,8 @@ Z = 1.2816  # one-sided 90%: the lower bound is exceeded 90% of the time
 PLAN_THETA = 0.35
 PLAN_STEPS = 3
 VERSION = re.compile(r"v\d+(\.\d+)?")
+WRITES = ("POST", "PUT", "PATCH", "DELETE")
+SOURCE_HINTS = 2
 
 
 def task_of(path: Path, run: Path) -> str:
@@ -76,6 +78,14 @@ class Model:
         self.visits = Counter()
         self.arguments = defaultdict(Counter)  # (template, action) -> slot -> episodes
         self.versions = {}  # (action, path index) -> API version segment, such as v3
+        # Where written values were first seen: (template, write action, slot) -> the action
+        # whose response held the value (or Query, Agent) -> episodes, and the episodes
+        # that wrote the slot.
+        self.origins = defaultdict(Counter)
+        self.written = Counter()
+        self.traced = Counter()  # ... and the episodes in which some written value was seen
+        self.runs = Counter()  # template -> episodes
+        self.made = Counter()  # (template, action) -> episodes with a successful call of it
         for e in episodes:
             self.add(e)
 
@@ -83,6 +93,9 @@ class Model:
         seen = set()
         template, bindings = lift_query(e.query)
         history = [s.action for s in e.steps if s.tool == "api_fetch" and s.success]
+        self.runs[template] += 1
+        for action in set(history):
+            self.made[(template, action)] += 1
         for n, action in enumerate([*history, "end"]):
             for key in fetch_keys(template, history[:n]):
                 if (key, "visit") not in seen:
@@ -106,6 +119,19 @@ class Model:
                     if (template, step.action, slot, "arg") not in seen:
                         seen.add((template, step.action, slot, "arg"))
                         self.arguments[(template, step.action)][slot] += 1
+                if str(step.arguments.get("method", "GET")).upper() in WRITES:
+                    for slot, value in slots(step.arguments):
+                        key = (template, step.action, slot)
+                        found = origin(value, e.steps[:i], e.query)
+                        if (key, "written") not in seen:
+                            seen.add((key, "written"))
+                            self.written[key] += 1
+                        if (key, found) not in seen:
+                            seen.add((key, found))
+                            self.origins[key][found] += 1
+                        if found != "Agent" and (key, "traced") not in seen:
+                            seen.add((key, "traced"))
+                            self.traced[key] += 1
                 for slot, value in slots(step.arguments):
                     term = source(value, bindings, e.steps[:i], e.query)
                     if term == "Free":
@@ -186,6 +212,42 @@ class Model:
             history.append(action)
         return found
 
+    def sources(self, template: str, called: set[str]) -> list[tuple[str, str, str, int, int]]:
+        """Reads that earlier runs of this workflow took written values from, not yet called.
+
+        Each is (write action, slot, read action, episodes, episodes in which a written
+        value was seen somewhere), best first, gated like plan steps. A value the agent made
+        up (found in no response or query) is no evidence about where it could have been
+        found, so episodes with only such values are left out; values from the query are
+        skipped.
+        """
+        found = []
+        for (t, action, slot), counts in self.origins.items():
+            if t != template:
+                continue
+            total = self.traced[(t, action, slot)]
+            for read, hits in counts.items():
+                if read not in ("Query", "Agent") and read not in called and lcb(hits, total) >= PLAN_THETA:
+                    found.append((action, slot, read, hits, total))
+        found.sort(key=lambda s: -lcb(s[3], s[4]))
+        unique, reads = [], set()
+        for s in found:
+            if s[2] not in reads:
+                reads.add(s[2])
+                unique.append(s)
+        return unique[:SOURCE_HINTS]
+
+    def unmade(self, template: str, called: set[str]) -> list[tuple[str, int, int]]:
+        """Calls most earlier runs of this workflow made successfully, not yet made in this
+        run: (action, episodes that made it, episodes), best first, gated like plan steps."""
+        total = self.runs[template]
+        found = [
+            (action, hits, total)
+            for (t, action), hits in self.made.items()
+            if t == template and action not in called and lcb(hits, total) >= PLAN_THETA
+        ]
+        return sorted(found, key=lambda s: -s[1])[:SOURCE_HINTS + 1]
+
     def slots_of(self, template: str, action: str) -> list[str]:
         """The arguments this workflow's calls of an action usually fill, versions aside."""
         counts = self.arguments.get((template, action), Counter())
@@ -220,6 +282,14 @@ def lcb(hits: int, total: int) -> float:
 PLAN_HEADER = (
     "[Experience] Earlier runs of this same task, with other names and ids, made these "
     "calls next (runs that made the call / runs that reached this point):"
+)
+SOURCE_HEADER = (
+    "[Experience] In earlier runs of this same task, with other names and ids, values "
+    "that were written came from reads this run has not made yet:"
+)
+UNMADE_HEADER = (
+    "[Experience] Earlier runs of this same task, with other names and ids, made these "
+    "calls successfully; this run has not made them yet:"
 )
 PLAN_FOOTER = (
     "<...> marks a value to take from this task. Check each call against the task "
@@ -260,6 +330,28 @@ class ExperienceAdvisor:
         self.log.append({"after_fetches": len(history), "plan": lines})
         return "\n\n".join([raw, PLAN_HEADER + "\n" + "\n".join(lines), PLAN_FOOTER])
 
+    def source_hint(self) -> str:
+        """Where earlier runs of this task found values they wrote, for reads this run
+        has not made yet; empty if the graph knows none."""
+        history = [s.action for s in self.steps if s.success]
+        lines = [
+            f"- the {slot.rsplit('.', 1)[-1]} of {write} came from the response of "
+            f"{self._call(read, history, [])} ({hits}/{total} runs)"
+            for write, slot, read, hits, total in self.graph.sources(self.template, set(history))
+        ]
+        if lines:
+            self.log.append({"after_fetches": len(history), "sources": lines})
+            return SOURCE_HEADER + "\n" + "\n".join(lines)
+        # No value source left to read: the calls earlier runs made that this one has not.
+        lines = [
+            f"- {self._call(action, history, [])} ({hits}/{total} runs)"
+            for action, hits, total in self.graph.unmade(self.template, set(history))
+        ]
+        if lines:
+            self.log.append({"after_fetches": len(history), "unmade": lines})
+            return UNMADE_HEADER + "\n" + "\n".join(lines)
+        return ""
+
     def _call(self, action: str, history: list[str], before: list[tuple]) -> str:
         """An action as a call: values from this run's state, placeholders otherwise."""
         method, _, path = action.partition(" ")
@@ -277,7 +369,7 @@ class ExperienceAdvisor:
                 segments[i] = text
             elif slot.startswith("query."):
                 query.append(f"{slot[6:]}={text}")
-            elif slot.startswith("body.") and value is not None:
+            elif slot.startswith("body.") and not slot.startswith("body.raw.") and value is not None:
                 body.append(f"{slot[5:]}={text}")
         url = "https://" + "/".join("<id>" if s == "{}" else s for s in segments)
         call = f"{method} {url}" + ("?" + "&".join(query) if query else "")
