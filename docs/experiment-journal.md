@@ -1282,6 +1282,29 @@ Learning minus fixes, paired by task:
 
 **Verdict: no-go.** Even as an upper bound, prefill is under the 2-turn threshold once the loops are set aside. The plan line stops here: the v3 graph's value is lower cost (fewer API calls and input tokens), not time. The search loops are a separate, larger time sink.
 
+## E024 — Repeated-Search Pointer (Live, 2026-11-02)
+
+**Question.** Exact-repeat `api_search` loops cost 5–8% of all E022 turns; 0 of 38 trials with a streak of three or more repeat turns passed strict. Does answering a word-for-word repeated search with a short pointer ("same search as your search #N; the catalog does not change") break them?
+
+**Why they happen (E022 trajectories).** The value Gemma looks for exists, in a place it never reads: the CEO's email in a Gmail inbox message (`hr.headcount_planning`), the talent lead's on an earlier Gmail message (`hr.recruitment_channel_roi`), the team lead's in a second worksheet (`support.gorgias_quality_audit`). Gemma searches for a contacts API instead and, at temperature 0, sends the same queries again.
+
+**Setup (`runs/e024-search-repeats`).** `SearchRepeats` in `fixes.py`, arm `repeats` = fixes + pointer. Same-day control: fixes. The 36 variant tasks (v1–v3) of the 12 workflows with any repeat turn in E022, one round. This is a static rule: nothing in it is learned.
+
+**Results (repeats vs fixes, paired by task).**
+
+| Subset | n | Strict F/R | Partial F/R | Turns F/R | Median time F/R | Paired median Δtime | Faster/slower |
+|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
+| all | 36 | 4/6 | 0.31/0.36 | 37.5/34.9 | 114/84 s | −8 s | 27/9 |
+| pointer fired | 22 | 1/3 | 0.19/0.26 | 37.1/35.6 | 120/80 s | −17 s | 19/3 |
+| fixes looped (streak ≥ 3) | 13 | 0/1 | 0.09/0.13 | 41.2/38.5 | 122/55 s | −52 s | 13/0 |
+| pointer not fired | 14 | 3/3 | 0.49/0.50 | 38.1/33.8 | 103/113 s | 0 s | 8/6 |
+
+- The time saving comes from cheaper turns, not fewer: where the pointer fired, seconds per turn fell from 3.3 to 2.2 (median input tokens −15%), while turns fell only 1.5.
+- Loops broke only in `hr.headcount_planning` (repeat turns 28/25/14 → 1/1/0; v3 then passed strict, 13 turns instead of 36). In `hr.recruitment_channel_roi`, `hr.monday_onboarding_pipeline` and `hr.data_migration_validation` Gemma kept repeating (about 23–34 repeat turns), only faster.
+- Accuracy: +2 strict and +0.05 partial, within noise for 36 tasks. The not-fired subset is the A/A reference (3/3 strict, time within noise).
+
+**Verdict.** A time win where loops occur (paired −52 s on looping tasks, no accuracy loss), but a static rule that makes loops cheap rather than ending them. The loops end only when Gemma reads where the value is. Earlier runs record where that was (Gmail messages in 14 of 15 traced recruitment runs, sheet values in 51 of 65 Gorgias runs). Next: a learned version that names the endpoint earlier runs took the value from, tested offline first.
+
 ## E025 — Pre-Send Check Bound (Offline, 2026-11-02)
 
 **Question (handoff 6.4).** Would a check before each write, naming arguments that disagree with what the graph confidently resolves from the run's own state, catch the near misses that make up most failures?

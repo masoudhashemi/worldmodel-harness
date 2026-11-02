@@ -114,6 +114,8 @@ class AutomationBenchAdapter:
         self.fix_advisor = None
         # Annotates api_search results with a local plan (experience.ExperienceAdvisor).
         self.search_advisor = None
+        # Replaces repeated api_search results with a pointer (fixes.SearchRepeats).
+        self.search_repeats = None
 
     def tools(self) -> list[Tool]:
         from automationbench.tools.api import API_TOOLS
@@ -190,6 +192,8 @@ class AutomationBenchAdapter:
                 raw = self.fix_advisor.annotate(arguments, raw, outcome == "success")
         if operation == "api_search" and self.search_advisor is not None:
             raw = self.search_advisor.annotate_search(raw)
+        if operation == "api_search" and self.search_repeats is not None and outcome == "success":
+            raw = self.search_repeats.annotate(arguments, raw)
         return ToolResult(content=raw, success=outcome == "success")
 
     def _learn(self, operation, arguments, response, outcome, purpose, elapsed) -> None:

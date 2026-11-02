@@ -5,6 +5,7 @@ from worldmodel_harness.fixes import (
     MIN_DEAD_ENDS,
     FixAdvisor,
     FixMemory,
+    SearchRepeats,
     describe,
     endpoint,
     shape,
@@ -117,3 +118,13 @@ def test_unavailable_service_is_named_only_when_called_again():
     assert "api.hubapi.com already answered that no account is connected" in note
     assert advisor.log[-1]["kinds"] == ["unavailable"]
 
+
+def test_repeated_search_is_answered_with_a_pointer():
+    repeats = SearchRepeats()
+    first = json.dumps({"results": [{"id": "gmail.send"}]})
+    assert repeats.annotate({"query": "talent lead email"}, first) == first
+    assert repeats.annotate({"query": "slack users"}, first) == first
+    again = json.loads(repeats.annotate({"query": "Talent  lead EMAIL"}, first))
+    assert again["results"] == [] and "search #1" in again["note"]
+    assert repeats.annotate({"query": "talent lead email", "limit": 5}, first) == first
+    assert repeats.log == [{"search": 3, "repeats": 1}]

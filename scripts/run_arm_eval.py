@@ -31,6 +31,8 @@ ARMS = {
     "dead_end": {"note": None, "fixes": True, "fix_memory": "runs/fix-memory-dead-end.json"},
     # Fixes plus local plans from an experience graph that learns from this arm's runs.
     "learning": {"note": None, "fixes": True, "fix_memory": FIX_MEMORY, "experience": True},
+    # Fixes plus a pointer in place of a word-for-word repeated search (E024).
+    "repeats": {"note": None, "fixes": True, "fix_memory": FIX_MEMORY, "search_repeats": True},
 }
 
 
@@ -74,6 +76,7 @@ def _row(task: str, arm: str, rnd: int, result: dict, seconds: float) -> dict:
         "fix_notes": sum(bool(set(e["kinds"]) - {"loop"}) for e in result.get("fixes", [])),
         "loop_notes": sum("loop" in e["kinds"] for e in result.get("fixes", [])),
         "plans_shown": len(result.get("experience", [])),
+        "repeat_notes": len(result.get("search_repeats", [])),
         "error_type": result.get("error_type"),
         "duration_seconds": round(seconds, 1),
     }
@@ -115,7 +118,7 @@ async def main():
                 print(
                     f"  -> strict={row['strict_eval']} partial={row['partial_credit']:.2f} "
                     f"env={row['environment_calls']} turns={row['model_calls']} review={row['review_shown']} "
-                    f"fix_notes={row['fix_notes']} loop_notes={row['loop_notes']} plans={row['plans_shown']} "
+                    f"fix_notes={row['fix_notes']} loop_notes={row['loop_notes']} plans={row['plans_shown']} repeats={row['repeat_notes']} "
                     f"time={row['duration_seconds']}s error={row['error_type']}",
                     flush=True,
                 )

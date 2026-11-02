@@ -15,7 +15,8 @@ During a task the advisor appends to a failed api_fetch result, in this order:
 - the last request that worked on this endpoint in this task, if any;
 - otherwise a remembered shape fix, else a route, else a dead-end notice;
 - after LOOP_REPEATS identical failures, a plain statement that repeating will fail.
-Successful calls are never changed.
+Successful calls are never changed. Separately, SearchRepeats replaces the result of an
+api_search that repeats an earlier one word for word with a pointer to that result.
 """
 
 import json
@@ -316,3 +317,32 @@ class FixAdvisor:
         self.log.append({"endpoint": point, "kinds": kinds, "repeats": repeats})
         return raw + ("\n\n[Fix memory] " + " ".join(notes) if notes else "")
 
+
+class SearchRepeats:
+    """Within one task, answers a word-for-word repeat of an api_search with a pointer.
+
+    The catalog is fixed, so the results would be the same ones the agent already has.
+    Replacing them (E024) changes the context that, at temperature 0, sends the same
+    searches again and again until the turn budget runs out.
+    """
+
+    def __init__(self):
+        self.seen: dict[str, int] = {}  # normalized query -> number of the search that first sent it
+        self.searches = 0
+        self.log: list[dict] = []
+
+    def annotate(self, arguments: dict, raw: str) -> str:
+        self.searches += 1
+        key = json.dumps({k: " ".join(str(v).lower().split()) for k, v in sorted(arguments.items())})
+        if key not in self.seen:
+            self.seen[key] = self.searches
+            return raw
+        first = self.seen[key]
+        self.log.append({"search": self.searches, "repeats": first})
+        return json.dumps(
+            {
+                "results": [],
+                "note": f"This is the same search as your search #{first} in this task. The API "
+                "catalog does not change, so its results are the ones already returned there.",
+            }
+        )

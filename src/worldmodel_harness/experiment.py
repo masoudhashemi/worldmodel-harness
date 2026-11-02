@@ -15,7 +15,7 @@ from .automationbench import AutomationBenchAdapter, task_row
 from .budget import Ledger
 from .config import load_api_key, load_settings
 from .experience import ExperienceAdvisor, Model
-from .fixes import FixAdvisor, FixMemory
+from .fixes import FixAdvisor, FixMemory, SearchRepeats
 from .ledger import EntityLedger, observe, render
 from .repairing_agent import RepairingAgent
 from .runtime import build_client
@@ -40,6 +40,8 @@ class TrialSettings(BaseModel):
     fix_unavailable: bool = True
     # Show local plans from the experience graph passed to run_trial after api_search.
     experience: bool = False
+    # Answer a word-for-word repeat of an api_search with a pointer to the first one.
+    search_repeats: bool = False
     # Overrides configs/model.toml, for comparing output limits on the same day.
     max_tokens: int | None = Field(default=None, ge=1)
     max_turns: int = Field(default=50, ge=1)
@@ -166,6 +168,8 @@ async def run_trial(
             advisor = ExperienceAdvisor(graph, query)
             adapter.fetch_observers.append(advisor.observe)
             adapter.search_advisor = advisor
+        if settings.search_repeats:
+            adapter.search_repeats = SearchRepeats()
         tools = adapter.tools()
         entities = EntityLedger()
         if settings.review:
@@ -221,6 +225,8 @@ async def run_trial(
             result["fixes"] = adapter.fix_advisor.log
         if adapter.search_advisor is not None:
             result["experience"] = adapter.search_advisor.log
+        if adapter.search_repeats is not None:
+            result["search_repeats"] = adapter.search_repeats.log
         result["model_call_costs"] = client.model_call_costs
         result["outer_validation_audit"] = agent.outer_validation_audit
         # Score only after interaction; the score is never written to the store.
