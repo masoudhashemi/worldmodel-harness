@@ -72,3 +72,31 @@ def test_parse_gemma_calls_handles_unclosed_braces():
     assert calls[0][0] == "execute_decision"
     assert calls[0][1]["action"]["tool"] == "finish"
     assert calls[0][1]["action"]["arguments"]["summary"] == "Task finished"
+
+
+def test_runaway_reply_is_retried_once_with_the_defect_named(monkeypatch):
+    import litellm
+    from stirrup.core.models import UserMessage
+
+    sent = []
+
+    async def fake(**kwargs):
+        sent.append(kwargs["messages"])
+        cut = len(sent) == 1 or replies == "always"
+        content = "word " * 50 if cut else '<|tool_call>call:finish{summary:<|"|>done<|"|>}<tool_call|>'
+        choice = {"finish_reason": "length" if cut else "stop", "message": {"role": "assistant", "content": content}}
+        return litellm.ModelResponse(choices=[choice])
+
+    monkeypatch.setattr(litellm, "acompletion", fake)
+    client = runtime.GemmaLiteLLMClient(
+        model="openai/gemma", api_key="k", max_tokens=64, context_window_tokens=1000, kwargs={}
+    )
+    task = [UserMessage(content="do it")]
+    replies = "once"
+    message = asyncio.run(client.generate(task, {}))
+    assert len(sent) == 2 and sent[1][-1]["content"][0]["text"] == runtime.RUNAWAY_NOTE
+    assert [b.name for b in message.blocks if isinstance(b, ToolCall)] == ["finish"]
+    sent.clear()
+    replies = "always"
+    message = asyncio.run(client.generate(task, {}))
+    assert len(sent) == 2 and message.blocks[0].text == ""

@@ -1,6 +1,6 @@
 # World model v2: the world model as the agent's view of task state
 
-Status: design proposal, revision 2 (2026-10-30). It replaces the operational layer (E013–E014) and the advisory note (E015). The evidence is from E014–E016; the journal and code are on branch `lean-advisory`. Revision 1 proposed a deterministic task-text requirement gate. The failure analysis in §1.2 showed it would address about 3% of failed checks, so it was replaced.
+Status: design proposal, revision 2 (2026-10-30). Superseded for next steps by [v3: a lifted experience graph](world-model-v3.md) (2026-10-31). It replaces the operational layer (E013–E014) and the advisory note (E015). The evidence is from E014–E016; the journal and code are on branch `lean-advisory`. Revision 1 proposed a deterministic task-text requirement gate. The failure analysis in §1.2 showed it would address about 3% of failed checks, so it was replaced.
 
 ## 1. Evidence
 
@@ -203,6 +203,22 @@ It worked where the review did not, for two reasons:
 - The note names a concrete defect in the agent's last call ("no `body` argument"). It never asks the agent to judge its own work against the task.
 
 Wording mattered more than content: the same information as an abstract shape comparison was ignored.
+
+## 8d. Recovery graph, E019 (2026-10-31)
+
+The fix memory was extended into a graph of stuck points. A node is a failed call (endpoint, error, request shape). Its edges are what moved earlier runs forward:
+- a shape fix (E018);
+- a route to another endpoint of the same service;
+- a dead end, where the service never recovered.
+
+Run on the same day as baseline and the fix memory, it did not improve on the fix memory: strict 12 vs. 13 of 45, partial credit 6 better and 11 worse, 4% more calls. The fix memory's E018 savings replicated (faster on 34 of 45 tasks, 17% fewer calls). Details are in the E019 journal entry.
+
+- **Routes:** they mostly repeat a Sheets URL correction that Gemma already makes on its own. Dropped.
+- **Dead ends:** they are accurate and can stop long stalls. But telling Gemma to "get the information from another source" started a 93-search loop in one task. Any retry should state only the fact and say to continue with the rest of the task.
+
+This confirms the E018 lesson: a note helps when it names a defect in the last call and gives a call to copy. An open instruction ("find another source") gives Gemma a new search goal instead.
+
+E020 retested dead ends with a note that states only the fact, and they failed again: strict 12 vs. 14 of 45, 8% more calls where notes fired. The recruitment search loop came back, so the note's presence at that moment matters, not its wording. The one large time saving came from avoiding a reproducible runaway generation, which a lower `max_tokens` would cap in every arm. Of the recovery graph, only shape-fix edges remain.
 
 ## 9. Research questions, restated
 

@@ -32,6 +32,7 @@ MAX_EXAMPLE_CHARS = 80
 BASE64URL = re.compile(r"[A-Za-z0-9_-]{16,}={0,2}")
 EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 FORM = re.compile(r"[^\s=&{}]+=[^&]*(?:&[^\s=&{}]+=[^&]*)+")
+NOT_CONNECTED = re.compile(r"no \w+ account is connected", re.IGNORECASE)
 
 
 def endpoint(arguments: dict) -> str:
@@ -256,10 +257,12 @@ class FixMemory:
 class FixAdvisor:
     """Annotates failed api_fetch results within one task."""
 
-    def __init__(self, memory: FixMemory | None = None):
+    def __init__(self, memory: FixMemory | None = None, unavailable: bool = True):
         self.memory = memory or FixMemory()
+        self.name_unavailable = unavailable
         self.worked: dict[str, dict] = {}  # endpoint -> last successful arguments in this task
         self.failures: Counter = Counter()
+        self.unavailable: set[str] = set()  # services that said no account is connected
         self.log: list[dict] = []
 
     def annotate(self, arguments: dict, raw: str, success: bool) -> str:
@@ -292,9 +295,18 @@ class FixAdvisor:
             kinds.append("dead_end")
             notes.append(
                 f"In earlier runs no call to {service(point)} ever succeeded after this error. "
-                "Do not retry this service: get the information from another source the task "
-                "names, or skip this step."
+                f"Do not call {service(point)} again. Continue with the remaining steps of the task."
             )
+        host = service(point)
+        if self.name_unavailable and NOT_CONNECTED.search(raw):
+            # The error already says so; speak only once the agent comes back to the service.
+            if host in self.unavailable and "dead_end" not in kinds:
+                kinds.append("unavailable")
+                notes.append(
+                    f"{host} already answered that no account is connected. Do not call it "
+                    "again. Continue with the remaining steps of the task."
+                )
+            self.unavailable.add(host)
         if repeats >= LOOP_REPEATS:
             kinds.append("loop")
             notes.append(
@@ -303,3 +315,4 @@ class FixAdvisor:
             )
         self.log.append({"endpoint": point, "kinds": kinds, "repeats": repeats})
         return raw + ("\n\n[Fix memory] " + " ".join(notes) if notes else "")
+

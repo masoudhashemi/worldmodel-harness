@@ -23,6 +23,10 @@ ARMS = {
     "fixes": {"note": None, "fixes": True, "fix_memory": FIX_MEMORY},
     # Adds route and dead-end edges to the shape fixes (the recovery graph).
     "graph": {"note": None, "fixes": True, "fix_memory": "runs/fix-memory-graph.json"},
+    # E020's fixes arm: the old output limit and no unavailable-service note.
+    "fixes_e020": {"note": None, "fixes": True, "fix_memory": FIX_MEMORY, "fix_unavailable": False, "max_tokens": 12000},
+    # Shape fixes plus dead ends only: routes added nothing in E019.
+    "dead_end": {"note": None, "fixes": True, "fix_memory": "runs/fix-memory-dead-end.json"},
 }
 
 

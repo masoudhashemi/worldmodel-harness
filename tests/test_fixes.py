@@ -101,7 +101,19 @@ def test_dead_end_only_when_the_service_never_recovered():
         memory.learn([(hub, NO_ACCOUNT, False), (hub, NO_ACCOUNT, False)])
     assert list(memory.outcomes.values()) == [[MIN_DEAD_ENDS, 0]]  # one count per episode
     advisor = FixAdvisor(memory)
-    assert "Do not retry this service" in advisor.annotate(hub, NO_ACCOUNT, False)
+    note = advisor.annotate(hub, NO_ACCOUNT, False)
+    assert "Do not call api.hubapi.com again" in note and "another source" not in note
     assert advisor.log[0]["kinds"] == ["dead_end"]
     memory.learn([(hub, NO_ACCOUNT, False), (hub, "{}", True)])
     assert not memory.dead_end(hub, NO_ACCOUNT)
+
+
+def test_unavailable_service_is_named_only_when_called_again():
+    advisor = FixAdvisor()
+    deals = {"method": "GET", "url": "https://api.hubapi.com/crm/v3/objects/deals"}
+    contacts = {"method": "GET", "url": "https://api.hubapi.com/crm/v3/objects/contacts"}
+    assert advisor.annotate(deals, NO_ACCOUNT, False) == NO_ACCOUNT
+    note = advisor.annotate(contacts, NO_ACCOUNT, False)
+    assert "api.hubapi.com already answered that no account is connected" in note
+    assert advisor.log[-1]["kinds"] == ["unavailable"]
+

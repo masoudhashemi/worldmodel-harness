@@ -1109,6 +1109,87 @@ Before the run, two findings came from replaying a looping moment against the mo
 
 Conclusion: the first intervention in this project that reduces time without measurable harm. It works where it fires and stays silent otherwise. Its accuracy effect (+2 strict on 23 tasks) is within the noise at this size. Write loops are a real time sink; the fix memory removes most of them because code makes the comparison and the note names the exact missing argument.
 
+## E019 — Recovery Graph: Route and Dead-End Edges (Live)
+
+Status: complete (2026-10-31). `runs/e019-recovery-graph`, 135 trials, commit 6ff061e.
+
+The 45 E018 tasks, one round, with three arms run back to back per task and the arm order rotated: baseline, fix memory (E018) and graph. The graph adds two edge kinds to the fix memory. Both are learned from the same 741 trajectories, which exclude these tasks (`runs/fix-memory-graph.json`: 11 shape fixes, 4 routes, 20 dead ends). Both fire only on a failed call:
+- **Route:** this endpoint never worked after this error, but another endpoint of the same service with the same method did. It needs ≥2 supporting episodes and a majority of the edges, and gives a URL template with `{id}` slots.
+- **Dead end:** no call to this service ever succeeded after this error, in ≥3 episodes. Nearly all are "No <service> account is connected".
+
+| Arm | Strict | Partial | Median time | Mean time | p90 time | Mean env calls | Median input tokens |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| Baseline | 13/45 | 0.60 | 75 s | 130 s | 179 s | 39.2 | 231k |
+| Fix memory | 13/45 | 0.62 | 66 s | 122 s | 136 s | 32.4 | 119k |
+| Graph | 12/45 | 0.60 | 64 s | 93 s | 143 s | 33.6 | 134k |
+
+- **E018 replicates.** Fix memory vs. baseline:
+  - partial credit better on 9 tasks, worse on 6;
+  - faster on 34 of 45;
+  - mean environment calls −17%, p90 time −24%, median tokens about halved.
+- **The graph does not beat the fix memory.** Graph vs. fix memory:
+  - partial credit better on 6 tasks, worse on 11 (sign test p ≈ 0.33);
+  - faster on 20, slower on 25;
+  - environment calls slightly higher (33.6 vs. 32.4).
+- **The graph's lower mean time comes almost entirely from one task.** In `hr.data_migration_validation`, baseline and fix memory both hit the 1200 s timeout; with the graph's dead-end note it finished in 73 s, though partial credit was 0 in all three arms. Without that task, mean time is 105 / 98 / 94 s.
+- **Notes fired:** in the graph arm, route 13 times and dead end 18 times, on 19 tasks.
+  - The dead ends were accurate. In every inspected case the baseline hit the same "not connected" error and never recovered either.
+  - Dead-end notes saved time where the service was simply unavailable: `hr.monday_onboarding_pipeline` 90 s → 20 s; `hr.data_migration_validation`, the timeout above.
+- **One likely harm, `hr.recruitment_channel_roi`** (partial 0.86 baseline, 1.00 fix memory, 0.00 graph):
+  - after the BambooHR dead-end note, which says "get the information from another source the task names", the agent made 93 `api_search` calls and only 2 `api_fetch` calls, then finished;
+  - the baseline hit the same error, then fetched the sheet and sent the emails.
+
+  The note's instruction to look for another source probably started the search loop.
+- **Routes added little.** The common route fixes a wrong first Sheets URL, which the agent fixes on its own within one call. `operations.sheets_monday_maintenance_queue` got a route note and fell 0.67 → 0.33 with twice the calls. That is a single case and within the noise.
+
+Conclusion: the success bar was fewer calls and less time than the fix memory with no loss in accuracy. It was not met. Keep the E018 fix memory, which replicated. Drop route edges. Dead ends are true and can cut long stalls, but the "find another source" wording appears to cause search loops. If they are tried again, they should state only the fact ("this service is not connected in this workspace") and tell the agent to continue with the rest of the task.
+
+## E020 — Dead-End Notes, Reworded (Live)
+
+Status: complete (2026-10-31). `runs/e020-dead-end-wording`, 90 trials. Base commit 6ff061e plus the uncommitted rewording (diff in `provenance.txt`).
+
+Arms: fix memory vs. fix memory plus dead ends (no routes), with the same 45 tasks, one round, and arm order rotated. Baseline was left out because E019 had just compared fix memory with baseline. The dead-end note now states only the fact: "In earlier runs no call to {host} ever succeeded after this error. Do not call {host} again. Continue with the remaining steps of the task."
+
+| Arm | Strict | Partial | Median time | Mean time | p90 time | Mean env calls | Median input tokens |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| Fix memory | 14/45 | 0.66 | 65 s | 115 s | 136 s | 31.3 | 123k |
+| Fix memory + dead ends | 12/45 | 0.61 | 58 s | 103 s | 152 s | 33.7 | 127k |
+
+- **Accuracy:** dead ends were better on 5 tasks and worse on 7 (partial credit). On the 34 tasks where any note fired, environment calls rose 8% (1172 → 1296).
+- **The `hr.recruitment_channel_roi` harm replicated with the new wording.** After the BambooHR note, the agent ran an `api_search` loop (94 env calls) and scored 0.00. The fix-memory arm scored 0.86, after hitting the same error without a note. Across E019 and E020: 0/2 with a dead-end note, 2/2 without. The wording was not the cause; the note at that moment is.
+- **The time saving is one task, and it is not a server stall.**
+  - `hr.data_migration_validation` timed out at 1200 s in all three trials without a dead-end note (E019 baseline, E019 fix memory, E020 fix memory). With a note it finished in 73 s and 58 s.
+  - Each timeout is a single model call that runs for the full 600 s request timeout, then a retry that is cancelled at the trial cap. At temperature 0, with `max_tokens = 12000`, this is a reproducible runaway generation. E018 called these timeouts model-server stalls; that diagnosis was wrong for this task.
+- **`sales.multi_hop_lookup` (745 s):** one 600 s model call in the middle of the trial. It is the same failure mode: the trial recovered and scored the same as the fix-memory arm.
+
+Conclusion: drop dead-end notes. They are accurate, but the replicated harm outweighs the one saved timeout, and the timeout has a cleaner fix that does not involve notes. Lowering `max_tokens` (normal turns emit 40–300 tokens) would turn a 600 s runaway into a short "length" stop that the runtime already handles, in every arm. Fix memory alone remains the default.
+
+## E021 — Runaway Cap and Repeat-Only Unavailable Note (Live)
+
+Status: complete (2026-10-31). `runs/e021-runaway-cap`, 90 trials. Base commit 6ff061e plus the uncommitted diff in `provenance.txt`.
+
+Arms (same day, rotated): `fixes_e020`, which is E020's fix-memory setup (`max_tokens` 12000, no unavailable note), and `fixes`, which adds:
+- `max_tokens` 4096;
+- one retry of a cut-off reply, with the note "Your last reply was cut off: it repeated the same words…", then an empty turn instead of a crash;
+- a note when a service that already answered "no account is connected" is called again.
+
+The cap was chosen from 15,608 earlier model calls: the longest legitimate reply was 3,393 tokens. Replaying the request that hung in `hr.data_migration_validation` showed an `api_search` call whose query repeated "employee records current system" for more than 80,000 characters. With the fix, the same request returned a normal search call in 120 s.
+
+| Arm | Strict | Partial | Median time | Mean time | p90 time | Mean env calls |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|
+| fixes_e020 | 13/45 | 0.62 | 67 s | 118 s | 154 s | 36.3 |
+| fixes (cap + unavailable) | 18/45 | 0.69 | 59 s | 98 s | 120 s | 29.9 |
+
+- **Runaway fix:** `hr.data_migration_validation` timed out at 1200 s in `fixes_e020`, as in every earlier trial without a dead-end note. With the cap it finished; its longest model calls took 121–243 s.
+- **Unavailable note:** fired 6 times in 4 tasks, only on repeated calls. No sign of harm.
+- **Most of the accuracy difference is noise, not the change.**
+  - Of the 8 tasks that changed by ≥ 0.2 partial credit, none involved the runaway retry or the unavailable note. One (`operations.airtable_gmail_visitor_followup`, 0.33 → 1.00) had no note of any kind.
+  - Nothing in the change can explain these, so +5 strict should not be credited to it.
+  - Two identically configured arms can differ by several tasks on one day. The ±2 noise band used since E016 is too narrow.
+- **Correction to E019–E020:** in `fixes_e020`, which has no dead-end or unavailable notes, `hr.recruitment_channel_roi` again fell into an `api_search` loop (97 env calls, partial 0.00). The loop therefore occurs without any note, so the "replicated harm" attributed to the dead-end note was not established. Dead-end notes were neither shown harmful nor helpful.
+
+Conclusion: keep the cap, the retry and the repeat-only unavailable note. They remove the reproducible 1200 s timeout, and with it most of the gap in mean and p90 time. Accuracy judgements need more replicates than one same-day round of 45 tasks. Variants (world-model-v3.md §9) provide them.
+
 ---
 
 ## Master Empirical Research Scorecard (Milestones E007 – E016)
@@ -1137,3 +1218,6 @@ Comprehensive synthesis of the empirical World Model Harness evaluated on `opena
 | **E016 (Checklist held-out)** | Generic checklist on unseen tasks | 45 tasks × 2 rounds | 21/90 (pass^2 10/45) | **29/90** (pass^2 14/45) | +16% median time, +69% median tokens | Accuracy gain partly holds (7 tasks won, 2 lost, p ≈ 0.18); the in-sample cost saving does not. |
 | **E017 (Ledger review)** | Finish review from the entity ledger | 45 tasks × 1 round, 3 arms | 15/45 (checklist 14/45) | 14/45 | +2/−2 vs. checklist; +4 s median | Shown in 34/45 trials, acted on in 4; the only causal change was an exclusion violation. Stopped. |
 | **E018 (Fix memory)** | Error -> fix notes on failed writes | 45 tasks × 1 round | 12/45 | 12/45 | −26% calls and −20% time where notes fired; median time −7%, p90 −30% | Loops are body-less writes; a plain-words note naming the missing argument breaks them. No measurable harm. |
+| **E019 (Recovery graph)** | Fix memory plus route and dead-end notes | 45 tasks × 1 round, 3 arms | 13/45 (fix memory 13/45) | 12/45 | vs. fix memory: partial +6/−11, calls +4%, mean time −24% from one avoided timeout | E018's savings replicated. Routes add nothing; dead ends are true but "find another source" started a search loop. Fix memory alone stays. |
+| **E020 (Dead ends, reworded)** | Fix memory + fact-only dead-end notes | 45 tasks × 1 round, 2 arms | 14/45 (fix memory) | 12/45 | partial +5/−7, calls +8% where notes fired | The recruitment search loop replicated with neutral wording. The timeout dead ends avoided is a reproducible 600 s runaway generation, better handled by a `max_tokens` cap. Dropped. |
+| **E021 (Runaway cap)** | `max_tokens` 4096 + one retry on cut-off; repeat-only unavailable note | 45 tasks × 1 round, 2 arms | 13/45 (E020 setup) | 18/45 | mean time −17%, p90 −22%, calls −18% | The 1200 s timeout is fixed. Most of the accuracy gap is noise: tasks that changed had no relevant note. The recruitment loop also occurs without notes, which corrects E019–E020. |

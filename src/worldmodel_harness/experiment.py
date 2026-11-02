@@ -35,6 +35,10 @@ class TrialSettings(BaseModel):
     # memory file at this path (read only) when one is given.
     fixes: bool = False
     fix_memory: str | None = None
+    # Name a service once it has said no account is connected and is called again.
+    fix_unavailable: bool = True
+    # Overrides configs/model.toml, for comparing output limits on the same day.
+    max_tokens: int | None = Field(default=None, ge=1)
     max_turns: int = Field(default=50, ge=1)
     max_environment_calls: int | None = Field(default=None, ge=1)
     timeout_seconds: int | None = Field(default=1200, ge=1)
@@ -124,6 +128,8 @@ async def run_trial(
     if settings.advisory and note is not None:
         raise ValueError("A fixed note replaces advisory memory; pass one or the other")
     model_settings = load_settings(root)
+    if settings.max_tokens is not None:
+        model_settings = model_settings.model_copy(update={"max_tokens": settings.max_tokens})
     output_dir.mkdir(parents=True, exist_ok=True)
     row = task_row(settings.task_name)
     store = KnowledgeStore(store_path) if settings.advisory else None
@@ -147,7 +153,7 @@ async def run_trial(
         )
         if settings.fixes:
             memory = FixMemory.load(root / settings.fix_memory) if settings.fix_memory else None
-            adapter.fix_advisor = FixAdvisor(memory)
+            adapter.fix_advisor = FixAdvisor(memory, unavailable=settings.fix_unavailable)
         tools = adapter.tools()
         entities = EntityLedger()
         if settings.review:

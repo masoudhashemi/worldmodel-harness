@@ -5,9 +5,14 @@ import json
 
 from pydantic import SecretStr
 from stirrup.clients.litellm_client import LiteLLMClient
-from stirrup.core.models import AssistantMessage, TextBlock, TokenUsage
+from stirrup.core.models import AssistantMessage, TextBlock, TokenUsage, UserMessage
 
 from .config import ModelSettings
+
+RUNAWAY_NOTE = (
+    "Your last reply was cut off: it repeated the same words until the length limit. "
+    "Reply with one short tool call whose arguments do not repeat."
+)
 
 
 class BoundedClient:
@@ -216,7 +221,7 @@ class GemmaLiteLLMClient(LiteLLMClient):
             to_openai_messages,
             to_openai_tools,
         )
-        from stirrup.core.exceptions import ContextOverflowError, OutputTokenLimitError
+        from stirrup.core.exceptions import ContextOverflowError
         from stirrup.core.models import AssistantMessage, ReasoningBlock, TextBlock, TokenUsage, ToolCall
 
         max_attempts = 30
@@ -250,10 +255,14 @@ class GemmaLiteLLMClient(LiteLLMClient):
 
         choice = r["choices"][0]
         if choice.finish_reason in ("max_tokens", "length"):
-            raise OutputTokenLimitError(
-                model_slug=self.model_slug,
-                max_tokens=self._max_tokens,
-                provider_reason=choice.finish_reason,
+            # At temperature 0 Gemma can repeat one phrase inside a tool argument until the
+            # limit. Retry once with the defect named; if it repeats, return an empty turn
+            # so the agent continues instead of the trial failing.
+            if not any(getattr(m, "content", None) == RUNAWAY_NOTE for m in messages[-1:]):
+                return await self.generate([*messages, UserMessage(content=RUNAWAY_NOTE)], tools)
+            return AssistantMessage(
+                blocks=[TextBlock(text="")],
+                token_usage=TokenUsage(answer=(r.get("usage") or {}).get("completion_tokens") or 0),
             )
         msg = choice["message"]
         blocks = list(_parse_thinking_blocks(getattr(msg, "thinking_blocks", None)))
