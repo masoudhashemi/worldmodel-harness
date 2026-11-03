@@ -11,17 +11,12 @@ import urllib.parse
 from dataclasses import dataclass
 from time import perf_counter
 from typing import Any, get_type_hints
-from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, create_model
 from stirrup.core.models import Tool, ToolResult
 
-from .behavior import BehaviorLearner
-from .budget import Ledger
-from .composition import CompositionLearner
-from .knowledge import Episode, Scope, response_coverage
-from .learning import Learner
-from .store import KnowledgeStore
+from ..budget import Ledger
+from ..core.trace import Step
 
 UPSTREAM_COMMIT = "4a8e1061254004d9dac807054eed33fad7d1ff14"
 
@@ -77,9 +72,9 @@ def _split_query(kwargs: dict) -> None:
 
 
 class AutomationBenchAdapter:
-    """Runs upstream tools on a private world. With a store, every call is learned from."""
+    """Runs upstream tools on a private world."""
 
-    def __init__(self, row: dict, domain: str, ledger: Ledger, store: KnowledgeStore | None = None):
+    def __init__(self, row: dict, domain: str, ledger: Ledger):
         from automationbench.runner import compute_allowed_services, strip_none_values
         from automationbench.schema.world import WorldState
 
@@ -98,30 +93,10 @@ class AutomationBenchAdapter:
         self.task = PublicTask(
             task_id=info["task_name"], domain=domain, prompt=tuple(copy.deepcopy(row["prompt"]))
         )
-        self.scope = Scope(
-            environment="automationbench",
-            version=UPSTREAM_COMMIT,
-            tenant=self.task.task_id,
-            task_id=uuid4().hex,
-        )
         self.ledger = ledger
-        self.store = store
-        self.learner = Learner(store) if store is not None else None
-        self.episodes: list[Episode] = []
-        # Called with (arguments, raw response, success) after every api_fetch.
-        self.fetch_observers: list = []
-        # Annotates failed api_fetch results with known fixes (fixes.FixAdvisor).
-        self.fix_advisor = None
-        # Annotates api_search results with a local plan (experience.ExperienceAdvisor).
-        self.search_advisor = None
-        # Replaces repeated api_search results with a pointer (fixes.SearchRepeats).
-        self.search_repeats = None
-        # Called with (tool, arguments, raw, success) after every search and fetch; returns
-        # the result, possibly with a warning (experience.ExperienceAdvisor.warn_branch).
-        self.branch_advisor = None
-        # Called with the arguments before every api_fetch; a returned error is the result
-        # and the call is not made (experience.ExperienceAdvisor.check_write).
-        self.write_check = None
+        # Called with every tool call as a Step; returns text to add to its result
+        # (core.advisor.Advisor.after).
+        self.advisor = None
 
     def tools(self) -> list[Tool]:
         from automationbench.tools.api import API_TOOLS
@@ -167,21 +142,17 @@ class AutomationBenchAdapter:
         if "world" in inspect.signature(function).parameters:
             kwargs["world"] = self._state["world"]
         started = perf_counter()
-        stopped = self.write_check(arguments) if operation == "api_fetch" and self.write_check is not None else None
-        if stopped is not None:
-            raw, outcome = stopped, "error"
-        else:
-            try:
-                raw = function(**kwargs)
-                outcome = "success"
-            except (TimeoutError, ConnectionError):
-                # An exception does not establish whether a mutation happened.
-                raw = json.dumps({"error": "transport_failure", "outcome": "unknown"})
-                outcome = "unknown"
-            except Exception as exc:  # noqa: BLE001 -- upstream ToolEnv returns tool errors to the model
-                # Match upstream: the message is the tool result and the episode continues.
-                raw = str(exc)
-                outcome = "error"
+        try:
+            raw = function(**kwargs)
+            outcome = "success"
+        except (TimeoutError, ConnectionError):
+            # An exception does not establish whether a mutation happened.
+            raw = json.dumps({"error": "transport_failure", "outcome": "unknown"})
+            outcome = "unknown"
+        except Exception as exc:  # noqa: BLE001 -- upstream ToolEnv returns tool errors to the model
+            # Match upstream: the message is the tool result and the episode continues.
+            raw = str(exc)
+            outcome = "error"
         elapsed = perf_counter() - started
         if operation == "base64_encode":
             self.ledger.compute_seconds += elapsed
@@ -191,57 +162,9 @@ class AutomationBenchAdapter:
             response = raw
         if isinstance(response, dict) and "error" in response and outcome == "success":
             outcome = "error"
-        if self.store is not None:
-            learning_started = perf_counter()
-            self._learn(operation, arguments, response, outcome, purpose, elapsed)
-            self.ledger.compute_seconds += perf_counter() - learning_started
-        if operation == "api_fetch":
-            for observe in self.fetch_observers:
-                observe(arguments, raw, outcome == "success")
-            if self.fix_advisor is not None and stopped is None:
-                raw = self.fix_advisor.annotate(arguments, raw, outcome == "success")
-        if operation == "api_search" and self.search_advisor is not None:
-            raw = self.search_advisor.annotate_search(raw)
-        if operation == "api_search" and self.search_repeats is not None and outcome == "success":
-            raw = self.search_repeats.annotate(arguments, raw)
-        if operation in ("api_search", "api_fetch") and self.branch_advisor is not None:
-            raw = self.branch_advisor(operation, arguments, raw, outcome == "success")
+        if self.advisor is not None:
+            raw += self.advisor.after(Step(operation, arguments, raw, outcome == "success"))
         return ToolResult(content=raw, success=outcome == "success")
-
-    def _learn(self, operation, arguments, response, outcome, purpose, elapsed) -> None:
-        # The latest successful read of each URL; a repeated read would make values ambiguous.
-        latest = {
-            str(e.arguments.get("url")): e.episode_id
-            for e in self.episodes
-            if e.operation == "api_fetch" and e.outcome == "success"
-        }
-        episode = Episode(
-            task_id=self.scope.task_id,
-            scope=self.scope,
-            operation=operation,
-            arguments=arguments,
-            response=response,
-            outcome=outcome,
-            coverage=response_coverage(response),
-            pre_evidence=tuple(latest.values()),
-            purpose=purpose,
-            elapsed_seconds=elapsed,
-        )
-        self.store.append_episode(episode)
-        self.episodes.append(episode)
-        if operation == "api_search" and outcome == "success":
-            reusable = Scope(environment=self.scope.environment, version=self.scope.version)
-            for endpoint in response.get("results", []):
-                self.learner.document(
-                    episode,
-                    relation="endpoint_contract",
-                    participants=(endpoint["id"], endpoint["url"], endpoint["method"]),
-                    statement=endpoint.get("description", "API endpoint"),
-                    payload=endpoint,
-                    scope=reusable,
-                )
-        BehaviorLearner(self.learner).observe(episode)
-        CompositionLearner(self.learner).observe(episode)
 
     def score(self) -> dict[str, float]:
         from automationbench.rubric import partial_credit, task_completed_correctly

@@ -5,6 +5,7 @@ Usage: step_metrics.py <run-dir> <control-arm> <arm> [aa] [--stream]
       v1        tasks ending in ~v1 (E022: no plans are possible in round v1)
       no-note   tasks where the arm's repeat pointer never fired (E024)
       no-hint   tasks where the arm showed no source hint (E026, E027)
+      not-shown tasks where the graph arm showed nothing
 
   --stream  earlier runs of the run's own workflows are left out of the history, as the
             E022 learning stream's graph did (otherwise every step of a workflow run
@@ -24,8 +25,13 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from worldmodel_harness.experience import load, workflow
-from worldmodel_harness.lifting import Step, origin, slots
+from worldmodel_harness.automationbench.domain import HttpDomain
+from worldmodel_harness.automationbench.traces import load
+from worldmodel_harness.core.graph import workflow
+from worldmodel_harness.core.lifting import origin
+from worldmodel_harness.core.trace import Step
+
+DOMAIN = HttpDomain()
 
 LEVELS = ("F0 unseen", "F1 endpoint seen", "F2 transition seen", "F3 workflow seen")
 Z = 1.2816
@@ -55,9 +61,9 @@ class Index:
         w, previous = workflow(task), "start"
         for s in steps:
             if s.tool == "api_fetch" and s.success:
-                self.endpoints[w].add(s.action)
-                self.transitions[w].add((previous, s.action))
-                previous = s.action
+                self.endpoints[w].add(DOMAIN.action(s))
+                self.transitions[w].add((previous, DOMAIN.action(s)))
+                previous = DOMAIN.action(s)
 
     def level(self, task: str, previous: str, target: str) -> int:
         w = workflow(task)
@@ -109,21 +115,21 @@ def steps_of(task: str, path: Path, index: Index) -> list[StepRecord]:
             if call.tool == "api_search":
                 pending_searches += 1
             if call.tool == "api_fetch":
-                attempts[call.action].append(call.success)
+                attempts[DOMAIN.action(call)].append(call.success)
             if call.tool == "api_fetch" and call.success:
                 write = str(call.arguments.get("method") or "GET").upper() != "GET"
-                values = [v for _, v in slots(call.arguments)] if write else []
-                traced = [origin(v, history, query) != "Agent" for v in values]
-                rec = StepRecord(call.action, previous, done[call.action])
+                values = [v for _, v in DOMAIN.slots(call)] if write else []
+                traced = [origin(v, history, query, DOMAIN) != "Agent" for v in values]
+                rec = StepRecord(DOMAIN.action(call), previous, done[DOMAIN.action(call)])
                 rec.turns = pending_turns - 1 if first_in_turn else 0
                 rec.calls = pending_calls if first_in_turn else 0
                 rec.searches = pending_searches if first_in_turn else 0
-                rec.first_try = attempts[call.action][0]
+                rec.first_try = attempts[DOMAIN.action(call)][0]
                 rec.traced = sum(traced) / len(traced) if traced else None
-                rec.level = index.level(task, previous, call.action)
+                rec.level = index.level(task, previous, DOMAIN.action(call))
                 found.append(rec)
-                done[call.action] += 1
-                previous = call.action
+                done[DOMAIN.action(call)] += 1
+                previous = DOMAIN.action(call)
                 attempts = defaultdict(list)
                 if first_in_turn:
                     pending_turns, pending_calls, pending_searches = 0, 0, 0
@@ -165,6 +171,8 @@ def aa_tasks(rows: dict, tasks: list[str], arm: str, mode: str | None) -> list[s
         return [t for t in tasks if not rows[(t, arm)].get("source_hints")]
     if mode == "no-warning":
         return [t for t in tasks if not rows[(t, arm)].get("branch_warnings")]
+    if mode == "not-shown":
+        return [t for t in tasks if not rows[(t, arm)].get("shown")]
     return []
 
 

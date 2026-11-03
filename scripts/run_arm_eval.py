@@ -1,9 +1,11 @@
-"""Same-day comparison of arms: baseline, checklist, ledger review, fix memory.
+"""Same-day comparison of the baseline and the experience graph.
 
-The chosen arms run back to back per task, in an order rotated across tasks, for the
-given number of rounds. Results are appended to <out>/summary.json, so an interrupted
-run resumes where it stopped.
-Usage: run_arm_eval.py <out-dir> <tasks.json> [rounds] [arm,arm,...]
+The arms run back to back per task, in an order rotated across tasks, for the given
+number of rounds. The graph starts from every earlier run under runs/ (or, with
+--unseen, from earlier runs outside these tasks' workflows) and learns from each of its
+own trials as it finishes, from tool calls and results only. Results are appended to
+<out>/summary.json, so an interrupted run resumes where it stopped.
+Usage: run_arm_eval.py <out-dir> <tasks.json> [rounds] [arm,arm,...] [--unseen]
 """
 
 import asyncio
@@ -12,58 +14,38 @@ import sys
 import time
 from pathlib import Path
 
-from worldmodel_harness.checks import GENERIC_CHECKS
-from worldmodel_harness.experience import Model, load, workflow
+from worldmodel_harness.automationbench.domain import HttpDomain
+from worldmodel_harness.automationbench.traces import episode, load
+from worldmodel_harness.core.graph import Graph, workflow
 from worldmodel_harness.experiment import TrialSettings, run_trial
-from worldmodel_harness.lifting import episode
 
-FIX_MEMORY = "runs/fix-memory.json"
 ARMS = {
-    "baseline": {"note": None},
-    "checklist": {"note": GENERIC_CHECKS},
-    "checklist_review": {"note": GENERIC_CHECKS, "review": True},
-    "fixes": {"note": None, "fixes": True, "fix_memory": FIX_MEMORY},
-    # Adds route and dead-end edges to the shape fixes (the recovery graph).
-    "graph": {"note": None, "fixes": True, "fix_memory": "runs/fix-memory-graph.json"},
-    # E020's fixes arm: the old output limit and no unavailable-service note.
-    "fixes_e020": {"note": None, "fixes": True, "fix_memory": FIX_MEMORY, "fix_unavailable": False, "max_tokens": 12000},
-    # Shape fixes plus dead ends only: routes added nothing in E019.
-    "dead_end": {"note": None, "fixes": True, "fix_memory": "runs/fix-memory-dead-end.json"},
-    # Fixes plus local plans from an experience graph that learns from this arm's runs.
-    "learning": {"note": None, "fixes": True, "fix_memory": FIX_MEMORY, "experience": True},
-    # Fixes plus a pointer in place of a word-for-word repeated search (E024).
-    "repeats": {"note": None, "fixes": True, "fix_memory": FIX_MEMORY, "search_repeats": True},
-    # The pointer plus learned hints: where earlier runs found values, or calls they made
-    # that this run has not. The graph holds every earlier run and learns from this arm (E026).
-    "sources": {"note": None, "fixes": True, "fix_memory": FIX_MEMORY, "search_repeats": True, "search_sources": True},
-    # Sources plus warnings at the point of choice from branch records (E031).
-    "branch": {"note": None, "fixes": True, "fix_memory": FIX_MEMORY, "search_repeats": True, "search_sources": True, "branch_warnings": True},
-    "check": {"note": None, "fixes": True, "fix_memory": FIX_MEMORY, "search_repeats": True, "search_sources": True, "write_check": True},
+    "baseline": {},
+    "graph": {"experience": True},
 }
 
 
-def experience_graph(out: Path, tasks: list[str], rows: list[dict], arm: str) -> Model:
+def experience_graph(out: Path, tasks: list[str], rows: list[dict], arm: str, unseen: bool) -> Graph:
     """The graph at the start of the run, then the arm's own trials so far, in order (so a
-    resumed run is the same). The learning stream starts from every earlier run outside
-    these workflows; the sources arm from every earlier run."""
+    resumed run is the same)."""
     flows = {workflow(t) for t in tasks}
     others = [p for p in Path("runs").iterdir() if p.is_dir() and p.resolve() != out.resolve()]
-    graph = Model(load(others, (lambda t: workflow(t) not in flows) if arm == "learning" else (lambda t: True)))
+    graph = Graph(HttpDomain(), load(others, (lambda t: workflow(t) not in flows) if unseen else (lambda t: True)))
     for row in rows:
         if row["arm"] == arm:
             learn(graph, out, row["task"], row["round"], arm)
     return graph
 
 
-def learn(graph: Model, out: Path, task: str, rnd: int, arm: str):
-    """Add one trial of a graph arm to the graph, from its tool calls and results only."""
+def learn(graph: Graph, out: Path, task: str, rnd: int, arm: str):
+    """Add one trial to the graph, from its tool calls and results only."""
     found = episode(out / "trajectories" / task / f"{arm}-r{rnd}" / "trajectory.json", task)
     if found and found.steps:
         graph.add(found)
 
 
 def _row(task: str, arm: str, rnd: int, result: dict, seconds: float) -> dict:
-    review = result.get("review") or {}
+    shown = [e for e in result.get("experience", []) if e["shown"]]
     return {
         "task": task,
         "arm": arm,
@@ -78,30 +60,23 @@ def _row(task: str, arm: str, rnd: int, result: dict, seconds: float) -> dict:
         "environment_calls": (result.get("ledger") or {}).get("environment_calls", 0),
         "model_calls": len(result.get("model_call_costs", [])),
         "input_tokens": (result.get("token_usage") or {}).get("input"),
-        "review_shown": bool(review.get("text")),
-        "review_chars": len(review.get("text") or ""),
-        "fix_notes": sum(bool(set(e["kinds"]) - {"loop"}) for e in result.get("fixes", [])),
-        "loop_notes": sum("loop" in e["kinds"] for e in result.get("fixes", [])),
-        "plans_shown": len(result.get("experience", [])),
-        "repeat_notes": len(result.get("search_repeats", [])),
-        "source_hints": sum(e.get("hint", False) for e in result.get("search_repeats", [])),
-        "branch_warnings": sum("branch" in e for e in result.get("sources", [])),
-        "writes_stopped": sum("stopped" in e for e in result.get("sources", [])),
+        "shown": {kind: sum(e["kind"] == kind for e in shown) for kind in dict.fromkeys(e["kind"] for e in shown)},
         "error_type": result.get("error_type"),
         "duration_seconds": round(seconds, 1),
     }
 
 
 async def main():
-    out, tasks = Path(sys.argv[1]), json.loads(Path(sys.argv[2]).read_text())["tasks"]
-    rounds = int(sys.argv[3]) if len(sys.argv) > 3 else 1
+    args = [a for a in sys.argv[1:] if a != "--unseen"]
+    out, tasks = Path(args[0]), json.loads(Path(args[1]).read_text())["tasks"]
+    rounds = int(args[2]) if len(args) > 2 else 1
+    names = args[3].split(",") if len(args) > 3 else ["baseline", "graph"]
     out.mkdir(parents=True, exist_ok=True)
     summary = out / "summary.json"
     rows = json.loads(summary.read_text())["results"] if summary.exists() else []
     done = {(r["task"], r["arm"], r["round"]) for r in rows}
-    names = sys.argv[4].split(",") if len(sys.argv) > 4 else ["baseline", "checklist", "checklist_review"]
-    learner = next((n for n in names if ARMS[n].get("experience") or ARMS[n].get("search_sources")), None)
-    graph = experience_graph(out, tasks, rows, learner) if learner else None
+    learner = next((n for n in names if ARMS[n].get("experience")), None)
+    graph = experience_graph(out, tasks, rows, learner, "--unseen" in sys.argv) if learner else None
     for rnd in range(rounds):
         for index, task in enumerate(tasks):
             shift = (index + rnd) % len(names)
@@ -110,16 +85,9 @@ async def main():
                     continue
                 print(f"[{arm} r{rnd}] {task}", flush=True)
                 started = time.perf_counter()
-                options = {k: v for k, v in ARMS[arm].items() if k != "note"}
-                settings = TrialSettings(task_name=task, **options)
+                settings = TrialSettings(task_name=task, **ARMS[arm])
                 try:
-                    result = await run_trial(
-                        Path.cwd(),
-                        settings,
-                        out / "trajectories" / task / f"{arm}-r{rnd}",
-                        note=ARMS[arm]["note"],
-                        graph=graph,
-                    )
+                    result = await run_trial(Path.cwd(), settings, out / "trajectories" / task / f"{arm}-r{rnd}", graph=graph)
                 except Exception as exc:  # noqa: BLE001 -- record and continue with the next trial
                     result = {"error_type": type(exc).__name__}
                 row = _row(task, arm, rnd, result, time.perf_counter() - started)
@@ -128,8 +96,7 @@ async def main():
                     learn(graph, out, task, rnd, arm)
                 print(
                     f"  -> strict={row['strict_eval']} partial={row['partial_credit']:.2f} "
-                    f"env={row['environment_calls']} turns={row['model_calls']} review={row['review_shown']} "
-                    f"fix_notes={row['fix_notes']} loop_notes={row['loop_notes']} plans={row['plans_shown']} repeats={row['repeat_notes']} hints={row['source_hints']} warnings={row['branch_warnings']} stopped={row['writes_stopped']} "
+                    f"env={row['environment_calls']} turns={row['model_calls']} shown={row['shown']} "
                     f"time={row['duration_seconds']}s error={row['error_type']}",
                     flush=True,
                 )

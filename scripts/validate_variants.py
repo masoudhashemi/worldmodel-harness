@@ -17,7 +17,7 @@ from pathlib import Path
 
 from worldmodel_harness.automationbench import AutomationBenchAdapter, dataset, task_row
 from worldmodel_harness.budget import Ledger
-from worldmodel_harness.lifting import episode
+from worldmodel_harness.automationbench.traces import episode
 from worldmodel_harness.variants import apply, known_first_names, make_variant
 
 

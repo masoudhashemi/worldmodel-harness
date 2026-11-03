@@ -1,55 +1,28 @@
-"""Run one AutomationBench task on Stirrup, as the baseline or with advisory memory."""
+"""Run one AutomationBench task on Stirrup: the baseline, or with the experience graph."""
 
 import asyncio
 import json
 from dataclasses import asdict
 from pathlib import Path
 from time import perf_counter
-from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from stirrup.core.models import SystemMessage, TokenUsage, Tool, ToolResult, UserMessage
 
-from .advisory import build_note, detect_loop
 from .automationbench import AutomationBenchAdapter, task_row
 from .budget import Ledger
 from .config import load_api_key, load_settings
-from .experience import ExperienceAdvisor, Model
-from .fixes import FixAdvisor, FixMemory, SearchRepeats
-from .ledger import EntityLedger, observe, render
+from .core.advisor import Advisor
+from .core.graph import Graph
 from .repairing_agent import RepairingAgent
 from .runtime import build_client
-from .store import KnowledgeStore
 
 
 class TrialSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     task_name: str
-    # Baseline when False: no store, no note, nothing learned.
-    advisory: bool = False
-    # "system" appends the note to the system prompt; "user" sends it as its own
-    # message after the task, leaving the system prompt identical to the baseline's.
-    note_placement: Literal["system", "user"] = "system"
-    # Hold the first finish once with the entity-ledger review (no-op if it is empty).
-    review: bool = False
-    # Annotate failed api_fetch results with fixes: from this task, and from the
-    # memory file at this path (read only) when one is given.
-    fixes: bool = False
-    fix_memory: str | None = None
-    # Name a service once it has said no account is connected and is called again.
-    fix_unavailable: bool = True
-    # Show local plans from the experience graph passed to run_trial after api_search.
+    # With the graph passed to run_trial, its advisor adds to tool results.
     experience: bool = False
-    # Answer a word-for-word repeat of an api_search with a pointer to the first one.
-    search_repeats: bool = False
-    # With search_repeats: add where earlier runs found what this run lacks (graph needed).
-    search_sources: bool = False
-    # Warn at the point of choice when earlier runs taking the same branch usually made up
-    # a value they later wrote, naming where runs that found it took it from (graph needed).
-    branch_warnings: bool = False
-    # Stop a write whose email address is a near copy of one read, where earlier runs of
-    # the task found that slot's values in reads; say which address was read (graph needed).
-    write_check: bool = False
     # Overrides configs/model.toml, for comparing output limits on the same day.
     max_tokens: int | None = Field(default=None, ge=1)
     max_turns: int = Field(default=50, ge=1)
@@ -61,34 +34,11 @@ class Finish(BaseModel):
     summary: str
 
 
-REVIEW_FOOTER = (
-    "Fix anything that does not match the task, then call finish again. "
-    "If everything already matches, call finish again now."
-)
+class CostClient:
+    """Records the cost of every model call."""
 
-
-def _with_note(messages: list, note: str, placement: str = "system") -> list:
-    updated = list(messages)
-    if placement == "user":
-        task = next((i for i, m in enumerate(updated) if m.role == "user"), len(updated) - 1)
-        updated.insert(task + 1, UserMessage(content="### Advisory Memory\n" + note))
-        return updated
-    header = "\n\n### Advisory Memory\n"
-    if updated and updated[0].role == "system":
-        updated[0] = SystemMessage(content=updated[0].content + header + note)
-    else:
-        updated.insert(0, SystemMessage(content="### Advisory Memory\n" + note))
-    return updated
-
-
-class AdvisoryClient:
-    """Records per-call model cost; in advisory mode adds the fixed note until the agent loops."""
-
-    def __init__(self, client, note: str = "", placement: str = "system"):
+    def __init__(self, client):
         self.client = client
-        self.note = note
-        self.placement = placement
-        self.withdrawn = None
         self.model_call_costs = []
         self.last_messages = []
 
@@ -101,16 +51,11 @@ class AdvisoryClient:
         return self.client.context_window_tokens
 
     async def generate(self, messages, tools):
-        if self.note and self.withdrawn is None:
-            loop = detect_loop(messages)
-            if loop is not None:
-                self.withdrawn = {**loop, "model_call_index": len(self.model_call_costs)}
-        sent = _with_note(messages, self.note, self.placement) if self.note and self.withdrawn is None else list(messages)
         self.last_messages = list(messages)
         started = perf_counter()
         cost = {"usage_available": False}
         try:
-            response = await self.client.generate(sent, tools)
+            response = await self.client.generate(messages, tools)
             cost["token_usage"] = response.token_usage.model_dump()
             cost["usage_available"] = True
             self.last_messages.append(response)
@@ -124,135 +69,62 @@ class AdvisoryClient:
             self.model_call_costs.append(cost)
 
 
-async def run_trial(
-    root: Path,
-    settings: TrialSettings,
-    output_dir: Path,
-    store_path: Path | None = None,
-    note: str | None = None,
-    graph: Model | None = None,
-) -> dict:
-    """One task. With advisory memory the store at `store_path` is read and updated.
-
-    `note` instead supplies a fixed note built elsewhere; it is shown the same way and
-    nothing is learned during the trial. With `settings.experience`, `graph` speaks
-    through local plans; the caller decides what the graph learns afterwards.
-    """
-    if (settings.experience or settings.search_sources or settings.branch_warnings or settings.write_check) and graph is None:
-        raise ValueError("Experience plans need a graph")
-    if settings.advisory and store_path is None:
-        raise ValueError("Advisory memory needs a store")
-    if settings.advisory and note is not None:
-        raise ValueError("A fixed note replaces advisory memory; pass one or the other")
+async def run_trial(root: Path, settings: TrialSettings, output_dir: Path, graph: Graph | None = None) -> dict:
+    """One task. With `settings.experience`, the graph advises through tool results; the
+    caller decides what the graph learns afterwards."""
+    if settings.experience and graph is None:
+        raise ValueError("Experience needs a graph")
     model_settings = load_settings(root)
     if settings.max_tokens is not None:
         model_settings = model_settings.model_copy(update={"max_tokens": settings.max_tokens})
     output_dir.mkdir(parents=True, exist_ok=True)
-    row = task_row(settings.task_name)
-    store = KnowledgeStore(store_path) if settings.advisory else None
+    ledger = Ledger(max_environment_calls=settings.max_environment_calls)
+    adapter = AutomationBenchAdapter(task_row(settings.task_name), settings.task_name.split(".", 1)[0], ledger)
+    result = {"task_name": adapter.task.task_id}
+    client = CostClient(build_client(model_settings, load_api_key(root, model_settings)))
+    if settings.experience:
+        query = next(m["content"] for m in adapter.task.prompt if m["role"] == "user")
+        adapter.advisor = Advisor(graph, query)
+        result["experience"] = adapter.advisor.log
+    tools = adapter.tools()
+    finish_tool = Tool(
+        name="finish",
+        description="Finish the task and summarize the result.",
+        parameters=Finish,
+        executor=lambda _: ToolResult(content="Finished"),
+    )
+    agent = RepairingAgent(
+        repair_schemas={t.name: t.parameters for t in [*tools, finish_tool]},
+        client=client,
+        name="automationbench",
+        max_turns=settings.max_turns,
+        tools=tools,
+        finish_tool=finish_tool,
+        recover_from_context_overflow=False,
+        context_summarization_cutoff=1.0,
+    )
+    messages = [
+        SystemMessage(content=m["content"]) if m["role"] == "system" else UserMessage(content=m["content"])
+        for m in adapter.task.prompt
+    ]
     try:
-        ledger = Ledger(max_environment_calls=settings.max_environment_calls)
-        adapter = AutomationBenchAdapter(row, settings.task_name.split(".", 1)[0], ledger, store)
-        result = {"task_name": adapter.task.task_id, "scope": adapter.scope.model_dump()}
-        if note is not None:
-            result["fixed_note"] = {"note": note, "chars": len(note)}
-        note = note or ""
-        if store is not None:
-            started = perf_counter()
-            task_text = " ".join(m["content"] for m in adapter.task.prompt)
-            note, info = build_note(store, adapter.scope, task_text)
-            ledger.compute_seconds += perf_counter() - started
-            result["advisory"] = {**info, "note": note}
-        client = AdvisoryClient(
-            build_client(model_settings, load_api_key(root, model_settings)),
-            note,
-            settings.note_placement,
+        async with agent.session(output_dir=output_dir, cache_on_interrupt=False) as session:
+            async with asyncio.timeout(settings.timeout_seconds):
+                finish, history, metadata = await session.run(messages)
+        result.update(
+            finished=finish is not None,
+            token_usage=sum(metadata["token_usage"], TokenUsage()).model_dump(),
         )
-        if settings.fixes:
-            memory = FixMemory.load(root / settings.fix_memory) if settings.fix_memory else None
-            adapter.fix_advisor = FixAdvisor(memory, unavailable=settings.fix_unavailable)
-        if settings.experience:
-            query = next(m["content"] for m in adapter.task.prompt if m["role"] == "user")
-            advisor = ExperienceAdvisor(graph, query)
-            adapter.fetch_observers.append(advisor.observe)
-            adapter.search_advisor = advisor
-        sources = None
-        if settings.search_sources or settings.branch_warnings or settings.write_check:
-            query = next(m["content"] for m in adapter.task.prompt if m["role"] == "user")
-            sources = ExperienceAdvisor(graph, query)
-            adapter.fetch_observers.append(sources.observe)
-            result["sources"] = sources.log
-        if settings.branch_warnings:
-            adapter.branch_advisor = sources.warn_branch
-        if settings.write_check:
-            adapter.write_check = sources.check_write
-        if settings.search_repeats:
-            adapter.search_repeats = SearchRepeats(sources.source_hint if settings.search_sources else None)
-        tools = adapter.tools()
-        entities = EntityLedger()
-        if settings.review:
-            adapter.fetch_observers.append(lambda *call: observe(entities, *call))
-            result["review"] = None
-
-        def finish(_):
-            # Stirrup ends the run only on a successful finish; a failed one returns the review.
-            if settings.review and result["review"] is None:
-                review = render(entities)
-                result["review"] = {"text": review, "model_call_index": len(client.model_call_costs)}
-                if review:
-                    return ToolResult(content=review + "\n" + REVIEW_FOOTER, success=False)
-            return ToolResult(content="Finished")
-
-        finish_tool = Tool(
-            name="finish",
-            description="Finish the task and summarize the result.",
-            parameters=Finish,
-            executor=finish,
-        )
-        agent = RepairingAgent(
-            repair_schemas={t.name: t.parameters for t in [*tools, finish_tool]},
-            client=client,
-            name="automationbench",
-            max_turns=settings.max_turns,
-            tools=tools,
-            finish_tool=finish_tool,
-            recover_from_context_overflow=False,
-            context_summarization_cutoff=1.0,
-        )
-        messages = [
-            SystemMessage(content=m["content"]) if m["role"] == "system" else UserMessage(content=m["content"])
-            for m in adapter.task.prompt
-        ]
-        try:
-            async with agent.session(output_dir=output_dir, cache_on_interrupt=False) as session:
-                async with asyncio.timeout(settings.timeout_seconds):
-                    finish, history, metadata = await session.run(messages)
-            result.update(
-                finished=finish is not None,
-                token_usage=sum(metadata["token_usage"], TokenUsage()).model_dump(),
-            )
-            trajectory = [[m.model_dump(mode="json") for m in group] for group in history]
-        except Exception as exc:  # noqa: BLE001 -- keep SDK error details out of artifacts
-            result.update(finished=False, error_type=type(exc).__name__)
-            trajectory = [[m.model_dump(mode="json") for m in client.last_messages]]
-        (output_dir / "trajectory.json").write_text(json.dumps(trajectory, indent=2))
-        for key in ("advisory", "fixed_note"):
-            if key in result:
-                result[key]["withdrawn"] = client.withdrawn
-        if adapter.fix_advisor is not None:
-            result["fixes"] = adapter.fix_advisor.log
-        if adapter.search_advisor is not None:
-            result["experience"] = adapter.search_advisor.log
-        if adapter.search_repeats is not None:
-            result["search_repeats"] = adapter.search_repeats.log
-        result["model_call_costs"] = client.model_call_costs
-        result["outer_validation_audit"] = agent.outer_validation_audit
-        # Score only after interaction; the score is never written to the store.
-        result.update(adapter.score())
-        result["grading_details"] = adapter.grading_details()
-        result["ledger"] = asdict(ledger)
-        (output_dir / "result.json").write_text(json.dumps(result, indent=2) + "\n")
-        return result
-    finally:
-        if store is not None:
-            store.close()
+        trajectory = [[m.model_dump(mode="json") for m in group] for group in history]
+    except Exception as exc:  # noqa: BLE001 -- keep SDK error details out of artifacts
+        result.update(finished=False, error_type=type(exc).__name__)
+        trajectory = [[m.model_dump(mode="json") for m in client.last_messages]]
+    (output_dir / "trajectory.json").write_text(json.dumps(trajectory, indent=2))
+    result["model_call_costs"] = client.model_call_costs
+    result["outer_validation_audit"] = agent.outer_validation_audit
+    # Score only after interaction; the score is never given to the graph.
+    result.update(adapter.score())
+    result["grading_details"] = adapter.grading_details()
+    result["ledger"] = asdict(ledger)
+    (output_dir / "result.json").write_text(json.dumps(result, indent=2) + "\n")
+    return result

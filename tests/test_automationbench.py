@@ -7,12 +7,11 @@ pytest.importorskip("automationbench")
 
 from worldmodel_harness.automationbench import AutomationBenchAdapter, dataset, task_row
 from worldmodel_harness.budget import BudgetExceeded, Ledger
-from worldmodel_harness.store import KnowledgeStore
 
 INBOX = "https://gmail.googleapis.com/gmail/v1/users/me/messages"
 
 
-def test_baseline_adapter_exposes_upstream_tools_and_learns_nothing():
+def test_baseline_adapter_exposes_upstream_tools():
     async def scenario():
         from automationbench.tools.api import api_search
 
@@ -26,7 +25,7 @@ def test_baseline_adapter_exposes_upstream_tools_and_learns_nothing():
         assert json.loads(result.content) == json.loads(api_search("salesforce contacts", 2))
         assert adapter.ledger.environment_calls == 1
         assert adapter.ledger.by_purpose == {"discovery": 1}
-        assert adapter.episodes == []
+        assert adapter.advisor is None
         assert set(adapter.score()) == {"partial_credit", "task_completed_correctly"}
         # Task initialization never mutates the dataset's state.
         assert row == dataset("simple")[0]
@@ -76,34 +75,5 @@ def test_query_string_in_url_is_moved_into_params():
             api_fetch, {"method": "GET", "url": INBOX, "params": '{"q":"in:inbox"}'}
         )
         assert split.success and json.loads(split.content) == json.loads(explicit.content)
-
-    asyncio.run(scenario())
-
-
-def test_store_learns_contracts_output_types_and_value_flows(tmp_path):
-    async def scenario():
-        from automationbench.tools.api import api_fetch, api_search
-
-        store = KnowledgeStore(tmp_path / "knowledge.sqlite")
-        adapter = AutomationBenchAdapter(dataset("simple")[0], "simple", Ledger(), store)
-        for query in ("gmail list messages", "gmail get message"):
-            await adapter.execute(api_search, {"query": query, "top_k": 5})
-        listed = await adapter.execute(
-            api_fetch, {"method": "GET", "url": INBOX, "params": '{"q":"in:inbox"}'}
-        )
-        identifier = json.loads(listed.content)["messages"][0]["id"]
-        fetched = await adapter.execute(
-            api_fetch, {"method": "GET", "url": f"{INBOX}/{identifier}", "params": '{"format":"full"}'}
-        )
-        assert fetched.success
-        relations = {c.relation for c in store.claims()}
-        assert {"endpoint_contract", "observed_output_type", "observed_value_flow"} <= relations
-        (flow,) = [c for c in store.claims() if c.relation == "observed_value_flow"]
-        assert flow.payload["output_path"] == "messages.*.id"
-        assert flow.payload["input_path"] == "path.id"
-        # Reusable claims keep paths, never the record values.
-        assert identifier not in flow.model_dump_json()
-        assert all(c.scope.task_id is None for c in store.claims())
-        store.close()
 
     asyncio.run(scenario())

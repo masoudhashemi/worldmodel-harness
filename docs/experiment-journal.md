@@ -1446,6 +1446,24 @@ Learning minus fixes, paired by task:
 
 **Verdict: inert as built; not adopted.** The multi-hop detector finds real bad branches, but on these tasks the needed read has already been made. What is missing is record- and field-level knowledge: *which* record of a response the written value came from, and how to pick it (for example, the record whose subject matches a query term). Two cheap corrections follow: drop the "calls not made yet" hint, and leave out of value origins any slot whose value is a constant or too short to match meaningfully.
 
+## E034 — Near-Copy Write Check (Rejected, 2026-11-03)
+
+E033's near misses turned out to be copy errors in addresses Gemma base64-encodes by hand
+into Gmail `raw` messages (`ximena.rasmussen@szdfmdn.example` was sent as
+`simena.rasmussen@sxdfmdn.example`). Of the addresses Gemma wrote inside `raw`, 151 of 2,309
+were made up, and 40 of those were within 2 characters of an address it had read. In plain
+JSON fields, 13 of 954 were made up. A check before each write stopped such an address once
+and named the read one; an offline replay with earlier runs only found 57 stops, 40 of them
+on an address the grader expected, and none on a right address. The live run was stopped
+after one trial.
+
+**Rejected by the user:** it was a rule I wrote after reading failures (edit distance, email
+addresses only). It was not learned by the graph, and it would not transfer to another
+benchmark. Same verdict for earlier hand-made mechanisms: the search pointer, the stall gate
+and show-once, the loop and not-connected notes, and the hand decisions in commit `ccb366a`.
+They are all removed on branch `graph-learning`; see `docs/graph-learning-framework.md`. The
+lesson is kept in `CLAUDE.md`.
+
 ## Step-Level Rescoring of E022, E024, E026 (Offline, 2026-11-02)
 
 New criterion and method: [step-level evaluation](evaluation-steps.md) (`scripts/step_metrics.py`). Success is no task regression against A/A noise plus gains on familiar steps.
