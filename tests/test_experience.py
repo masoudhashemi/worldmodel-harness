@@ -46,11 +46,11 @@ def test_source_hint_names_the_read_that_held_written_values_and_skips_made_up_o
 
     graph = Model([mail("hr.p~v1", "a@x.com", True), mail("hr.p~v2", "made@up.com", False), mail("hr.p~v3", "z@made.com", False)])
     advisor = ExperienceAdvisor(graph, "Send the plan to the CEO")
-    hint = advisor.source_hint()
+    hint = advisor._source_hint()
     assert "the to of POST gmail.googleapis.com/gmail/{}/users/me/messages/send came from" in hint
     assert "GET https://gmail.googleapis.com/gmail/v1/users/me/messages/" in hint and "(1/1 runs)" in hint
     advisor.observe({"method": "GET", "url": inbox}, "{}", True)
-    assert "came from" not in advisor.source_hint()  # already read: no value source left
+    assert "came from" not in advisor._source_hint()  # already read: no value source left
 
 
 def test_source_gate_counts_an_episode_once_when_it_wrote_found_and_made_up_values():
@@ -75,7 +75,57 @@ def test_hinted_read_is_chained_through_the_listing_its_id_came_from():
         Step("api_fetch", {"method": "POST", "url": listing + "/send", "body": json.dumps({"raw": raw})}, "{}", True),
     ]
     advisor = ExperienceAdvisor(Model([Episode("hr.p~v1", "Send the plan", steps)]), "Send the plan")
-    hint = advisor.source_hint()
+    hint = advisor._source_hint()
     assert f"GET {listing} and then GET {listing}/<id from the first call>" in hint
     advisor.observe({"method": "GET", "url": listing}, json.dumps({"messages": [{"id": "msg_9"}]}), True)
-    assert f"GET {listing}/msg_9 (1/1 runs)" in advisor.source_hint()  # listed: the id is filled in
+    assert f"GET {listing}/msg_9 (1/1 runs)" in advisor._source_hint()  # listed: the id is filled in
+
+
+def test_source_hint_waits_for_a_stall_and_is_shown_once():
+    import base64
+
+    listing = "https://gmail.googleapis.com/gmail/v1/users/me/messages"
+    raw = base64.urlsafe_b64encode(b"To: a@x.com\r\n\r\nHi").decode()
+    steps = [
+        Step("api_fetch", {"method": "GET", "url": listing}, json.dumps({"messages": [{"id": "msg_1"}]}), True),
+        Step("api_fetch", {"method": "GET", "url": listing + "/msg_1"}, '{"body": "a@x.com"}', True),
+        Step("api_fetch", {"method": "POST", "url": listing + "/send", "body": json.dumps({"raw": raw})}, "{}", True),
+    ]
+    advisor = ExperienceAdvisor(Model([Episode("hr.p~v1", "Send the plan", steps)]), "Send the plan")
+    assert advisor.source_hint() == ""  # one repeat is not a stall
+    assert "and then GET" in advisor.source_hint()
+    assert advisor.source_hint() == ""  # the same hint is not shown again
+    advisor.observe({"method": "GET", "url": listing}, json.dumps({"messages": [{"id": "msg_9"}]}), True)
+    assert advisor.source_hint() == ""  # progress resets the stall
+    assert f"GET {listing}/msg_9" in advisor.source_hint()  # new content after progress
+
+
+def test_branch_warning_names_where_runs_that_found_the_value_took_it_from():
+    import base64
+
+    sheet = "https://sheets.googleapis.com/v4/spreadsheets/ss_1"
+    listing = "https://gmail.googleapis.com/gmail/v1/users/me/messages"
+    send = listing + "/send"
+
+    def run(task, found):
+        to = "ceo@x.com" if found else f"{task[-2:]}@made.up"
+        raw = base64.urlsafe_b64encode(f"To: {to}\r\n\r\nHi".encode()).decode()
+        steps = [Step("api_fetch", {"method": "GET", "url": sheet}, "{}", True)]
+        if found:
+            steps += [
+                Step("api_fetch", {"method": "GET", "url": listing}, json.dumps({"messages": [{"id": "msg_1"}]}), True),
+                Step("api_fetch", {"method": "GET", "url": listing + "/msg_1"}, '{"body": "CEO: ceo@x.com"}', True),
+            ]
+        else:
+            steps.append(Step("api_search", {"query": "contacts"}, "[]", True))
+        steps.append(Step("api_fetch", {"method": "POST", "url": send, "body": json.dumps({"raw": raw})}, "{}", True))
+        return Episode(task, "Send the plan to the CEO", steps)
+
+    graph = Model([run(f"hr.p~v{i}", i < 4) for i in range(8)])
+    advisor = ExperienceAdvisor(graph, "Send the plan to the CEO")
+    advisor.observe({"method": "GET", "url": sheet}, "{}", True)
+    assert advisor.warn_branch("api_fetch", {"method": "GET", "url": sheet}, "{}", True) == "{}"
+    warned = advisor.warn_branch("api_search", {"query": "contact"}, "[]", True)
+    assert "searched again at this point wrote a value found in no response they had read in 4/4 runs" in warned
+    assert f"GET {listing} and then GET {listing}/<id from the first call> (4/4 runs)" in warned
+    assert advisor.warn_branch("api_search", {"query": "contact"}, "[]", True) == "[]"  # once per state

@@ -116,6 +116,9 @@ class AutomationBenchAdapter:
         self.search_advisor = None
         # Replaces repeated api_search results with a pointer (fixes.SearchRepeats).
         self.search_repeats = None
+        # Called with (tool, arguments, raw, success) after every search and fetch; returns
+        # the result, possibly with a warning (experience.ExperienceAdvisor.warn_branch).
+        self.branch_advisor = None
 
     def tools(self) -> list[Tool]:
         from automationbench.tools.api import API_TOOLS
@@ -194,6 +197,8 @@ class AutomationBenchAdapter:
             raw = self.search_advisor.annotate_search(raw)
         if operation == "api_search" and self.search_repeats is not None and outcome == "success":
             raw = self.search_repeats.annotate(arguments, raw)
+        if operation in ("api_search", "api_fetch") and self.branch_advisor is not None:
+            raw = self.branch_advisor(operation, arguments, raw, outcome == "success")
         return ToolResult(content=raw, success=outcome == "success")
 
     def _learn(self, operation, arguments, response, outcome, purpose, elapsed) -> None:

@@ -1374,6 +1374,58 @@ Learning minus fixes, paired by task:
 
 **Verdict.** The hinted-subset gain replicated: E026 + E027 together, strict 2/27 -> 10/27 on tasks where hints fired, with fewer turns and no regression beyond the A/A band. Chaining turned a placeholder hint into one Gemma follows (headcount 2/3 -> 3/3). Two harms recur: an ignored hint shown on every repeat keeps the recruitment loop going, and a hint can shortcut the exploration that held deciding details. Next: show a hint at most once per distinct content, and stop when it has been ignored; look at whether "calls not made yet" hints should be shown only after the run has stalled.
 
+## E029 — Source Hints Shown Once, After a Stall (Live, 2026-11-02)
+
+**Change.** Each distinct hint is shown once, and only after 2 repeated searches with no successful call in between (`ExperienceAdvisor.source_hint`). Same 36 tasks, sources vs repeats, same day (`runs/e029-hint-once`, 72/72 trials, no errors).
+
+**Report ([step-level criterion](evaluation-steps.md)).**
+1. Task guardrails: strict 5 -> 7, partial 0.38 -> 0.38, turns 36.6 -> 33.8, median time 90 -> 80 s. Hint shown (n=9): strict 0 -> 3, turns 35.7 -> 31.4, paired time −10 s (6 faster, 3 slower). No hint (n=27): strict 5 -> 4, partial flat.
+2. Regression: partial drop ≥ 0.1 on 5/36 (14%) vs A/A (no hint) 2/27, 90% upper bound 17%: non-inferior.
+3. Steps (all F3): exploration turns per step 0.42 -> 0.34 (paired −0.05, n=502), searches 0.70 -> 0.56, written values found rather than invented 30% -> 45%.
+
+**Per task.**
+- `hr.headcount_planning` v1–v3: all pass strict for the second run in a row (40–44 -> 14–15 turns), now with a single hint each.
+- `hr.recruitment_channel_roi`: the loop no longer locks. In v1 Gemma followed the hint (listed Gmail messages, read one), but its own query found the budget-approval email, not the message with the talent lead's address, and the run still failed (0.75 -> 0, the third time). The hint names the read, not which record to read.
+- `finance.vendor_spend_analysis` v2, v3: 0.80/0.60 -> 0. The "calls not made yet" hint names `spreadsheets/{id}?includeGridData=true`, and Gemma re-reads it until the turn budget runs out. Over E026, E027 and E029 this hint gave vendor spend 4 wins and 3 losses.
+- Tasks with no hint moved too (`support.gorgias_quality_audit` v2, v3 0.11 -> 0.67; `hr.quarterly_termination_queue~v1` 1.00 -> 0): same-day noise between arms that behaved identically up to that point.
+
+**Verdict.** Show-once removed the lock-in: no hinted task looped longer with the hint than without. The headcount wins replicate a third time. Remaining harms: hints that name a read but not which record (recruitment), and "calls not made yet" hints, which are a coin flip and a candidate to drop (value-origin hints only).
+
+## E030 — Branch Credit Over Successful Fetches (Offline, 2026-11-02)
+
+**Question.** When runs branch at the same state (template, last two successful fetches), does the popular next call (what `Model.plan` uses) lead somewhere as often as the call with the most data-flow credit (an ancestor, any number of hops back, of a value a later write used)?
+
+**Result (`scripts/e030_branch_credit.py --reads`, 2,619 episodes, read branches only).** Popular and credited disagree in 64 of 309 branching states (21%). Half of these (30) are popularity favouring a repeat of the last call, which `plan` already merges. In the other 34 (11%), 26 tie: the same runs make both calls in a different order. The partial-credit gap (0.61 vs 0.73) comes from branches taken by 1-3 runs.
+
+**Verdict.** Not worth a new plan ranking. Branches over successful fetches cannot see the harmful choices, which are searches, failed calls and made-up values.
+
+## E031 — Slot-Level Branch Credit: Multi-Hop Detector, Value-Origin Content (Offline, 2026-11-02)
+
+**Question.** With branches of any kind (a search, a failed call, a successful fetch) and the outcome tied to one write slot (was the email recipient found or invented?), does the branch taken at a state decide the slot's outcome several hops later?
+
+**Method (`scripts/e031_slot_branch_credit.py`).** States: (template, last successful fetch). A state separates on a slot when one branch's found-rate Wilson lower bound is above another's upper bound. Part 2 replays the E022-E029 trials with leave-one-out counts. A warning fires when the run takes a branch with a bad record for a slot (upper bound < 0.35, ≥ 3 runs) while another branch has a good one (lower bound ≥ 0.35). Grader values for diagnosis only. The check recognises email values only, so "holds" counts are lower bounds.
+
+**Results.**
+- Separation exists: 35 of 718 (state, slot) combinations, in 10 workflows. The deciding branch is a median 13 steps before the write. The popular branch is the worst-recorded one in 16 of 35.
+- As a detector it is good: warnings fire in 59 of 674 live trials (32 headcount, 12 referral bonus, 9 important draft, 6 Twilio incident). 40 of those runs then invented the slot, 10 found it, 9 never wrote it.
+- As a prescriber the best-recorded branch is poor: its service holds an expected value in 1 of 42. It is a correlate of runs that went well (for example `GET slack users.list` in headcount), not where the value lives.
+- The value-origin rule for the same slot is available at all 59 warnings, and its read's service holds an expected value in 35 (59%, lower bound).
+- 46 of the 59 warned trials never stalled on a repeated search, and 30 of those invented the value silently. The current trigger (repeated-search stall) misses them.
+
+- With only earlier runs (part 3: trials in the order they ran, each judged before it is added): warnings in 54 of 685 trials, then 36 invented and 9 found; a value-origin read exists at all 54 and its service holds an expected value in 31 (57%). The result does not depend on later runs.
+
+**Verdict.** Multi-hop credit works as a learned trigger: it sees, many steps ahead, that a run is on a path that usually ends with an invented value, including the silent near misses no current correction reaches. Value origins supply the content. Candidate arm: fire at the branch point with the value-origin hint for that slot (chained, shown once). Caveats: warnings concentrate in four workflows. A correct hint can still shortcut deciding exploration (E027, `sales.five_level_conditional`).
+
+## E032 — Batching Needed, Independent Reads (Offline, 2026-11-02)
+
+**Question.** Time follows turns (E022). If the graph knows the reads a workflow needs (data-flow ancestors of a successful write in at least half of earlier runs), their dependencies (where their arguments came from) and which are ready, how many turns would batching them, or prefetching them in the harness, remove?
+
+**Method (`scripts/e032_parallel_bound.py`).** Trials in the order they ran, each judged with earlier runs of its template only. A turn is removable when every call in it is the first call of a needed read whose dependencies had succeeded before the previous turn.
+
+**Results.** E022: 0.62–0.65 removable turns per task (2.3–2.8% of turns, about 3 s); E027: 0.42–0.47 (1.2–1.3%, about 2 s). Median 0; 3–20 tasks per arm have 2 or more. Counting re-reads of an action already made gives 2.0–2.6 per task, but those are loops: batching or prefetch cannot remove them.
+
+**Verdict: no-go** (bar: about 2 turns per task). Gemma already batches the needed, independent reads that are ready. Repeated identical reads are the larger cost; a pointer for repeated identical fetches, like the E024 search pointer, is a separate lead.
+
 ## Step-Level Rescoring of E022, E024, E026 (Offline, 2026-11-02)
 
 New criterion and method: [step-level evaluation](evaluation-steps.md) (`scripts/step_metrics.py`). Success is no task regression against A/A noise plus gains on familiar steps.

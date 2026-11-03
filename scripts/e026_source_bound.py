@@ -86,7 +86,7 @@ def main():
             for step in e.steps[:n]:
                 if step.tool == "api_fetch":
                     advisor.observe(step.arguments, step.response, step.success)
-            hint = advisor.source_hint()
+            hint = advisor._source_hint()
             later = {s.action for s in e.steps[n:] if s.success}
             called = {s.action for s in advisor.steps if s.success}
             reads = [s[2] for s in graph.sources(advisor.template, called)] or [a for a, _, _ in graph.unmade(advisor.template, called)]

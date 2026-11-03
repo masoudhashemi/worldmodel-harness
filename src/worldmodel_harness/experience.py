@@ -28,6 +28,14 @@ PLAN_STEPS = 3
 VERSION = re.compile(r"v\d+(\.\d+)?")
 WRITES = ("POST", "PUT", "PATCH", "DELETE")
 SOURCE_HINTS = 2
+# A source hint waits until the run has repeated this many searches with no successful
+# fetch in between (E027: hints after one accidental repeat could only hurt).
+STALL = 2
+# A branch has a bad record for a write slot when, over at least BRANCH_RUNS earlier runs
+# that took it from this state, the upper bound of the slot's found rate is below
+# BAD_BRANCH, and another branch from the state has a lower bound of at least PLAN_THETA.
+BRANCH_RUNS = 3
+BAD_BRANCH = 0.35
 
 
 def task_of(path: Path, run: Path) -> str:
@@ -85,6 +93,9 @@ class Model:
         self.written = Counter()
         self.traced = Counter()  # ... and the episodes in which some written value was seen
         self.runs = Counter()  # template -> episodes
+        # Branches (E031): (template, state) -> (write action, slot) -> branch -> [found, made up].
+        # A state is the last successful fetch; a branch is the next action of any kind.
+        self.branches = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: [0, 0])))
         self.made = Counter()  # (template, action) -> episodes with a successful call of it
         for e in episodes:
             self.add(e)
@@ -140,6 +151,41 @@ class Model:
                     self.flows[(step.action, slot)].add(workflow(e.task))
                     for key in ((None, step.action, slot), (template, step.action, slot), (template, step.action, slot, nth)):
                         self.terms[key][term] += 1
+        self._add_branches(template, e)
+
+    def _add_branches(self, template: str, e: Episode):
+        """At the first visit of each state, the branch taken and, for every write slot
+        filled later, whether its values were found in a read or made up."""
+        outcome = {}
+        for i, step in enumerate(e.steps):
+            if step.tool == "api_fetch" and step.success and str(step.arguments.get("method", "GET")).upper() in WRITES:
+                for slot, value in slots(step.arguments):
+                    found = origin(value, e.steps[:i], e.query)
+                    if found != "Query":
+                        ok, first = outcome.get((step.action, slot), (True, i))
+                        outcome[(step.action, slot)] = (ok and found != "Agent", first)
+        state, visited = "start", set()
+        for i, step in enumerate(e.steps):
+            taken = branch_label(step)
+            if taken and state not in visited:
+                visited.add(state)
+                for key, (ok, first) in outcome.items():
+                    if first > i:
+                        self.branches[(template, state)][key][taken][0 if ok else 1] += 1
+            if step.tool == "api_fetch" and step.success:
+                state = step.action
+
+    def bad_branch(self, template: str, state: str, taken: str) -> list[tuple[str, str, int, int]]:
+        """Write slots that earlier runs taking this branch from this state usually made up,
+        while another branch did find them: (write action, slot, found, runs)."""
+        found = []
+        for (action, slot), branches in self.branches.get((template, state), {}).items():
+            f, made_up = branches.get(taken, (0, 0))
+            if f + made_up < BRANCH_RUNS or ucb(f, f + made_up) >= BAD_BRANCH:
+                continue
+            if any(b != taken and sum(v) >= BRANCH_RUNS and lcb(v[0], sum(v)) >= PLAN_THETA for b, v in branches.items()):
+                found.append((action, slot, f, f + made_up))
+        return found
 
     def shape(self, action, slot) -> str | None:
         """The literal that is part of this action's shape, if there is one."""
@@ -212,7 +258,7 @@ class Model:
             history.append(action)
         return found
 
-    def sources(self, template: str, called: set[str]) -> list[tuple[str, str, str, int, int]]:
+    def sources(self, template: str, called: set[str], only=None) -> list[tuple[str, str, str, int, int]]:
         """Reads that earlier runs of this workflow took written values from, not yet called.
 
         Each is (write action, slot, read action, episodes, episodes in which a written
@@ -223,7 +269,7 @@ class Model:
         """
         found = []
         for (t, action, slot), counts in self.origins.items():
-            if t != template:
+            if t != template or (only and (action, slot) != only):
                 continue
             total = self.traced[(t, action, slot)]
             for read, hits in counts.items():
@@ -269,6 +315,20 @@ def occurrence(steps, i) -> int:
     return sum(s.success and s.action == steps[i].action for s in steps[:i])
 
 
+def branch_label(step: Step) -> str | None:
+    """The branch a step takes: any search, a failed call, or a successful call's endpoint."""
+    if step.tool == "api_search":
+        return "search"
+    if step.tool == "api_fetch":
+        return step.action if step.success else "fail " + step.action
+    return None
+
+
+def ucb(hits: int, total: int) -> float:
+    """Wilson upper bound of hits / total."""
+    return 1 - lcb(total - hits, total)
+
+
 def lcb(hits: int, total: int) -> float:
     """Wilson lower bound of hits / total."""
     if not total:
@@ -287,6 +347,7 @@ SOURCE_HEADER = (
     "[Experience] In earlier runs of this same task, with other names and ids, values "
     "that were written came from reads this run has not made yet:"
 )
+BRANCH_HEADER = "[Experience] In earlier runs of this same task, with other names and ids:"
 UNMADE_HEADER = (
     "[Experience] Earlier runs of this same task, with other names and ids, made these "
     "calls successfully; this run has not made them yet:"
@@ -313,9 +374,14 @@ class ExperienceAdvisor:
         self.steps: list[Step] = []
         self.log: list[dict] = []
         self.last = None
+        self.stall = 0  # repeated searches since the last successful fetch
+        self.shown: set[str] = set()
+        self.state, self.visited, self.warned = "start", set(), set()
 
     def observe(self, arguments: dict, raw: str, success: bool):
         self.steps.append(Step("api_fetch", arguments, raw, success))
+        if success:
+            self.stall = 0
 
     def annotate_search(self, raw: str) -> str:
         history = [s.action for s in self.steps if s.success]
@@ -331,8 +397,55 @@ class ExperienceAdvisor:
         return "\n\n".join([raw, PLAN_HEADER + "\n" + "\n".join(lines), PLAN_FOOTER])
 
     def source_hint(self) -> str:
-        """Where earlier runs of this task found values they wrote, for reads this run
-        has not made yet; empty if the graph knows none."""
+        """Called on each repeated search. Once the run has stalled (STALL repeats with no
+        successful fetch), where earlier runs of this task found values they wrote, for
+        reads this run has not made yet. Each distinct hint is shown once: in E027 a hint
+        repeated on every search kept an ignoring run in its loop."""
+        self.stall += 1
+        if self.stall < STALL:
+            return ""
+        text = self._source_hint()
+        if not text or text in self.shown:
+            return ""
+        self.shown.add(text)
+        return text
+
+    def warn_branch(self, tool: str, arguments: dict, raw: str, success: bool) -> str:
+        """Called after every search and fetch. At the first action from a state, if earlier
+        runs that took the same branch from it usually made up a value they later wrote, say
+        so and where runs that found it took it from (E031). Each slot is warned about once."""
+        step = Step(tool, arguments, raw, success)
+        taken, text = branch_label(step), ""
+        if taken and self.state not in self.visited:
+            self.visited.add(self.state)
+            text = self._branch_text(taken)
+        if tool == "api_fetch" and success:
+            self.state = step.action
+        return raw + ("\n\n" + text if text else "")
+
+    def _branch_text(self, taken: str) -> str:
+        history = [s.action for s in self.steps if s.success]
+        lines = []
+        for action, slot, found, runs in self.graph.bad_branch(self.template, self.state, taken):
+            if (action, slot) in self.warned:
+                continue
+            reads = self.graph.sources(self.template, set(history), only=(action, slot))
+            if not reads:
+                continue
+            self.warned.add((action, slot))
+            _, _, read, hits, total = reads[0]
+            went = "searched again" if taken == "search" else f"called {taken.removeprefix('fail ')}"
+            lines.append(
+                f"- the {slot.rsplit('.', 1)[-1]} of {action}: earlier runs that {went} at this point wrote a "
+                f"value found in no response they had read in {runs - found}/{runs} runs. Runs that found it "
+                f"took it from {self._chain(read, history)} ({hits}/{total} runs)"
+            )
+        if not lines:
+            return ""
+        self.log.append({"after_fetches": len(history), "branch": taken, "warnings": lines})
+        return BRANCH_HEADER + "\n" + "\n".join(lines)
+
+    def _source_hint(self) -> str:
         history = [s.action for s in self.steps if s.success]
         lines = [
             f"- the {slot.rsplit('.', 1)[-1]} of {write} came from the response of "
