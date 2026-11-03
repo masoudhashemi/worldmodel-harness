@@ -1426,6 +1426,26 @@ Learning minus fixes, paired by task:
 
 **Verdict: no-go** (bar: about 2 turns per task). Gemma already batches the needed, independent reads that are ready. Repeated identical reads are the larger cost; a pointer for repeated identical fetches, like the E024 search pointer, is a separate lead.
 
+## E033 — Branch Warnings at the Point of Choice (Live, 2026-11-03)
+
+`runs/e033-branch-warnings`, 42 tasks (E024's 36 plus `sales.create_important_draft~v1-3` and `operations.twilio_production_incident~v1-3`), arms `sources` (E029 setup, the learner) and `branch` (the same, plus E031's warning: after the first action from a state, if earlier runs that took the same branch usually wrote a value found in no response, name the read that runs which found it took it from; chained, each slot once).
+
+| | sources | branch |
+|---|:-:|:-:|
+| strict | 15 | 13 |
+| mean partial | 0.53 | 0.46 |
+| turns | 31.2 | 30.1 |
+| median time | 72 s | 64 s |
+| tasks with a warning | — | 2 |
+
+- **The warning fired in 2 of 42 tasks** (Twilio v2 and v3). Both passed in both arms, at +2 calls. Its content was an artifact: the "type" of the Jira issue body is the constant `doc`, which a substring match "found" in a Sheets response.
+- **Why it was silent elsewhere.** Replaying the branch-arm runs against the graph: the detector flagged a bad branch in referral bonus v1 (Gmail `to`, 0/12 and 1/13 found) and in all three important-draft runs (draft id `path[2]`, 0/12). Every time, the read that runs which found the value took it from had **already been called in this run**, and a warning only names reads not yet called. The near misses are not a missing read; Gemma read the right endpoint and wrote a value that was not in it (or took the wrong record). This is the same failure as recruitment v1 in E029.
+- **Regression:** with 40 of 42 tasks unwarned, the arms are effectively A/A. Strict lost 4/15 and partial dropped on 9/42 (21%), against 9/40 on unwarned tasks. The differences come from learning order and the stall-gated source hints, which differ between arms once the learner has added its own trial.
+- **One new harm attributable to a hint, not to the warning:** `support.gorgias_quality_audit` v1 0.67 → 0.11 and v3 0.72 → 0.11. The branch arm showed the "calls not made yet" hint (create ticket, Slack, Gmail), and Gemma made those writes but skipped the Sheets rows the task also needed. Including vendor spend, that hint's record across E026–E033 is 4 wins and 5 losses.
+- **Steps (F3):** exploration turns/step 0.36 → 0.41, searches 0.56 → 0.64, and found values 32% → 52%. With 2 warned tasks, none of this is caused by the warning.
+
+**Verdict: inert as built; not adopted.** The multi-hop detector finds real bad branches, but on these tasks the needed read has already been made. What is missing is record- and field-level knowledge: *which* record of a response the written value came from, and how to pick it (for example, the record whose subject matches a query term). Two cheap corrections follow: drop the "calls not made yet" hint, and leave out of value origins any slot whose value is a constant or too short to match meaningfully.
+
 ## Step-Level Rescoring of E022, E024, E026 (Offline, 2026-11-02)
 
 New criterion and method: [step-level evaluation](evaluation-steps.md) (`scripts/step_metrics.py`). Success is no task regression against A/A noise plus gains on familiar steps.

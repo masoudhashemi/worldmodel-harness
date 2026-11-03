@@ -163,6 +163,8 @@ def aa_tasks(rows: dict, tasks: list[str], arm: str, mode: str | None) -> list[s
         return [t for t in tasks if not rows[(t, arm)].get("repeat_notes")]
     if mode == "no-hint":
         return [t for t in tasks if not rows[(t, arm)].get("source_hints")]
+    if mode == "no-warning":
+        return [t for t in tasks if not rows[(t, arm)].get("branch_warnings")]
     return []
 
 
