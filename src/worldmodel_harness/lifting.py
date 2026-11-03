@@ -153,10 +153,16 @@ def _raw_recipients(body) -> list[tuple[str, str]]:
     return found
 
 
+MIN_ORIGIN_CHARS = 4
+
+
 def origin(value: str, earlier: list[Step], query: str = "") -> str:
     """Where a written value was first seen: "Query", the latest earlier successful read
-    whose response contains it (anywhere, also inside text), or "Agent"."""
+    whose response contains it (anywhere, also inside text), or "Agent". A value shorter
+    than MIN_ORIGIN_CHARS is "Short": it matches by chance (E033: the constant "doc")."""
     needle = value.lower()
+    if len(needle.strip()) < MIN_ORIGIN_CHARS:
+        return "Short"
     if needle in query.lower():
         return "Query"
     for step in reversed(earlier):

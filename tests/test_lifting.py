@@ -77,3 +77,5 @@ def test_gmail_raw_recipients_are_slots_and_origins_come_from_reads():
     sent = Step("api_fetch", {"method": "POST", "url": "https://slack.com/api/chat.postMessage"}, '{"text": "ceo@x.com"}', True)
     assert origin("ceo@x.com", [inbox, sent]) == "GET gmail.googleapis.com/m/{}"
     assert origin("ceo@x.com", [sent]) == "Agent" and origin("ceo@x.com", [inbox], "mail ceo@x.com") == "Query"
+    # A short value such as the constant "doc" matches some response by chance.
+    assert origin("doc", [Step("api_fetch", {"method": "GET", "url": "https://x/docs"}, '{"type": "doc"}', True)]) == "Short"

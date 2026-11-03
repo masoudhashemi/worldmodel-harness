@@ -140,7 +140,7 @@ class Model:
                         if (key, found) not in seen:
                             seen.add((key, found))
                             self.origins[key][found] += 1
-                        if found != "Agent" and (key, "traced") not in seen:
+                        if found not in ("Agent", "Short") and (key, "traced") not in seen:
                             seen.add((key, "traced"))
                             self.traced[key] += 1
                 for slot, value in slots(step.arguments):
@@ -161,7 +161,7 @@ class Model:
             if step.tool == "api_fetch" and step.success and str(step.arguments.get("method", "GET")).upper() in WRITES:
                 for slot, value in slots(step.arguments):
                     found = origin(value, e.steps[:i], e.query)
-                    if found != "Query":
+                    if found not in ("Query", "Short"):
                         ok, first = outcome.get((step.action, slot), (True, i))
                         outcome[(step.action, slot)] = (ok and found != "Agent", first)
         state, visited = "start", set()
@@ -273,7 +273,7 @@ class Model:
                 continue
             total = self.traced[(t, action, slot)]
             for read, hits in counts.items():
-                if read not in ("Query", "Agent") and read not in called and lcb(hits, total) >= PLAN_THETA:
+                if read not in ("Query", "Agent", "Short") and read not in called and lcb(hits, total) >= PLAN_THETA:
                     found.append((action, slot, read, hits, total))
         found.sort(key=lambda s: -lcb(s[3], s[4]))
         unique, reads = [], set()
@@ -348,10 +348,6 @@ SOURCE_HEADER = (
     "that were written came from reads this run has not made yet:"
 )
 BRANCH_HEADER = "[Experience] In earlier runs of this same task, with other names and ids:"
-UNMADE_HEADER = (
-    "[Experience] Earlier runs of this same task, with other names and ids, made these "
-    "calls successfully; this run has not made them yet:"
-)
 PLAN_FOOTER = (
     "<...> marks a value to take from this task. Check each call against the task "
     "before you make it."
@@ -455,14 +451,6 @@ class ExperienceAdvisor:
         if lines:
             self.log.append({"after_fetches": len(history), "sources": lines})
             return SOURCE_HEADER + "\n" + "\n".join(lines)
-        # No value source left to read: the calls earlier runs made that this one has not.
-        lines = [
-            f"- {self._chain(action, history)} ({hits}/{total} runs)"
-            for action, hits, total in self.graph.unmade(self.template, set(history))
-        ]
-        if lines:
-            self.log.append({"after_fetches": len(history), "unmade": lines})
-            return UNMADE_HEADER + "\n" + "\n".join(lines)
         return ""
 
     def _chain(self, action: str, history: list[str]) -> str:
