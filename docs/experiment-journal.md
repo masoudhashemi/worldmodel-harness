@@ -1446,6 +1446,45 @@ Learning minus fixes, paired by task:
 
 **Verdict: inert as built; not adopted.** The multi-hop detector finds real bad branches, but on these tasks the needed read has already been made. What is missing is record- and field-level knowledge: *which* record of a response the written value came from, and how to pick it (for example, the record whose subject matches a query term). Two cheap corrections follow: drop the "calls not made yet" hint, and leave out of value origins any slot whose value is a constant or too short to match meaningfully.
 
+## E035 — Can the Graph Learn Which Messages to Show? (Offline, 2026-11-03)
+
+`scripts/e035_policy_offline.py`. Every message a past arm showed was found in its trajectory:
+- plans (E022, against fixes);
+- fix notes (E022, against the baseline);
+- the search pointer (E024);
+- source hints and "calls not made yet" (E026, E027, E029, against repeats).
+
+That is 930 messages over 166 (trial, kind) units. Each message's outcome is measured from
+tool calls only, against the same task's trial in the arm without that kind of message. The
+control point is the same situation (last successful action, the same call and its success,
+repeat or not), at the same occurrence. Two earlier versions were confounded:
+- matching on the state alone compared messages shown inside a loop with control points
+  outside one;
+- matching the first occurrence compared a late hint with an early control point.
+
+| Candidate self reward | rho with graded delta | reward > 0: graded (up/down) | reward < 0: graded (up/down) |
+|---|:-:|:-:|:-:|
+| progress (new successful actions − repeated calls, next 10 calls) | +0.29 | +0.180 (43/12) | −0.064 (3/6) |
+| found (written values found in a read, rest of run) | +0.06 | +0.073 (14/4) | +0.072 (17/11) |
+| shorter (fewer calls left than the control point) | +0.42 | +0.197 (44/9) | −0.110 (7/15) |
+
+Learned policy, earlier trials only. Per (query template, kind), falling back to the kind; a
+message is kept while there are fewer than 3 earlier trials or their mean reward is > 0:
+- **shorter:** keeps 163 units (graded +0.092) and suppresses 3: the recruitment source hints
+  (graded −0.25, including the v1 harm). It keeps the headcount wins.
+- **progress:** suppresses the headcount source hints, which were the wins (+0.62). Wrong.
+- **found:** suppresses mostly fix notes that helped. Wrong.
+
+Per kind: fix notes cut 7.6 calls against their control points; plans 2.3; the pointer 3.0;
+source hints add 1.4. That agrees with E018–E029.
+
+**Reading.** A reward from tool calls alone (calls left, against a matched point without the
+message) tracks graded outcomes and learns sensible decisions from earlier runs. This is
+correlational: a trial that goes badly scores low on both. "Shorter" was picked among three
+candidates by its agreement with grades. That check was made once, here, and is stated as
+such. A live policy has no paired control; it needs its own: in each situation, sometimes
+not show the candidate, and compare.
+
 ## E034 — Near-Copy Write Check (Rejected, 2026-11-03)
 
 E033's near misses turned out to be copy errors in addresses Gemma base64-encodes by hand
