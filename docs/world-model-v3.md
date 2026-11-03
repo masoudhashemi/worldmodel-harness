@@ -2,6 +2,8 @@
 
 Status: design proposal and plan (2026-10-31), branch `world-model-v2`. It follows E014–E020. The [v2 design](world-model-v2.md) and the [experiment journal](experiment-journal.md) hold the evidence. Per-paper equations are in [literature and formulation](literature-and-formulation.md).
 
+Evaluation (from 2026-11-02): [step-level, no regression](evaluation-steps.md). Arms are judged on familiar steps and on task regression against A/A noise; task accuracy is a guardrail.
+
 ## 1. The idea
 
 Organize experience as a graph so that, at a given point in a task, code knows:

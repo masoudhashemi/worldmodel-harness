@@ -1356,6 +1356,39 @@ Learning minus fixes, paired by task:
 
 **Also in this commit.** The E027 change: a hinted read that needs an id this run lacks is chained through the read the graph learned the id from (`ExperienceAdvisor._chain`, for example "GET .../messages and then GET .../messages/<id from the first call>"). E027 (live, chained hints vs repeats on the same 36 tasks) is running.
 
+## E027 — Chained Source Hints, Replicate of E026 (Live, 2026-11-02)
+
+**Change.** A hinted read that needs an id this run lacks is preceded by the read the graph learned the id from (for example, list Gmail messages, then read one). Same 36 tasks, sources vs repeats, same day (`runs/e027-chained-sources`, 72/72 trials, no errors). The repeats arm reproduced E026's repeats arm almost exactly (temperature 0), so the control adds little independent information; the sources arm differs by the chaining and by a graph that also learned from E026.
+
+**Report ([step-level criterion](evaluation-steps.md), `scripts/step_metrics.py`).**
+1. Task guardrails: strict 4 -> 8, partial 0.35 -> 0.35, turns 37.0 -> 34.5, median time 90 -> 81 s. Hint shown (n=14): strict 1 -> 5, partial 0.42 -> 0.40, turns 37.2 -> 30.7, paired time −22 s (11 faster, 3 slower). No hint (n=22): 3 -> 3, flat.
+2. Regression: partial drop ≥ 0.1 on 6/36 (17%) vs A/A (no hint) 2/22, 90% upper bound 20%: non-inferior, but close to the bound. Strict lost 2 of 4 control passes.
+3. Steps (all F3): exploration turns per step 0.51 -> 0.47 (paired −0.11, n=446), searches 0.80 -> 0.66, written values found rather than invented 33% -> 42%.
+
+**Per task.**
+- `hr.headcount_planning` v1–v3: all pass strict (partial 0.38 -> 1.00, 40–45 -> 15–20 turns). The chain fixed v3, which looped in E026.
+- `finance.vendor_spend_analysis` v2, v3: pass strict (as in E026).
+- `hr.recruitment_channel_roi`: the chained hint, shown 67 times per trial, is ignored. Gemma repeats the same two searches 33 times. v1 falls from 0.75 to 0 again: the same harm as E026, so it is systematic. Where the control escapes the loop, the hint keeps Gemma in it.
+- `sales.five_level_conditional~v2`: Gemma followed the hint, finished in 11 turns instead of 32, and wrote the wrong task. The hint skipped the exploration that held the deciding details (E015's failure mode).
+- `finance.vendor_spend_analysis~v1` (0.80 -> 0) and `hr.benefits_enrollment_review~v3` (0.27 -> 0) also regressed.
+
+**Verdict.** The hinted-subset gain replicated: E026 + E027 together, strict 2/27 -> 10/27 on tasks where hints fired, with fewer turns and no regression beyond the A/A band. Chaining turned a placeholder hint into one Gemma follows (headcount 2/3 -> 3/3). Two harms recur: an ignored hint shown on every repeat keeps the recruitment loop going, and a hint can shortcut the exploration that held deciding details. Next: show a hint at most once per distinct content, and stop when it has been ignored; look at whether "calls not made yet" hints should be shown only after the run has stalled.
+
+## Step-Level Rescoring of E022, E024, E026 (Offline, 2026-11-02)
+
+New criterion and method: [step-level evaluation](evaluation-steps.md) (`scripts/step_metrics.py`). Success is no task regression against A/A noise plus gains on familiar steps.
+
+| Run (control → arm) | Partial-drop regression: arm vs A/A (90% upper bound) | F3 exploration turns/step | F3 searches/step | F3 written values found, not invented |
+|---|:-:|:-:|:-:|:-:|
+| E022 fixes → learning (`--stream`, A/A = v1) | 10% vs 9.5% (17%) | 0.34 → 0.29 (paired −0.07, n=1244) | 0.49 → 0.43 | 49% → 50% |
+| E024 fixes → repeats (A/A = no note fired) | 14% vs 14% (30%) | 0.65 → 0.44 (paired −0.13, n=472) | 1.23 → 0.68 | 33% → 46% |
+| E026 repeats → sources (A/A = no hint shown) | 14% vs 9% (20%) | 0.47 → 0.38 (paired −0.10, n=435) | 0.73 → 0.66 | 33% → 54% |
+
+- All three are non-inferior: no regression beyond the A/A band. The band is wide (A/A n = 14–42).
+- All three cut exploration on steps their workflow had seen before (F3). E022's plans, judged "not a win" at task level, did reduce exploration on workflow-seen steps, but they made steps first seen in other workflows worse (F1: +0.36 turns/step, n=59). F0 and F2 were flat.
+- E026's learned hints raise the share of written values that were found rather than invented (33% → 54% of write arguments on F3 steps). That is the step-accuracy gain the design targets.
+- Limitation: outside the stream every step is F3, because these workflows have run since E016. E024 and E026 therefore have no in-task F0 control, only the A/A task subsets.
+
 ## E025 — Pre-Send Check Bound (Offline, 2026-11-02)
 
 **Question (handoff 6.4).** Would a check before each write, naming arguments that disagree with what the graph confidently resolves from the run's own state, catch the near misses that make up most failures?
