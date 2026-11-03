@@ -3,7 +3,9 @@
 The arms run back to back per task, in an order rotated across tasks, for the given
 number of rounds. The graph starts from every earlier run under runs/ (or, with
 --unseen, from earlier runs outside these tasks' workflows) and learns from each of its
-own trials as it finishes, from tool calls and results only. Results are appended to
+own trials as it finishes, from tool calls and results only. In the graph arm a learned
+policy decides which kinds of message each trial is shown (core/policy.py); it learns
+from the graph arm's own trials of this run. Results are appended to
 <out>/summary.json, so an interrupted run resumes where it stopped.
 Usage: run_arm_eval.py <out-dir> <tasks.json> [rounds] [arm,arm,...] [--unseen]
 """
@@ -17,6 +19,8 @@ from pathlib import Path
 from worldmodel_harness.automationbench.domain import HttpDomain
 from worldmodel_harness.automationbench.traces import episode, load
 from worldmodel_harness.core.graph import Graph, workflow
+from worldmodel_harness.core.lifting import lift_query
+from worldmodel_harness.core.policy import LearnedPolicy
 from worldmodel_harness.experiment import TrialSettings, run_trial
 
 ARMS = {
@@ -25,23 +29,28 @@ ARMS = {
 }
 
 
-def experience_graph(out: Path, tasks: list[str], rows: list[dict], arm: str, unseen: bool) -> Graph:
+def experience_graph(out: Path, tasks: list[str], rows: list[dict], arm: str, unseen: bool) -> tuple[Graph, LearnedPolicy]:
     """The graph at the start of the run, then the arm's own trials so far, in order (so a
-    resumed run is the same)."""
+    resumed run is the same), and the policy learned from those trials."""
     flows = {workflow(t) for t in tasks}
     others = [p for p in Path("runs").iterdir() if p.is_dir() and p.resolve() != out.resolve()]
     graph = Graph(HttpDomain(), load(others, (lambda t: workflow(t) not in flows) if unseen else (lambda t: True)))
+    policy = LearnedPolicy()
     for row in rows:
         if row["arm"] == arm:
-            learn(graph, out, row["task"], row["round"], arm)
-    return graph
+            learn(graph, policy, out, row["task"], row["round"], arm)
+    return graph, policy
 
 
-def learn(graph: Graph, out: Path, task: str, rnd: int, arm: str):
-    """Add one trial to the graph, from its tool calls and results only."""
-    found = episode(out / "trajectories" / task / f"{arm}-r{rnd}" / "trajectory.json", task)
+def learn(graph: Graph, policy: LearnedPolicy, out: Path, task: str, rnd: int, arm: str):
+    """Add one trial to the graph and the policy, from its tool calls and results only."""
+    folder = out / "trajectories" / task / f"{arm}-r{rnd}"
+    found = episode(folder / "trajectory.json", task)
     if found and found.steps:
         graph.add(found)
+        result = folder / "result.json"
+        log = json.loads(result.read_text()).get("experience", []) if result.exists() else []
+        policy.learn(lift_query(found.query)[0], log, len(found.steps))
 
 
 def _row(task: str, arm: str, rnd: int, result: dict, seconds: float) -> dict:
@@ -61,6 +70,7 @@ def _row(task: str, arm: str, rnd: int, result: dict, seconds: float) -> dict:
         "model_calls": len(result.get("model_call_costs", [])),
         "input_tokens": (result.get("token_usage") or {}).get("input"),
         "shown": {kind: sum(e["kind"] == kind for e in shown) for kind in dict.fromkeys(e["kind"] for e in shown)},
+        "policy": {kind: (d["show"], d["reason"]) for kind, d in (result.get("policy") or {}).items()},
         "error_type": result.get("error_type"),
         "duration_seconds": round(seconds, 1),
     }
@@ -76,7 +86,7 @@ async def main():
     rows = json.loads(summary.read_text())["results"] if summary.exists() else []
     done = {(r["task"], r["arm"], r["round"]) for r in rows}
     learner = next((n for n in names if ARMS[n].get("experience")), None)
-    graph = experience_graph(out, tasks, rows, learner, "--unseen" in sys.argv) if learner else None
+    graph, policy = experience_graph(out, tasks, rows, learner, "--unseen" in sys.argv) if learner else (None, None)
     for rnd in range(rounds):
         for index, task in enumerate(tasks):
             shift = (index + rnd) % len(names)
@@ -87,13 +97,13 @@ async def main():
                 started = time.perf_counter()
                 settings = TrialSettings(task_name=task, **ARMS[arm])
                 try:
-                    result = await run_trial(Path.cwd(), settings, out / "trajectories" / task / f"{arm}-r{rnd}", graph=graph)
+                    result = await run_trial(Path.cwd(), settings, out / "trajectories" / task / f"{arm}-r{rnd}", graph=graph, policy=policy)
                 except Exception as exc:  # noqa: BLE001 -- record and continue with the next trial
                     result = {"error_type": type(exc).__name__}
                 row = _row(task, arm, rnd, result, time.perf_counter() - started)
                 rows.append(row)
                 if arm == learner:
-                    learn(graph, out, task, rnd, arm)
+                    learn(graph, policy, out, task, rnd, arm)
                 print(
                     f"  -> strict={row['strict_eval']} partial={row['partial_credit']:.2f} "
                     f"env={row['environment_calls']} turns={row['model_calls']} shown={row['shown']} "

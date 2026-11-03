@@ -41,17 +41,17 @@ After each tool call, `Advisor.after` builds candidates of the kinds above for t
 state. A `Policy` decides which candidates to show, and every candidate is logged with
 whether it was shown and the step it followed.
 
-The current policy, `ShowNew`, is a placeholder. It shows a candidate whenever its text
-differs from the last one shown of that kind, and has no tuning. **The next step is to
-learn the policy.** For each kind of candidate and each state, measure what followed a shown
-candidate in later runs, from tool calls and results alone:
-- was the named call made;
-- were the written values found in a read rather than made up;
-- did the run stop repeating itself;
-- how many turns until the next successful call.
-
-Then show a candidate only where showing it has helped, and try it where the record is thin.
-That replaces the timing rules and drop decisions previously set by hand.
+`ShowNew` shows a candidate whenever its text has changed. It is the untuned default.
+`LearnedPolicy` (`core/policy.py`) learns which kinds to show (E035):
+- **Unit.** Within a run, each kind is shown or held back for the whole run, decided at its
+  first offer.
+- **Outcome.** The calls the run still made after that first offer. This is from tool calls
+  alone; in E035 it tracked graded outcomes, and a policy learned from it kept the headcount
+  hints and dropped the recruitment ones.
+- **Comparison.** Shown runs against held-back runs, per (query template, kind), falling back
+  to the kind.
+- **Decision.** Random while either side has fewer than 3 runs. After that, the side with fewer
+  calls left, with 10% exploration. Seeded by task and kind.
 
 ## What was removed, and why
 

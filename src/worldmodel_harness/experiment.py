@@ -14,6 +14,7 @@ from .budget import Ledger
 from .config import load_api_key, load_settings
 from .core.advisor import Advisor
 from .core.graph import Graph
+from .core.policy import LearnedPolicy
 from .repairing_agent import RepairingAgent
 from .runtime import build_client
 
@@ -69,9 +70,12 @@ class CostClient:
             self.model_call_costs.append(cost)
 
 
-async def run_trial(root: Path, settings: TrialSettings, output_dir: Path, graph: Graph | None = None) -> dict:
-    """One task. With `settings.experience`, the graph advises through tool results; the
-    caller decides what the graph learns afterwards."""
+async def run_trial(
+    root: Path, settings: TrialSettings, output_dir: Path, graph: Graph | None = None, policy: LearnedPolicy | None = None
+) -> dict:
+    """One task. With `settings.experience`, the graph advises through tool results, and
+    `policy` (if given) decides which kinds of message this run is shown; the caller
+    decides what the graph and the policy learn afterwards."""
     if settings.experience and graph is None:
         raise ValueError("Experience needs a graph")
     model_settings = load_settings(root)
@@ -84,8 +88,11 @@ async def run_trial(root: Path, settings: TrialSettings, output_dir: Path, graph
     client = CostClient(build_client(model_settings, load_api_key(root, model_settings)))
     if settings.experience:
         query = next(m["content"] for m in adapter.task.prompt if m["role"] == "user")
-        adapter.advisor = Advisor(graph, query)
+        run_policy = policy.for_run(settings.task_name) if policy is not None else None
+        adapter.advisor = Advisor(graph, query, run_policy)
         result["experience"] = adapter.advisor.log
+        if run_policy is not None:
+            result["policy"] = run_policy.decisions
     tools = adapter.tools()
     finish_tool = Tool(
         name="finish",
