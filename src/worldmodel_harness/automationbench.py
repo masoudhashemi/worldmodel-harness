@@ -119,6 +119,9 @@ class AutomationBenchAdapter:
         # Called with (tool, arguments, raw, success) after every search and fetch; returns
         # the result, possibly with a warning (experience.ExperienceAdvisor.warn_branch).
         self.branch_advisor = None
+        # Called with the arguments before every api_fetch; a returned error is the result
+        # and the call is not made (experience.ExperienceAdvisor.check_write).
+        self.write_check = None
 
     def tools(self) -> list[Tool]:
         from automationbench.tools.api import API_TOOLS
@@ -164,17 +167,21 @@ class AutomationBenchAdapter:
         if "world" in inspect.signature(function).parameters:
             kwargs["world"] = self._state["world"]
         started = perf_counter()
-        try:
-            raw = function(**kwargs)
-            outcome = "success"
-        except (TimeoutError, ConnectionError):
-            # An exception does not establish whether a mutation happened.
-            raw = json.dumps({"error": "transport_failure", "outcome": "unknown"})
-            outcome = "unknown"
-        except Exception as exc:  # noqa: BLE001 -- upstream ToolEnv returns tool errors to the model
-            # Match upstream: the message is the tool result and the episode continues.
-            raw = str(exc)
-            outcome = "error"
+        stopped = self.write_check(arguments) if operation == "api_fetch" and self.write_check is not None else None
+        if stopped is not None:
+            raw, outcome = stopped, "error"
+        else:
+            try:
+                raw = function(**kwargs)
+                outcome = "success"
+            except (TimeoutError, ConnectionError):
+                # An exception does not establish whether a mutation happened.
+                raw = json.dumps({"error": "transport_failure", "outcome": "unknown"})
+                outcome = "unknown"
+            except Exception as exc:  # noqa: BLE001 -- upstream ToolEnv returns tool errors to the model
+                # Match upstream: the message is the tool result and the episode continues.
+                raw = str(exc)
+                outcome = "error"
         elapsed = perf_counter() - started
         if operation == "base64_encode":
             self.ledger.compute_seconds += elapsed
@@ -191,7 +198,7 @@ class AutomationBenchAdapter:
         if operation == "api_fetch":
             for observe in self.fetch_observers:
                 observe(arguments, raw, outcome == "success")
-            if self.fix_advisor is not None:
+            if self.fix_advisor is not None and stopped is None:
                 raw = self.fix_advisor.annotate(arguments, raw, outcome == "success")
         if operation == "api_search" and self.search_advisor is not None:
             raw = self.search_advisor.annotate_search(raw)

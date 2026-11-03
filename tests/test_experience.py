@@ -129,3 +129,29 @@ def test_branch_warning_names_where_runs_that_found_the_value_took_it_from():
     assert "searched again at this point wrote a value found in no response they had read in 4/4 runs" in warned
     assert f"GET {listing} and then GET {listing}/<id from the first call> (4/4 runs)" in warned
     assert advisor.warn_branch("api_search", {"query": "contact"}, "[]", True) == "[]"  # once per state
+
+
+def test_write_check_stops_a_near_copy_of_a_read_address_once():
+    import base64
+
+    sheet = "https://sheets.googleapis.com/v4/spreadsheets/ss_1/values/A1:B9"
+    send = "https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
+
+    def mail(to):
+        raw = base64.urlsafe_b64encode(f"To: {to}\r\n\r\nHi".encode()).decode()
+        return {"method": "POST", "url": send, "body": json.dumps({"raw": raw})}
+
+    def run(task, address):
+        read = Step("api_fetch", {"method": "GET", "url": sheet}, json.dumps({"values": [["Ana", address]]}), True)
+        return Episode(task, "Email the referrer", [read, Step("api_fetch", mail(address), "{}", True)])
+
+    graph = Model([run(f"hr.r~v{i}", f"ref{i}@x.com") for i in range(4)])
+    advisor = ExperienceAdvisor(graph, "Email the referrer")
+    advisor.observe({"method": "GET", "url": sheet}, json.dumps({"values": [["Ximena", "ximena.r@szd.example"]]}), True)
+    assert advisor.check_write(mail("ximena.r@szd.example")) is None  # found: sent
+    stopped = advisor.check_write(mail("simena.r@sxd.example"))
+    assert "you wrote simena.r@sxd.example; the response of " + sheet + " has ximena.r@szd.example" in json.loads(stopped)["message"]
+    assert advisor.check_write(mail("simena.r@sxd.example")) is None  # sent again on purpose: let through
+    assert advisor.check_write(mail("someone@else.example")) is None  # made up, but no near copy
+    # Without runs that found this slot's values in reads, nothing is stopped.
+    assert ExperienceAdvisor(Model([]), "Email the referrer").check_write(mail("simena.r@sxd.example")) is None

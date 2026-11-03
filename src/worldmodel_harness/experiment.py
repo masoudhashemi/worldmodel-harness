@@ -47,6 +47,9 @@ class TrialSettings(BaseModel):
     # Warn at the point of choice when earlier runs taking the same branch usually made up
     # a value they later wrote, naming where runs that found it took it from (graph needed).
     branch_warnings: bool = False
+    # Stop a write whose email address is a near copy of one read, where earlier runs of
+    # the task found that slot's values in reads; say which address was read (graph needed).
+    write_check: bool = False
     # Overrides configs/model.toml, for comparing output limits on the same day.
     max_tokens: int | None = Field(default=None, ge=1)
     max_turns: int = Field(default=50, ge=1)
@@ -135,7 +138,7 @@ async def run_trial(
     nothing is learned during the trial. With `settings.experience`, `graph` speaks
     through local plans; the caller decides what the graph learns afterwards.
     """
-    if (settings.experience or settings.search_sources or settings.branch_warnings) and graph is None:
+    if (settings.experience or settings.search_sources or settings.branch_warnings or settings.write_check) and graph is None:
         raise ValueError("Experience plans need a graph")
     if settings.advisory and store_path is None:
         raise ValueError("Advisory memory needs a store")
@@ -174,13 +177,15 @@ async def run_trial(
             adapter.fetch_observers.append(advisor.observe)
             adapter.search_advisor = advisor
         sources = None
-        if settings.search_sources or settings.branch_warnings:
+        if settings.search_sources or settings.branch_warnings or settings.write_check:
             query = next(m["content"] for m in adapter.task.prompt if m["role"] == "user")
             sources = ExperienceAdvisor(graph, query)
             adapter.fetch_observers.append(sources.observe)
             result["sources"] = sources.log
         if settings.branch_warnings:
             adapter.branch_advisor = sources.warn_branch
+        if settings.write_check:
+            adapter.write_check = sources.check_write
         if settings.search_repeats:
             adapter.search_repeats = SearchRepeats(sources.source_hint if settings.search_sources else None)
         tools = adapter.tools()

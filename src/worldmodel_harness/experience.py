@@ -8,6 +8,7 @@ state) resolve sources to values. Learned only from tool calls and results, neve
 from grades.
 """
 
+import json
 import math
 import re
 from collections import Counter, defaultdict
@@ -35,6 +36,10 @@ STALL = 2
 # that took it from this state, the upper bound of the slot's found rate is below
 # BAD_BRANCH, and another branch from the state has a lower bound of at least PLAN_THETA.
 BRANCH_RUNS = 3
+# A written address within this edit distance of one the run has read is a slip in
+# copying it (E034: Gmail raw messages Gemma base64-encodes by hand).
+NEAR_COPY = 2
+EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 BAD_BRANCH = 0.35
 
 
@@ -324,6 +329,21 @@ def branch_label(step: Step) -> str | None:
     return None
 
 
+def distance(a: str, b: str, cap: int = NEAR_COPY + 1) -> int:
+    """Edit distance, counted up to cap."""
+    if abs(len(a) - len(b)) >= cap:
+        return cap
+    previous = list(range(len(b) + 1))
+    for i, x in enumerate(a, 1):
+        current = [i]
+        for j, y in enumerate(b, 1):
+            current.append(min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (x != y)))
+        if min(current) >= cap:
+            return cap
+        previous = current
+    return min(previous[-1], cap)
+
+
 def ucb(hits: int, total: int) -> float:
     """Wilson upper bound of hits / total."""
     return 1 - lcb(total - hits, total)
@@ -348,6 +368,8 @@ SOURCE_HEADER = (
     "that were written came from reads this run has not made yet:"
 )
 BRANCH_HEADER = "[Experience] In earlier runs of this same task, with other names and ids:"
+CHECK_HEADER = "Not sent. An address in this call appears in no response you have read and not in the task, but one that does is nearly the same:"
+CHECK_FOOTER = "If you meant that address, check how you wrote or encoded it and send again. If the address you wrote is right, send the same call again."
 PLAN_FOOTER = (
     "<...> marks a value to take from this task. Check each call against the task "
     "before you make it."
@@ -373,6 +395,7 @@ class ExperienceAdvisor:
         self.stall = 0  # repeated searches since the last successful fetch
         self.shown: set[str] = set()
         self.state, self.visited, self.warned = "start", set(), set()
+        self.stopped: set[str] = set()
 
     def observe(self, arguments: dict, raw: str, success: bool):
         self.steps.append(Step("api_fetch", arguments, raw, success))
@@ -452,6 +475,42 @@ class ExperienceAdvisor:
             self.log.append({"after_fetches": len(history), "sources": lines})
             return SOURCE_HEADER + "\n" + "\n".join(lines)
         return ""
+
+    def check_write(self, arguments: dict) -> str | None:
+        """Called before a write is sent. An email address found in no response or the
+        query that is a near copy of one found there is usually a slip in copying it (E034).
+        Where earlier runs of this task mostly found this slot's values in reads, return an
+        error naming the address that was read instead of sending. Each value is stopped once."""
+        if str(arguments.get("method") or "GET").upper() not in WRITES:
+            return None
+        action, read, lines = Step("api_fetch", arguments, "", True).action, None, []
+        for slot, value in slots(arguments):
+            key = (self.template, action, slot)
+            if not EMAIL.fullmatch(value) or value.lower() in self.stopped or origin(value, self.steps, self.query) != "Agent":
+                continue
+            if lcb(self.graph.traced[key], self.graph.written[key]) < PLAN_THETA:
+                continue
+            if read is None:
+                read = self._read_addresses()
+            close = sorted((d, a, where) for a, where in read.items() if 0 < (d := distance(value.lower(), a)) <= NEAR_COPY)
+            if not close or (len(close) > 1 and close[1][0] == close[0][0]):
+                continue
+            self.stopped.add(value.lower())
+            lines.append(f"- {slot.rsplit('.', 1)[-1]}: you wrote {value}; {close[0][2]} has {close[0][1]}")
+        if not lines:
+            return None
+        self.log.append({"after_fetches": sum(s.success for s in self.steps), "stopped": lines})
+        return json.dumps({"error": "not_sent", "message": "\n".join([CHECK_HEADER, *lines, CHECK_FOOTER])})
+
+    def _read_addresses(self) -> dict[str, str]:
+        """Address -> where it was seen: the task, or the latest read whose response has it."""
+        found = {a.lower(): "the task" for a in EMAIL.findall(self.query)}
+        for step in self.steps:
+            if step.success and str(step.arguments.get("method") or "GET").upper() == "GET":
+                for a in EMAIL.findall(step.response):
+                    if a.lower() not in found or found[a.lower()] != "the task":
+                        found[a.lower()] = f"the response of {step.arguments.get('url')}"
+        return found
 
     def _chain(self, action: str, history: list[str]) -> str:
         """An action as a call, preceded by the read that earlier runs took its missing

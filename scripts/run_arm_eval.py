@@ -38,6 +38,7 @@ ARMS = {
     "sources": {"note": None, "fixes": True, "fix_memory": FIX_MEMORY, "search_repeats": True, "search_sources": True},
     # Sources plus warnings at the point of choice from branch records (E031).
     "branch": {"note": None, "fixes": True, "fix_memory": FIX_MEMORY, "search_repeats": True, "search_sources": True, "branch_warnings": True},
+    "check": {"note": None, "fixes": True, "fix_memory": FIX_MEMORY, "search_repeats": True, "search_sources": True, "write_check": True},
 }
 
 
@@ -85,6 +86,7 @@ def _row(task: str, arm: str, rnd: int, result: dict, seconds: float) -> dict:
         "repeat_notes": len(result.get("search_repeats", [])),
         "source_hints": sum(e.get("hint", False) for e in result.get("search_repeats", [])),
         "branch_warnings": sum("branch" in e for e in result.get("sources", [])),
+        "writes_stopped": sum("stopped" in e for e in result.get("sources", [])),
         "error_type": result.get("error_type"),
         "duration_seconds": round(seconds, 1),
     }
@@ -127,7 +129,7 @@ async def main():
                 print(
                     f"  -> strict={row['strict_eval']} partial={row['partial_credit']:.2f} "
                     f"env={row['environment_calls']} turns={row['model_calls']} review={row['review_shown']} "
-                    f"fix_notes={row['fix_notes']} loop_notes={row['loop_notes']} plans={row['plans_shown']} repeats={row['repeat_notes']} hints={row['source_hints']} warnings={row['branch_warnings']} "
+                    f"fix_notes={row['fix_notes']} loop_notes={row['loop_notes']} plans={row['plans_shown']} repeats={row['repeat_notes']} hints={row['source_hints']} warnings={row['branch_warnings']} stopped={row['writes_stopped']} "
                     f"time={row['duration_seconds']}s error={row['error_type']}",
                     flush=True,
                 )
