@@ -155,11 +155,10 @@ def fill(term: str, bindings, earlier: list[Step], query: str, domain: Domain) -
             if len(named) == 1:
                 return named[0][name]
             continue
-        for record in listed:
-            if not anchor or record.get(key) == wanted:
-                return record[name]
-        if not anchor:
-            for value, holder in response_fields(step).items():
-                if holder == name:
-                    return value
+        found = [record[name] for record in listed if not anchor or record.get(key) == wanted]
+        if not found and not anchor:
+            found = [value for value, holder in response_fields(step).items() if holder == name]
+        if found:
+            # Several records that fit the term are ambiguous: leave the value unfilled.
+            return found[0] if len(set(found)) == 1 else None
     return None

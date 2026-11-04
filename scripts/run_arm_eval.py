@@ -116,7 +116,7 @@ async def main():
                 ran = True
                 print(f"[{arm} r{rnd}] {task}", flush=True)
                 started = time.perf_counter()
-                settings = TrialSettings(task_name=task, **ARMS[arm])
+                settings = TrialSettings(task_name=task, trial=f"r{rnd}", **ARMS[arm])
                 try:
                     result = await run_trial(Path.cwd(), settings, out / "trajectories" / task / f"{arm}-r{rnd}", graph=graph, policy=policy)
                 except Exception as exc:  # noqa: BLE001 -- record and continue with the next trial

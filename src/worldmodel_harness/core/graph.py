@@ -23,7 +23,8 @@ from .trace import Domain, Episode, Step
 Z = 1.2816  # one-sided 90%
 THETA = 0.35  # a rule is used when its lower bound reaches this
 MIN_CONST_WORKFLOWS = 2  # a literal is part of an action's shape if it fills the slot in
-MIN_CONST_SHARE = 0.8  # this many workflows and in most of the slot's uses
+MIN_CONST_SHARE = 0.8  # this many workflows, in most of them, and in most task instances
+# (surface variants) of each: a value the task's own literals determine changes with them
 BRANCH_RUNS = 3
 TOP = 3
 
@@ -71,8 +72,9 @@ class Graph:
         self.visits = Counter()
         # Argument sources: (template or None, action, slot[, nth]) -> term -> episodes.
         self.terms = defaultdict(Counter)
-        self.free = defaultdict(lambda: defaultdict(set))  # (action, slot) -> literal -> workflows
-        self.flows = defaultdict(set)  # (action, slot) -> workflows
+        self.slot_runs = Counter()  # ... -> episodes that filled the slot
+        self.free = defaultdict(lambda: defaultdict(set))  # (action, slot) -> literal -> tasks
+        self.uses = defaultdict(set)  # (action, slot) -> tasks that filled it
         self.arguments = defaultdict(Counter)  # (template, action) -> slot -> episodes
         # Value origins: (template, write action, slot) -> read action | Query | Agent -> episodes.
         self.origins = defaultdict(Counter)
@@ -122,10 +124,12 @@ class Graph:
             for slot, value in values:
                 term = source(value, bindings, e.steps[:i], e.query, self.domain)
                 if term == "Free":
-                    self.free[(action, slot)][value].add(workflow(e.task))
+                    self.free[(action, slot)][value].add(e.task)
                     term = "Agent"
-                self.flows[(action, slot)].add(workflow(e.task))
+                self.uses[(action, slot)].add(e.task)
                 for key in ((None, action, slot), (template, action, slot), (template, action, slot, nth)):
+                    if first((key, "runs")):
+                        self.slot_runs[key] += 1
                     if first((key, term)):
                         self.terms[key][term] += 1
                 if self.domain.writes(step):
@@ -245,27 +249,38 @@ class Graph:
         return None
 
     def shape_const(self, action: str, slot: str) -> str | None:
-        """The literal that is part of this action's shape across workflows, if any."""
-        everywhere = len(self.flows.get((action, slot), ()))
-        for value, flows in self.free.get((action, slot), {}).items():
-            if len(flows) >= MIN_CONST_WORKFLOWS and len(flows) >= MIN_CONST_SHARE * everywhere:
+        """The literal that is part of this action's shape, if any: it fills the slot across
+        workflows and stays the same across the task instances of each."""
+        uses = self.uses.get((action, slot), set())
+        everywhere = {workflow(t) for t in uses}
+        for value, tasks in self.free.get((action, slot), {}).items():
+            flows = {workflow(t) for t in tasks}
+            if len(flows) < MIN_CONST_WORKFLOWS or len(flows) < MIN_CONST_SHARE * len(everywhere):
+                continue
+            if all(
+                sum(workflow(t) == w for t in tasks) >= MIN_CONST_SHARE * sum(workflow(t) == w for t in uses)
+                for w in flows
+            ):
                 return f"Const({value})"
         return None
 
     def resolve(self, action, slot, resolver, template=None, nth=None):
-        """(term, value): the best-supported source of a slot that this run can fill, from
-        this call of the workflow, the workflow, then any task. `Agent` on top of the first
+        """(term, value): the best-supported confident source of a slot that this run can
+        fill, from this call of the workflow, the workflow, then any task. `Agent` on top of the first
         level that knows the slot leaves it to the agent."""
         best = None
         for key in ((template, action, slot, nth), (template, action, slot), (None, action, slot)):
-            ranked = [t for t, _ in self.terms.get(key, Counter()).most_common()]
+            counts = self.terms.get(key, Counter())
+            ranked = [t for t, _ in counts.most_common()]
             if ranked and ranked[0] == "Agent":
                 const = self.shape_const(action, slot)
                 return (const, resolver(const)) if const else (best or "Agent", None)
-            for term in ranked:
-                if term != "Agent" and (value := resolver(term)) is not None:
+            # Like every rule of the graph, a source is used only above the confidence level.
+            confident = [t for t in ranked if t != "Agent" and lcb(counts[t], self.slot_runs[key]) >= THETA]
+            for term in confident:
+                if (value := resolver(term)) is not None:
                     return term, value
-            best = best or next((t for t in ranked if t != "Agent"), None)
+            best = best or next(iter(confident), None)
         const = self.shape_const(action, slot)
         return (const, resolver(const)) if const else (best or "Agent", None)
 

@@ -45,17 +45,32 @@ whether it was shown and the step it followed.
 `LearnedPolicy` (`core/policy.py`) learns which kinds to show (E035):
 - **Unit.** Within a run, each kind is shown or held back for the whole run, decided at its
   first offer.
-- **Outcome.** The calls the run still made after that first offer, minus the calls the same
-  task's control trial (no advisor) still made after the same situation: the same last
-  successful action, the same call and result, and the same repeat flag, at the same
-  occurrence. This is from tool calls alone; in E035 it tracked graded outcomes. Raw calls left
-  across tasks mostly measured task length and made the E036 decisions flip. Offers with no
-  matched point are not learned from.
+- **Outcomes.** Both are measured from the point where the same task's control trial (no
+  advisor) was in the same situation: the same last successful action, the same call and
+  result, and the same repeat flag, at the same occurrence. Offers with no such point are
+  not learned from; there is no fallback to another occurrence.
+  - *Calls*: the calls the run still made, minus the control's. In E035 this tracked graded
+    outcomes. Raw calls left across tasks mostly measured task length and made the E036
+    decisions flip.
+  - *Writes*: the distinct successful writes the run still made, minus the control's. Fewer
+    calls are only a gain if the work is still done.
 - **Comparison.** Shown runs against held-back runs, per (query template, kind), falling back
   to the kind.
-- **Decision.** Thompson sampling: show with the probability that showing leaves fewer calls,
-  from a Student t posterior of the difference of the means. It is random (1/2) while either
-  side has fewer than 2 runs. Draws are seeded by task and kind.
+- **Decision.** Thompson sampling on calls: show with the probability that showing leaves
+  fewer calls, from a Student t posterior of the difference of the means. Held back when
+  showing makes fewer writes beyond the graph's confidence level (`Z`), the same
+  no-regression-plus-gain rule as the evaluation. Random (1/2) while either side has fewer
+  than 2 runs. Draws are seeded by task, trial (round) and kind.
+
+## Filling calls in hints
+
+- A source of an argument is used only when its lower bound reaches `THETA`, like every
+  other rule.
+- A response term that fits several records with different values is left unfilled, and
+  the hint shows a placeholder instead.
+- A literal is a constant of an action's shape only if it fills the slot across workflows
+  and stays the same across the task instances (surface variants) of each workflow. A value
+  that changes when the task's literals change is task data, not part of the API.
 
 ## What was removed, and why
 

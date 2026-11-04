@@ -156,3 +156,25 @@ def test_show_new_does_not_repeat_the_same_text():
     assert advisor.after(Step("api_search", {"query": "drive"}, "[]", True))
     assert advisor.after(Step("api_search", {"query": "drive"}, "[]", True)) == ""
     assert all(e["shown"] for e in advisor.log[:2]) and not any(e["shown"] for e in advisor.log[2:])
+
+
+def test_a_term_that_fits_several_records_is_left_unfilled():
+    term = "Resp(id) <- lookup(team)"
+    one = Step("lookup", {"team": "x"}, json.dumps({"users": [{"id": "u_2", "name": "Alice"}]}), True)
+    two = Step("lookup", {"team": "x"}, json.dumps({"users": [{"id": "u_1", "name": "Bob"}, {"id": "u_2", "name": "Alice"}]}), True)
+    assert fill(term, [], [one], "Notify Alice", ToolDomain()) == "u_2"
+    assert fill(term, [], [two], "Notify Alice", ToolDomain()) is None
+
+
+def test_constants_stay_the_same_across_the_variants_of_a_workflow():
+    def run(task, to, version):
+        return Episode(task, "Send the report", [Step("send", {"to": to, "api": version}, "ok", True)])
+
+    # Two workflows' v1 wrote the same address, but their variants renamed it; the API
+    # version is the same everywhere.
+    graph = Graph(ToolDomain(), [
+        run("a.x~v1", "old@x.com", "v3"), run("a.x~v2", "ana@y.com", "v3"),
+        run("b.y~v1", "old@x.com", "v3"), run("b.y~v2", "bo@z.com", "v3"),
+    ])
+    assert graph.shape_const("send(api,to)", "to") is None
+    assert graph.shape_const("send(api,to)", "api") == "Const(v3)"

@@ -22,6 +22,8 @@ from .runtime import build_client
 class TrialSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     task_name: str
+    # Which trial of the task this is (e.g. its round), so repeated trials draw afresh.
+    trial: str = ""
     # With the graph passed to run_trial, its advisor adds to tool results.
     experience: bool = False
     # Overrides configs/model.toml, for comparing output limits on the same day.
@@ -88,7 +90,7 @@ async def run_trial(
     client = CostClient(build_client(model_settings, load_api_key(root, model_settings)))
     if settings.experience:
         query = next(m["content"] for m in adapter.task.prompt if m["role"] == "user")
-        run_policy = policy.for_run(settings.task_name) if policy is not None else None
+        run_policy = policy.for_run(settings.task_name, settings.trial) if policy is not None else None
         adapter.advisor = Advisor(graph, query, run_policy)
         result["experience"] = adapter.advisor.log
         if run_policy is not None:
