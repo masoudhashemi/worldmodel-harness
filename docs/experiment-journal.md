@@ -1522,6 +1522,56 @@ The familiar-step gain is clear. The graph arm also made more steps in total (85
 
 **Verdict: inconclusive, and the policy's learning signal is too confounded to trust.** Familiar steps improved, as in E022–E029. Accuracy is flat, and the no-regression check is not met against the earlier A/A bands. The next step is generic machinery, not a hand rule: measure each kind's outcome against a matched control (the baseline trial of the same task, as in E035, from tool calls only), and use more rounds so that per-template comparisons exist.
 
+## E038 — Writes Guard, Confident Fills, Trimmed Episodes (Live, 2026-11-04)
+
+`runs/e038-writes-guard`, the same 51 tasks × 2 rounds as E037, baseline vs the graph arm, code `c93b769`. Changes since E037:
+- the policy also measures distinct successful writes left against the matched control, and holds a kind back when showing it makes fewer writes beyond `Z`;
+- no fallback to another occurrence when matching; the round is part of the draw's seed;
+- hints fill an argument only from a confident source, leave a term that fits several records unfilled, and treat a literal as a constant only if it stays the same across a workflow's variants;
+- episodes hold only calls that reached the environment;
+- a state's first visit lasts until its next successful call (B1); hints chain back through every call not made yet (B3).
+
+The graph starts from 3,156 trajectories of 31 earlier runs (now including E037).
+
+**Task guardrails (baseline → graph).**
+
+| | Round 0 | Round 1 | Pooled |
+|---|:-:|:-:|:-:|
+| Strict | 11 → 11 | 8 → 12 | 19 → 23 |
+| Partial | 0.37 → 0.43 | 0.33 → 0.48 | 0.35 → 0.45 |
+| Partial rise / drop ≥ 0.1 | | | 32 / 17 of 102 |
+| Partial drop ≥ 0.1 | 11/51 (22%) | 6/51 (12%) | 17/102 (17%) |
+| Turns | 33.1 → 29.4 | 33.0 → 27.8 | 33.1 → 28.6 |
+| Environment calls per trial | 50.0 → 45.0 | 48.9 → 42.5 | 49.5 → 43.7 |
+| Calls after the last successful fetch | 18.3 → 15.2 | 20.3 → 9.6 | 19.3 → 12.4 |
+| Median time | 90 → 86 s | 90 → 96 s | 90 → 93 s |
+
+- Input tokens per trial 673k → 443k (−34%). No trial ended in an error.
+- In-run A/A is unusable: only 2 graph trials were shown nothing. Against E037's in-run A/A upper bound (22%), the pooled drop rate (17%) is inside the band. It is above the earlier point estimates (7–14%), but rises outnumber drops almost 2 to 1.
+- Regressions still recur on some of the E037 tasks: twilio_production_incident v2 (both rounds), petty_cash_reconciliation v1 (both rounds) and v3, referral_bonus_processing, conference_room_booking_conflicts. Gorgias appears again (v2, v3).
+- The baseline's round 1 was low (8 strict, 0.33 partial). The arm's absolute numbers are still the best of E036–E038 (partial 0.43 and 0.48, against 0.32–0.42).
+
+**Steps (F3, workflow seen; control → arm).** Exploration turns per step 0.55 → 0.40, paired −0.31 (n=869; −0.27 and −0.36 per round), more than twice E037's −0.12. Searches per step 0.89 → 0.40. Written values found rather than made up: 49% → 54%. The arm also made 70 F0 and 31 F1 steps with no counterpart in the control. These are steps on endpoints the graph had not seen in these workflows; they were not looked into.
+
+**What the policy learned.** First offers per kind, with the final kind-level estimate (calls and writes left vs control, shown minus held back for writes).
+
+| Kind | Round 0 shown/held | Round 1 shown/held | Shown: calls | Held: calls | se | Writes (se) | n shown/held |
+|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
+| plan | 45/6 | 51/0 | −8.4 | +36.2 | 17.7 | −2.1 (2.2) | 89/6 |
+| sources | 32/13 | 39/6 | −8.5 | +2.8 | 11.9 | +3.2 (1.5) | 65/18 |
+| unmade | 21/24 | 9/36 | +1.5 | −10.7 | 10.2 | +1.3 (1.3) | 30/53 |
+| recovery | 13/11 | 11/14 | +13.8 | +2.8 | 25.7 | +3.8 (3.0) | 5/5 |
+| branch | 1/4 | 5/2 | −16.5 | +70.4 | 47.1 | +4.4 (3.5) | 4/5 |
+
+- The policy now shows plan and sources and holds unmade back, the reverse of E037 for plan and sources. In E037 it held hints filled from loose sources back; with confident-only filling, the hints shown leave fewer calls than the control.
+- The writes guard fired 5 times (4 plan in round 0, 1 sources). Sources shown also leaves more writes done (+3.2, se 1.5).
+- Plan locked in after round 0: held back in 6 runs, whose mean is driven by a few long tasks. Thompson sampling barely explores it now (difference 44.6 against se 17.7).
+- Diagnosis only (grades): the partial-credit difference against the paired baseline is higher when plan is shown (+0.12, n=96) than held (−0.14, n=6), and when sources are shown (+0.17, n=71) than held (−0.07, n=19). Unmade is about the same either way.
+
+**Verdict: the best result on this branch. Non-inferior against E037's A/A band, but this run has no A/A of its own.** Familiar steps gain clearly (paired −0.31). Accuracy rose (strict 19 → 23, partial +0.10) along with fewer calls and tokens, with the hints the policy chose to show. Two caveats: the baseline had a weak round 1, and nearly every graph trial showed something, so there is no in-run A/A. Next:
+- replicate with an A/A arm (a second baseline) to set the noise band;
+- or move on to step 4 (preconditions and effects).
+
 ## E037 — Policy Measured Against a Matched Control (Live, 2026-11-04)
 
 `runs/e037-matched-policy`, 51 tasks × 2 rounds, baseline vs the graph arm, code `436accc`. The policy measures each kind's outcome as calls left after its first offer minus the calls left in the same task's baseline trial from the matched situation, and decides by Thompson sampling. Learning happens after both arms of a task have run. This run predates the writes guard, the trimmed episodes and B1/B3 (`7a3e8d8`, `026201e`, `c93b769`).
