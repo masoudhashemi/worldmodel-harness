@@ -116,6 +116,40 @@ def test_branch_records_where_runs_went_before_made_up_values():
     assert "found in no response in 4/4 runs" in warned
 
 
+def test_the_first_visit_of_a_state_lasts_until_its_next_successful_call():
+    sheet = get(SHEET.format("ss_1"), {"values": []})
+    failed = Step("api_search", {"query": "contact"}, '{"error": "busy"}', False)
+    search = Step("api_search", {"query": "contacts"}, "[]", True)
+    graph = Graph(HTTP, [Episode("hr.p~v1", "Send the plan to the CEO", [sheet, failed, search, mail("a@made.up")])])
+    state = (lift_query("Send the plan to the CEO")[0], "GET sheets.googleapis.com/{}/spreadsheets/{}/values/{}")
+    taken = {b for branches in graph.branches[state].values() for b in branches}
+    assert taken == {"fail api_search", "api_search"}
+    advisor = Advisor(graph, "Send the plan to the CEO")
+    advisor.after(sheet)
+    advisor.after(failed)
+    assert advisor.first_visit
+    advisor.after(search)
+    advisor.after(sheet)  # back to a state visited before
+    assert not advisor.first_visit
+
+
+def test_chains_reach_back_through_every_call_not_made_yet():
+    def episode(i):
+        return Episode(f"t.m~v{i}", "Mail the team lead", [
+            Step("hello", {}, "{}", True),
+            Step("lookup", {"team": "lead"}, json.dumps({"id": f"u_{i}1"}), True),
+            Step("profile", {"user": f"u_{i}1"}, json.dumps({"email": f"p{i}@x.com"}), True),
+            Step("send", {"to": f"p{i}@x.com"}, "ok", True),
+        ])
+
+    graph = Graph(ToolDomain(), [episode(i) for i in range(3)])
+    advisor = Advisor(graph, "Mail the team lead")
+    advisor.after(Step("hello", {}, "{}", True))
+    unmade = next(e for e in advisor.log if e["kind"] == "unmade")["lines"]
+    send = next(line for line in unmade if "send" in line.split(" and then ")[-1])
+    assert [c.split("(")[0] for c in send.removeprefix("- runs made ").split(" and then ")] == ["lookup", "profile", "send"]
+
+
 def test_show_new_does_not_repeat_the_same_text():
     graph = Graph(HTTP, [run("hr.plan~v1", [{"id": "ss_2b", "name": "Hiring Plan"}], "ss_2b")])
     advisor = Advisor(graph, "Read the Hiring Plan sheet")

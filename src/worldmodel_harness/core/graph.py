@@ -6,8 +6,8 @@ responses resolve what it knows into values. Grades are never used. What it lear
 - plans: from a state, the next successful action and how many runs took it;
 - argument sources: for each slot of an action, where its value came from (lifting.source);
 - value origins: for each written slot, the read whose response held the value;
-- branches: at the first visit of a state, which next action led to written values that
-  were found in a read rather than made up;
+- branches: at the first visit of a state (until its next successful call), which calls
+  led to written values that were found in a read rather than made up;
 - recoveries: after a failed call, the next call that succeeded.
 Counts are per episode, and every rule is gated by a Wilson lower bound.
 """
@@ -157,16 +157,20 @@ class Graph:
                         key = (self.action(step), slot)
                         ok, at = outcome.get(key, (True, i))
                         outcome[key] = (ok and found != "Agent", at)
-        state, visited = "start", set()
+        # The first visit of a state lasts until the next successful call, so failed calls
+        # made from it and the call that then succeeded are all branches taken from it.
+        state, seen, first, taken_here = "start", {"start"}, True, set()
         for i, step in enumerate(e.steps):
             taken = self.branch(step)
-            if state not in visited:
-                visited.add(state)
+            if first and taken not in taken_here:
+                taken_here.add(taken)
                 for key, (ok, at) in outcome.items():
                     if at > i:
                         self.branches[(template, state)][key][taken][0 if ok else 1] += 1
             if step.success:
                 state = self.action(step)
+                first, taken_here = state not in seen, set()
+                seen.add(state)
 
     def branch(self, step: Step) -> str:
         return self.action(step) if step.success else "fail " + self.action(step)

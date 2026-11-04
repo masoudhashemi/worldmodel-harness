@@ -50,17 +50,18 @@ class Advisor:
         self.policy = policy or ShowNew()
         self.steps: list[Step] = []
         self.state = "start"
-        self.visited: set[str] = set()
+        self.visited: set[str] = {"start"}
+        self.first_visit = True
         self.log: list[dict] = []
 
     def after(self, step: Step) -> str:
         """Called with every tool call and its result; returns text to add to the result."""
-        state = self.state
-        first_visit = state not in self.visited
-        self.visited.add(state)
+        state, first_visit = self.state, self.first_visit
         self.steps.append(step)
-        if step.success:
+        if step.success:  # the first visit of a state lasts until its next successful call
             self.state = self.graph.action(step)
+            self.first_visit = self.state not in self.visited
+            self.visited.add(self.state)
         candidates = self.candidates(step, state if first_visit else None)
         shown = []
         for kind, lines in candidates:
@@ -114,15 +115,26 @@ class Advisor:
         )
 
     def _chain(self, action: str, done: list[str]) -> str:
-        """The call, preceded by the call its missing value came from in earlier runs when
-        this run has not made that one yet."""
+        """The call, preceded by the calls its missing values came from in earlier runs that
+        this run has not made yet, producers first and through every hop."""
+        parts, before = [], []
+        for a in [*self._producers(action, done, set()), action]:
+            parts.append(self._call(a, done, [(b, 0, 0) for b in before]))
+            before.append(a)
+        return " and then ".join(parts)
+
+    def _producers(self, action: str, done: list[str], seen: set[str]) -> list[str]:
+        """Calls not made yet whose responses held this action's unfilled values in earlier
+        runs, each preceded by its own producers."""
+        order, seen = [], seen | {action}
         nth = done.count(action)
         for slot in self.graph.slots_of(self.template, action):
             term, value = self._resolve(action, slot, nth)
-            first = term.partition(" <- ")[2] if term.startswith("Resp(") else ""
-            if value is None and first and first not in done and first != action:
-                return f"{self._call(first, done, [])} and then {self._call(action, done, [(first, 0, 0)])}"
-        return self._call(action, done, [])
+            producer = term.partition(" <- ")[2] if term.startswith("Resp(") else ""
+            if value is None and producer and producer not in done and producer not in seen | set(order):
+                order += [p for p in self._producers(producer, done, seen | set(order)) if p not in order]
+                order.append(producer)
+        return order
 
     def _call(self, action: str, done: list[str], before: list[tuple]) -> str:
         earlier = [a for a, _, _ in before]
@@ -138,7 +150,7 @@ def placeholder(term: str, earlier: list[str]) -> str:
     if term.startswith("Resp("):
         field = term[5:].split("|", 1)[0].split(")", 1)[0]
         held_by = term.partition(" <- ")[2]
-        if held_by in earlier:
+        if earlier and held_by == earlier[-1]:
             return f"<{field} from the call before>"
         return f"<{field} from an earlier response>"
     return "<your choice>"
