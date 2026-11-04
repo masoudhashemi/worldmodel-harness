@@ -3,9 +3,10 @@
 The arms run back to back per task, in an order rotated across tasks, for the given
 number of rounds. The graph starts from every earlier run under runs/ (or, with
 --unseen, from earlier runs outside these tasks' workflows) and learns from each of its
-own trials as it finishes, from tool calls and results only. In the graph arm a learned
-policy decides which kinds of message each trial is shown (core/policy.py); it learns
-from the graph arm's own trials of this run. Results are appended to
+own trials once both arms of a task have run, from tool calls and results only. In the
+graph arm a learned policy decides which kinds of message each trial is shown
+(core/policy.py); it learns from the graph arm's own trials of this run, each measured
+against the same task's baseline trial. Results are appended to
 <out>/summary.json, so an interrupted run resumes where it stopped.
 Usage: run_arm_eval.py <out-dir> <tasks.json> [rounds] [arm,arm,...] [--unseen]
 """
@@ -27,30 +28,37 @@ ARMS = {
     "baseline": {},
     "graph": {"experience": True},
 }
+CONTROL = "baseline"  # the arm the learned policy's outcomes are measured against
 
 
-def experience_graph(out: Path, tasks: list[str], rows: list[dict], arm: str, unseen: bool) -> tuple[Graph, LearnedPolicy]:
+def experience_graph(out: Path, tasks: list[str], rows: list[dict], arm: str, paired: bool, unseen: bool) -> tuple[Graph, LearnedPolicy]:
     """The graph at the start of the run, then the arm's own trials so far, in order (so a
     resumed run is the same), and the policy learned from those trials."""
     flows = {workflow(t) for t in tasks}
     others = [p for p in Path("runs").iterdir() if p.is_dir() and p.resolve() != out.resolve()]
     graph = Graph(HttpDomain(), load(others, (lambda t: workflow(t) not in flows) if unseen else (lambda t: True)))
-    policy = LearnedPolicy()
+    policy = LearnedPolicy(graph.domain)
+    done = {(r["task"], r["arm"], r["round"]) for r in rows}
     for row in rows:
-        if row["arm"] == arm:
+        if row["arm"] == arm and (not paired or (row["task"], CONTROL, row["round"]) in done):
             learn(graph, policy, out, row["task"], row["round"], arm)
     return graph, policy
 
 
 def learn(graph: Graph, policy: LearnedPolicy, out: Path, task: str, rnd: int, arm: str):
-    """Add one trial to the graph and the policy, from its tool calls and results only."""
+    """Add one trial to the graph, and to the policy against the task's control trial,
+    from tool calls and results only."""
     folder = out / "trajectories" / task / f"{arm}-r{rnd}"
     found = episode(folder / "trajectory.json", task)
-    if found and found.steps:
-        graph.add(found)
-        result = folder / "result.json"
-        log = json.loads(result.read_text()).get("experience", []) if result.exists() else []
-        policy.learn(lift_query(found.query)[0], log, len(found.steps))
+    if not found or not found.steps:
+        return
+    graph.add(found)
+    other = out / "trajectories" / task / f"{CONTROL}-r{rnd}" / "trajectory.json"
+    control = episode(other, task) if other.exists() else None
+    result = folder / "result.json"
+    log = json.loads(result.read_text()).get("experience", []) if result.exists() else []
+    if control:
+        policy.learn(lift_query(found.query)[0], log, found.steps, control.steps)
 
 
 def _row(task: str, arm: str, rnd: int, result: dict, seconds: float) -> dict:
@@ -86,13 +94,16 @@ async def main():
     rows = json.loads(summary.read_text())["results"] if summary.exists() else []
     done = {(r["task"], r["arm"], r["round"]) for r in rows}
     learner = next((n for n in names if ARMS[n].get("experience")), None)
-    graph, policy = experience_graph(out, tasks, rows, learner, "--unseen" in sys.argv) if learner else (None, None)
+    paired = CONTROL in names
+    graph, policy = experience_graph(out, tasks, rows, learner, paired, "--unseen" in sys.argv) if learner else (None, None)
     for rnd in range(rounds):
         for index, task in enumerate(tasks):
             shift = (index + rnd) % len(names)
+            ran = False
             for arm in names[shift:] + names[:shift]:
                 if (task, arm, rnd) in done:
                     continue
+                ran = True
                 print(f"[{arm} r{rnd}] {task}", flush=True)
                 started = time.perf_counter()
                 settings = TrialSettings(task_name=task, **ARMS[arm])
@@ -102,8 +113,6 @@ async def main():
                     result = {"error_type": type(exc).__name__}
                 row = _row(task, arm, rnd, result, time.perf_counter() - started)
                 rows.append(row)
-                if arm == learner:
-                    learn(graph, policy, out, task, rnd, arm)
                 print(
                     f"  -> strict={row['strict_eval']} partial={row['partial_credit']:.2f} "
                     f"env={row['environment_calls']} turns={row['model_calls']} shown={row['shown']} "
@@ -111,6 +120,8 @@ async def main():
                     flush=True,
                 )
                 summary.write_text(json.dumps({"results": rows}, indent=2))
+            if learner and ran:  # both arms of this task have now run
+                learn(graph, policy, out, task, rnd, learner)
 
 
 if __name__ == "__main__":

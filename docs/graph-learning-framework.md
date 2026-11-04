@@ -45,13 +45,17 @@ whether it was shown and the step it followed.
 `LearnedPolicy` (`core/policy.py`) learns which kinds to show (E035):
 - **Unit.** Within a run, each kind is shown or held back for the whole run, decided at its
   first offer.
-- **Outcome.** The calls the run still made after that first offer. This is from tool calls
-  alone; in E035 it tracked graded outcomes, and a policy learned from it kept the headcount
-  hints and dropped the recruitment ones.
+- **Outcome.** The calls the run still made after that first offer, minus the calls the same
+  task's control trial (no advisor) still made after the same situation: the same last
+  successful action, the same call and result, and the same repeat flag, at the same
+  occurrence. This is from tool calls alone; in E035 it tracked graded outcomes. Raw calls left
+  across tasks mostly measured task length and made the E036 decisions flip. Offers with no
+  matched point are not learned from.
 - **Comparison.** Shown runs against held-back runs, per (query template, kind), falling back
   to the kind.
-- **Decision.** Random while either side has fewer than 3 runs. After that, the side with fewer
-  calls left, with 10% exploration. Seeded by task and kind.
+- **Decision.** Thompson sampling: show with the probability that showing leaves fewer calls,
+  from a Student t posterior of the difference of the means. It is random (1/2) while either
+  side has fewer than 2 runs. Draws are seeded by task and kind.
 
 ## What was removed, and why
 
