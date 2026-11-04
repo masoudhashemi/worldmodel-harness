@@ -1485,6 +1485,43 @@ candidates by its agreement with grades. That check was made once, here, and is 
 such. A live policy has no paired control; it needs its own: in each situation, sometimes
 not show the candidate, and compare.
 
+## E036 — Learned Policy for Which Messages to Show (Live, 2026-11-03)
+
+`runs/e036-learned-policy`, 51 tasks × 1 round, baseline vs the graph arm with `LearnedPolicy` (`core/policy.py`). The graph starts from every earlier run. The policy learns only from the graph arm's own trials in this run (calls left after a kind's first offer, shown vs held back).
+
+**Task guardrails (baseline → graph).**
+- Strict passes: 11 → 11. Gained vendor_spend_analysis v1 and v2, and create_important_draft v2. Lost twilio_production_incident v1 and v2, and petty_cash_reconciliation v2.
+- Partial credit: 0.38 → 0.39. It rose by at least 0.1 on 12 tasks and fell by at least 0.1 on 11.
+- Turns: 32.1 → 32.1.
+- Environment calls: 47.5 → 51.2.
+- Input tokens: −15%.
+- Time: median 90 → 84 s, but mean 99 → 128 s.
+
+**Regression.** A partial drop of 0.1 or more on 11 of 51 tasks (22%). In-run A/A (trials shown nothing) has only n=6: 0 of 6, upper bound 21%. Earlier A/A references were 7–14%. **Not shown to be non-inferior.** The large swings in both directions suggest a noisy run more than a systematic harm, but this run cannot tell the two apart.
+
+**Steps (F3, workflow seen; control → arm).**
+- Exploration turns per step: 0.57 → 0.30 (paired −0.18, n=514).
+- Searches per step: 0.82 → 0.31.
+- Written values found rather than made up: 54% → 52%.
+
+The familiar-step gain is clear. The graph arm also made more steps in total (851 → 1231).
+
+**What the policy learned.** Each kind's first offers are listed below in order. S/h means shown or held back at random; + and − mean shown or held back as a learned decision. "Left" is the mean calls left after the first offer.
+
+| Kind | Offered | Shown: left | Held: left | Sequence |
+|---|:-:|:-:|:-:|---|
+| plan | 51 | 38.8 | 58.2 | hShSSSSSh---+h------------S-S-S----S----+++++h+++++ |
+| sources | 44 | 76.2 | 43.2 | hSSShSh++S------------S-S-------S---S------- |
+| unmade | 51 | 59.5 | 42.0 | ShhShS--------S----SS-++++++++++++++++++----------- |
+| branch | 7 | 94.7 | 32.5 | ShShhS- |
+| recovery | 22 | 30.9 | 43.5 | hShShhhS+++++++++h++++ |
+
+- Most decisions leave the random phase after 6–8 runs, through the kind-level fallback, since one round gives each template only one run.
+- The decisions for plan and unmade flip in long blocks. That is the signature of a comparison driven by which tasks happened to land on each side, not by the message. "Calls left" across different tasks mostly measures how hard the task is. With few runs per side, and with the learned side no longer randomised, one long task moves the mean.
+- In E035 the outcome was measured against a matched point in a control trial of the same task, which removed task difficulty. The live policy compares raw calls left across tasks, and that confound is not removed.
+
+**Verdict: inconclusive, and the policy's learning signal is too confounded to trust.** Familiar steps improved, as in E022–E029. Accuracy is flat, and the no-regression check is not met against the earlier A/A bands. The next step is generic machinery, not a hand rule: measure each kind's outcome against a matched control (the baseline trial of the same task, as in E035, from tool calls only), and use more rounds so that per-template comparisons exist.
+
 ## E034 — Near-Copy Write Check (Rejected, 2026-11-03)
 
 E033's near misses turned out to be copy errors in addresses Gemma base64-encodes by hand

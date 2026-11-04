@@ -87,6 +87,7 @@ Computed per step, then aggregated per familiarity level. Arms are paired by tas
 | E027 `runs/e027-chained-sources` | repeats → sources (chained) | done | done | non-inferior but close: 17% vs A/A (no-hint) 9%, upper bound 20% | F3: turns/step 0.51 → 0.47 (paired −0.11, n=446), searches 0.80 → 0.66, found values 33% → 42%; recruitment v1 harm replicated |
 | E029 `runs/e029-hint-once` | repeats → sources (once, after a stall) | done | done | non-inferior: 14% vs A/A (no-hint) 7%, upper bound 17% | F3: turns/step 0.42 → 0.34 (paired −0.05, n=502), searches 0.70 → 0.56, found values 30% → 45%; headcount 3/3 again |
 | E033 `runs/e033-branch-warnings` | sources → branch (warnings at the point of choice) | done | done | effectively A/A (2/42 warned): 21% vs A/A (no-warning) 9/40, upper bound 32% | Inert: the warning is suppressed because the value-origin read was already called; gorgias harm from the "calls not made yet" hint |
+| E036 `runs/e036-learned-policy` | baseline → graph (learned policy) | done | done | not shown: 11/51 (22%) vs A/A (not-shown) 0/6, upper bound 21%; earlier A/A 7–14% | F3: turns/step 0.57 → 0.30 (paired −0.18, n=514), searches 0.82 → 0.31; strict 11 → 11; mean time +29%; policy decisions flip, confounded by task difficulty |
 | A/A reference | E022 v1, no-note and no-hint subsets | — | — | done per run | Small n (14–42); a dedicated A/A run would tighten the band |
 
 ## 9. Open decisions
