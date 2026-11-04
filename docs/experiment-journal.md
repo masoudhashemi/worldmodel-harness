@@ -1522,6 +1522,41 @@ The familiar-step gain is clear. The graph arm also made more steps in total (85
 
 **Verdict: inconclusive, and the policy's learning signal is too confounded to trust.** Familiar steps improved, as in E022–E029. Accuracy is flat, and the no-regression check is not met against the earlier A/A bands. The next step is generic machinery, not a hand rule: measure each kind's outcome against a matched control (the baseline trial of the same task, as in E035, from tool calls only), and use more rounds so that per-template comparisons exist.
 
+## E037 — Policy Measured Against a Matched Control (Live, 2026-11-04)
+
+`runs/e037-matched-policy`, 51 tasks × 2 rounds, baseline vs the graph arm, code `436accc`. The policy measures each kind's outcome as calls left after its first offer minus the calls left in the same task's baseline trial from the matched situation, and decides by Thompson sampling. Learning happens after both arms of a task have run. This run predates the writes guard, the trimmed episodes and B1/B3 (`7a3e8d8`, `026201e`, `c93b769`).
+
+**Task guardrails (baseline → graph).**
+
+| | Round 0 | Round 1 | Pooled |
+|---|:-:|:-:|:-:|
+| Strict | 11 → 11 | 10 → 8 | 21 → 19 |
+| Partial | 0.38 → 0.42 | 0.41 → 0.32 | 0.39 → 0.37 |
+| Partial drop ≥ 0.1 | 10/51 (20%) | 14/51 (27%) | 24/102 (24%) |
+| A/A (not shown) drops, 90% upper bound | 1/8, 34% | 1/12, 24% | 2/20, 22% |
+| Environment calls per trial | 46.4 → 49.3 | 50.2 → 47.3 | 48.3 → 48.3 |
+| Calls after the last successful fetch | 12.8 → 17.3 | 15.7 → 14.0 | 14.3 → 15.7 |
+
+One graph trial ended in an error and counts as a failure. The regressions repeat on the same tasks in both rounds: twilio_production_incident v2 and v3, conference_room_booking_conflicts v2, referral_bonus_processing v1, petty_cash_reconciliation v1, headcount_planning v2, benefits_enrollment_review v3.
+
+**Steps (F3, workflow seen; control → arm).** Exploration turns per step 0.59 → 0.36 (paired −0.12, n=1036), searches per step 0.90 → 0.44. Written values found rather than made up: 50% → 50%. The gain holds in both rounds (paired −0.14 and −0.11).
+
+**What the policy learned.** First offers per kind, with the final kind-level estimate (mean calls left vs control; negative is fewer).
+
+| Kind | Round 0 shown/held | Round 1 shown/held | Shown: left | Held: left | se | n shown/held |
+|---|:-:|:-:|:-:|:-:|:-:|:-:|
+| plan | 22/29 | 27/24 | +1.9 | −2.6 | 9.0 | 47/48 |
+| sources | 11/34 | 3/42 | +12.3 | −2.5 | 14.1 | 13/70 |
+| unmade | 19/32 | 13/38 | +5.3 | −3.2 | 9.6 | 31/64 |
+| recovery | 10/19 | 4/18 | +16.0 | +8.4 | 14.0 | 3/16 |
+| branch | 2/4 | 4/3 | −15.3 | +26.8 | 59.7 | 3/5 |
+
+- Against a matched control, the decisions no longer flip in blocks. Every kind except branch moves toward being held back, but no difference is beyond one standard error.
+- Diagnosis only (grades): the partial-credit difference against the paired baseline is about the same whether a kind was shown or held (plan −0.01 vs −0.04, sources −0.04 vs −0.02, unmade −0.02 vs −0.03). No single kind explains the round-1 drops.
+- Calls after the last successful fetch rose in round 0, when more kinds were shown. A message that leaves the agent with fewer calls might also leave writes undone; this run had no writes outcome to tell those apart.
+
+**Verdict: not shown to be non-inferior.** The familiar-step gain replicates. The pooled drop rate (24%) is just above the A/A upper bound (22%), driven by round 1, and the same tasks regress in both rounds, which looks more like systematic harm on a few workflows than noise. The policy learns to hold most hints back, which should move the arm toward the baseline over rounds. E038 tests the code with the writes guard, confident-only hint filling, and the trimmed episodes.
+
 ## E034 — Near-Copy Write Check (Rejected, 2026-11-03)
 
 E033's near misses turned out to be copy errors in addresses Gemma base64-encodes by hand
