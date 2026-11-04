@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from worldmodel_harness.automationbench.domain import HttpDomain
-from worldmodel_harness.automationbench.traces import load
+from worldmodel_harness.automationbench.traces import ADDED, load
 from worldmodel_harness.core.graph import workflow
 from worldmodel_harness.core.lifting import origin
 from worldmodel_harness.core.trace import Step
@@ -96,7 +96,9 @@ def turns_of(path: Path) -> tuple[str, list[list[Step]]]:
             except ValueError:
                 arguments = {}
             r = results.get(b.get("tool_call_id"), {})
-            content = str(r.get("content", "")).split("\n\n[", 1)[0]
+            content = str(r.get("content", ""))
+            for marker in ADDED:
+                content = content.split(marker, 1)[0]
             calls.append(Step(b["name"], arguments if isinstance(arguments, dict) else {}, content, str(r.get("success")) == "True"))
         if calls:
             turns.append(calls)

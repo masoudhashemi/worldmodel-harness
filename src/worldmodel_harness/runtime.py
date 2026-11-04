@@ -144,7 +144,7 @@ def parse_gemma_calls(text: str) -> tuple[str, list[tuple[str, dict]]]:
                     elif k.startswith("\"") and k.endswith("\""):
                         try:
                             k = json.loads(k)
-                        except Exception:
+                        except ValueError:
                             k = k[1:-1]
                     pos += 1
                     if pos >= len(tokens) or tokens[pos] != ":":
@@ -173,7 +173,7 @@ def parse_gemma_calls(text: str) -> tuple[str, list[tuple[str, dict]]]:
             elif tok.startswith("\"") and tok.endswith("\""):
                 try:
                     return json.loads(tok), pos + 1
-                except Exception:
+                except ValueError:
                     return tok[1:-1], pos + 1
             elif tok in ("true", "True"):
                 return True, pos + 1
@@ -193,7 +193,7 @@ def parse_gemma_calls(text: str) -> tuple[str, list[tuple[str, dict]]]:
             clean_json = args_raw.replace("<|\"|>", "\"")
             parsed_dict = json.loads(clean_json)
             calls.append((fn_name, parsed_dict))
-        except Exception:
+        except ValueError:
             try:
                 toks = tokenize_gemma_obj(args_raw)
                 parsed_dict, _ = parse_gemma_val(toks, 0)
@@ -201,7 +201,7 @@ def parse_gemma_calls(text: str) -> tuple[str, list[tuple[str, dict]]]:
                     calls.append((fn_name, parsed_dict))
                 else:
                     calls.append((fn_name, {"_raw": args_raw}))
-            except Exception:
+            except Exception:  # noqa: BLE001 -- any parse failure keeps the raw text
                 calls.append((fn_name, {"_raw": args_raw}))
 
     clean_text = "".join(clean_text_parts).strip()
@@ -214,6 +214,7 @@ class GemmaLiteLLMClient(LiteLLMClient):
     async def generate(self, messages, tools):
         import json
         import uuid
+
         from litellm import acompletion
         from litellm.exceptions import ContextWindowExceededError
         from stirrup.clients.litellm_client import (
@@ -222,7 +223,13 @@ class GemmaLiteLLMClient(LiteLLMClient):
             to_openai_tools,
         )
         from stirrup.core.exceptions import ContextOverflowError
-        from stirrup.core.models import AssistantMessage, ReasoningBlock, TextBlock, TokenUsage, ToolCall
+        from stirrup.core.models import (
+            AssistantMessage,
+            ReasoningBlock,
+            TextBlock,
+            TokenUsage,
+            ToolCall,
+        )
 
         max_attempts = 30
         for attempt in range(max_attempts):

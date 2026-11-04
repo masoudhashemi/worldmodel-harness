@@ -1,8 +1,7 @@
 import asyncio
-import json
 
 from pydantic import SecretStr
-from stirrup.core.models import AssistantMessage, ToolCall, ToolMessage
+from stirrup.core.models import ToolCall
 
 from worldmodel_harness import runtime
 from worldmodel_harness.config import ModelSettings
