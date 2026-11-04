@@ -6,6 +6,7 @@ Usage: step_metrics.py <run-dir> <control-arm> <arm> [aa] [--stream]
       no-note   tasks where the arm's repeat pointer never fired (E024)
       no-hint   tasks where the arm showed no source hint (E026, E027)
       not-shown tasks where the graph arm showed nothing
+      arm=NAME  a second control arm of the same run, against the control (a true A/A)
 
   --stream  earlier runs of the run's own workflows are left out of the history, as the
             E022 learning stream's graph did (otherwise every step of a workflow run
@@ -245,9 +246,10 @@ def report(units, rows, per_unit, control, arm, mode, label):
     # 2. Regression against A/A.
     lost, passes, drops, regressed = regressions(rows, tasks, control, arm)
     line = f"2. Regression: strict lost {lost}/{passes} control passes; partial drop >= 0.1 on {drops}/{len(tasks)} tasks"
-    aa = aa_tasks(rows, tasks, arm, mode)
+    other = mode[4:] if mode and mode.startswith("arm=") else arm
+    aa = [t for t in tasks if (t, other) in rows] if other != arm else aa_tasks(rows, tasks, arm, mode)
     if aa:
-        a_lost, a_passes, a_drops, _ = regressions(rows, aa, control, arm)
+        a_lost, a_passes, a_drops, _ = regressions(rows, aa, control, other)
         line += (
             f" | A/A ({mode}, n={len(aa)}): strict lost {a_lost}/{a_passes}, partial drop {a_drops}/{len(aa)}, "
             f"90% upper bound of the drop rate {wilson_upper(a_drops, len(aa)):.0%} (arm: {drops / len(tasks):.0%})"

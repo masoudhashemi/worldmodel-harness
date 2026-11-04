@@ -27,6 +27,7 @@ from worldmodel_harness.experiment import TrialSettings, run_trial
 
 ARMS = {
     "baseline": {},
+    "baseline2": {},  # a second control, for an A/A noise band
     "graph": {"experience": True},
 }
 CONTROL = "baseline"  # the arm the learned policy's outcomes are measured against
