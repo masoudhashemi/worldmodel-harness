@@ -34,7 +34,8 @@ def test_steps_count_exploration_until_each_successful_fetch(tmp_path):
     ])
     index = step_metrics.Index()
     index.add("ops.other", [step_metrics.Step("api_fetch", {"method": "GET", "url": LIST}, "{}", True)])
-    first, second = step_metrics.steps_of("ops.report~v1", path, index)
+    (first, second), unfinished = step_metrics.steps_of("ops.report~v1", path, index)
+    assert unfinished == 0
     assert (first.turns, first.calls, first.searches, first.first_try) == (2, 3, 2, False)
     assert first.level == 2 and first.traced is None  # transition start -> list seen in another workflow
     assert (second.turns, second.calls, second.level) == (0, 0, 0)

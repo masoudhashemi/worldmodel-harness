@@ -11,8 +11,11 @@ Usage: step_metrics.py <run-dir> <control-arm> <arm> [aa] [--stream]
             E022 learning stream's graph did (otherwise every step of a workflow run
             since E016 is "workflow seen").
 
+Every round is a separate pair of trials (task, round), reported per round and pooled.
+Trials that ended in an error stay in the guardrails (as failures) and are counted.
 A step is everything the agent did to reach one successful api_fetch, from the previous
-one. Familiarity is judged against runs that started before this one plus, within this
+one; calls after a trial's last successful api_fetch (unfinished work) are reported
+separately, as are control steps with no step to the same call in the arm (unmatched). Familiarity is judged against runs that started before this one plus, within this
 run, trials of other tasks that ran before the task's first trial (so both arms of a task
 see the same history). Never from grades; grades only give the task guardrails.
 """
@@ -105,7 +108,10 @@ def turns_of(path: Path) -> tuple[str, list[list[Step]]]:
     return query, turns
 
 
-def steps_of(task: str, path: Path, index: Index) -> list[StepRecord]:
+def steps_of(task: str, path: Path, index: Index) -> tuple[list[StepRecord], int]:
+    """The trial's steps, and the calls made after its last successful api_fetch."""
+    if not path.exists():
+        return [], 0
     query, turns = turns_of(path)
     found, history, done = [], [], Counter()
     pending_turns, pending_calls, pending_searches, attempts = 0, 0, 0, defaultdict(list)
@@ -139,7 +145,7 @@ def steps_of(task: str, path: Path, index: Index) -> list[StepRecord]:
             elif call.tool != "finish":
                 pending_calls += 1
             history.append(call)
-    return found
+    return found, pending_calls
 
 
 def start_time(run: Path) -> float:
@@ -156,17 +162,21 @@ def wilson_upper(k: int, n: int) -> float:
     return (centre + spread) / (1 + Z * Z / n)
 
 
-def regressions(rows: dict, tasks: list[str], control: str, arm: str) -> tuple[int, int, int, list[str]]:
+def name(unit: tuple[str, int]) -> str:
+    return f"{unit[0]} r{unit[1]}"
+
+
+def regressions(rows: dict, tasks: list[tuple], control: str, arm: str) -> tuple[int, int, int, list[str]]:
     """(strict losses, control strict passes, partial drops >= 0.1, the tasks that regressed)."""
     lost = [t for t in tasks if rows[(t, control)]["strict_eval"] and not rows[(t, arm)]["strict_eval"]]
     passes = sum(rows[(t, control)]["strict_eval"] for t in tasks)
     drops = [t for t in tasks if rows[(t, arm)]["partial_credit"] <= rows[(t, control)]["partial_credit"] - 0.1]
-    return len(lost), passes, len(drops), sorted(set(lost) | set(drops))
+    return len(lost), passes, len(drops), sorted(name(t) for t in set(lost) | set(drops))
 
 
-def aa_tasks(rows: dict, tasks: list[str], arm: str, mode: str | None) -> list[str]:
+def aa_tasks(rows: dict, tasks: list[tuple], arm: str, mode: str | None) -> list[tuple]:
     if mode == "v1":
-        return [t for t in tasks if t.endswith("~v1")]
+        return [t for t in tasks if t[0].endswith("~v1")]
     if mode == "no-note":
         return [t for t in tasks if not rows[(t, arm)].get("repeat_notes")]
     if mode == "no-hint":
@@ -184,34 +194,42 @@ def main():
     run, control, arm = Path(args[0]), args[1], args[2]
     mode = args[3] if len(args) > 3 else None
     order = json.loads((run / "summary.json").read_text())["results"]
-    rows = {(r["task"], r["arm"]): r for r in order if r["round"] == 0}
-    broken = {r["task"] for r in order if r.get("error_type") and r["arm"] in (control, arm)}
-    tasks = [t for t in dict.fromkeys(r["task"] for r in order) if (t, control) in rows and (t, arm) in rows and t not in broken]
-
+    rows = {((r["task"], r["round"]), r["arm"]): r for r in order}
+    units = [u for u in dict.fromkeys((r["task"], r["round"]) for r in order) if (u, control) in rows and (u, arm) in rows]
+    errors = {a: sum(bool(rows[(u, a)].get("error_type")) for u in units) for a in (control, arm)}
     began = start_time(run)
     earlier = [p for p in Path("runs").iterdir() if p.is_dir() and p != run and start_time(p) < began]
     index = Index()
-    flows = {workflow(t) for t in tasks}
+    flows = {workflow(t) for t, _ in units}
     for e in load(earlier, (lambda t: workflow(t) not in flows) if stream else (lambda t: True)):
         index.add(e.task, e.steps)
 
-    # Within the run: label both arms of a task before any of its trials joins the index.
-    per_task = {}
+    # Within the run: label both arms of a trial pair before either joins the index.
+    per_unit = {}
     for r in order:
-        t = r["task"]
-        if t in tasks and t not in per_task:
-            per_task[t] = {
-                a: steps_of(t, run / "trajectories" / t / f"{a}-r0" / "trajectory.json", index) for a in (control, arm)
+        u = (r["task"], r["round"])
+        if u in units and u not in per_unit:
+            per_unit[u] = {
+                a: steps_of(u[0], run / "trajectories" / u[0] / f"{a}-r{u[1]}" / "trajectory.json", index) for a in (control, arm)
             }
-        path = run / "trajectories" / t / f"{r['arm']}-r{r['round']}" / "trajectory.json"
+        path = run / "trajectories" / r["task"] / f"{r['arm']}-r{r['round']}" / "trajectory.json"
         if path.exists():
-            index.add(t, [s for calls in turns_of(path)[1] for s in calls])
+            index.add(r["task"], [s for calls in turns_of(path)[1] for s in calls])
 
     print(
-        f"== {run.name}: {control} -> {arm}, {len(tasks)} tasks, history from {len(earlier)} earlier runs"
+        f"== {run.name}: {control} -> {arm}, {len({t for t, _ in units})} tasks, {len(units)} trial pairs, history from {len(earlier)} earlier runs"
         + (" without these workflows" if stream else "")
-        + (f" ({len(broken)} excluded: error)" if broken else "")
+        + f", rounds {sorted({rnd for _, rnd in units})}; errors {errors[control]} -> {errors[arm]} (kept, as failures)"
     )
+    rounds = sorted({rnd for _, rnd in units})
+    for rnd in [*rounds, None] if len(rounds) > 1 else [None]:
+        report([u for u in units if rnd is None or u[1] == rnd], rows, per_unit, control, arm, mode,
+               "all rounds" if rnd is None else f"round {rnd}")
+
+
+def report(units, rows, per_unit, control, arm, mode, label):
+    tasks = units
+    print(f"-- {label}: {len(units)} trial pairs")
 
     # 1. Task guardrails.
     def m(a, k, f=st.mean):
@@ -242,14 +260,14 @@ def main():
     print("3. Steps by familiarity (control -> arm):")
     print("   level                 steps     expl.turns/step  expl.calls/step  searches/step  first-try  traced   paired-step d.turns (n)")
     for level, name in enumerate(LEVELS):
-        cs = [s for t in tasks for s in per_task[t][control] if s.level == level]
-        rs = [s for t in tasks for s in per_task[t][arm] if s.level == level]
+        cs = [s for t in tasks for s in per_unit[t][control][0] if s.level == level]
+        rs = [s for t in tasks for s in per_unit[t][arm][0] if s.level == level]
         if not cs and not rs:
             continue
         pairs = []
         for t in tasks:
-            mine = {(s.target, s.occurrence): s for s in per_task[t][arm]}
-            for s in per_task[t][control]:
+            mine = {(s.target, s.occurrence): s for s in per_unit[t][arm][0]}
+            for s in per_unit[t][control][0]:
                 if s.level == level and (s.target, s.occurrence) in mine:
                     pairs.append(mine[(s.target, s.occurrence)].turns - s.turns)
 
@@ -261,8 +279,15 @@ def main():
             f"   {name:20s} {len(cs):4d}->{len(rs):<4d}  {avg(cs, 'turns'):5.2f}->{avg(rs, 'turns'):<5.2f}      "
             f"{avg(cs, 'calls'):5.2f}->{avg(rs, 'calls'):<5.2f}     {avg(cs, 'searches'):5.2f}->{avg(rs, 'searches'):<5.2f}   "
             f"{avg(cs, 'first_try'):.0%}->{avg(rs, 'first_try'):<4.0%}  {avg(cs, 'traced'):.0%}->{avg(rs, 'traced'):<4.0%} "
-            f"{(st.mean(pairs) if pairs else float('nan')):+.2f} ({len(pairs)})"
+            f"{(st.mean(pairs) if pairs else float('nan')):+.2f} ({len(pairs)}; {len(cs) - len(pairs)} unmatched)"
         )
+    tail = {a: [per_unit[t][a][1] for t in tasks] for a in (control, arm)}
+    print(
+        f"4. Unfinished: calls after the last successful fetch {sum(tail[control])} -> {sum(tail[arm])} "
+        f"(mean {st.mean(tail[control]):.1f} -> {st.mean(tail[arm]):.1f} per trial); "
+        f"environment calls per trial {st.mean(rows[(t, control)]['environment_calls'] for t in tasks):.1f} -> "
+        f"{st.mean(rows[(t, arm)]['environment_calls'] for t in tasks):.1f}"
+    )
 
 
 if __name__ == "__main__":

@@ -75,6 +75,19 @@ still on `world-model-v2`.
 | API-version regex for URLs | hand-made; versions are now learned as constants across workflows |
 | Advisory note, generic checklist, entity-ledger review, v1 claim store (E007–E017) | earlier designs, not graph-based |
 
+## Measurement
+
+- An episode holds only the calls that reached the environment. The agent's `finish` call and
+  calls the harness blocked for not matching the tool schema are left out, so the advisor's
+  log steps index the episode. Each graph trial records `advisor_calls`; a trial whose trace
+  disagrees with it is not learned from by the policy.
+- `<out>/history.json` lists the trajectories the graph started from, so a resumed run starts
+  from the same history.
+- `step_metrics.py` reports every round and the rounds pooled. Trials that ended in an error
+  stay in the guardrails as failures. It also reports calls after a trial's last successful
+  fetch, and control steps with no matching step in the arm.
+- When a cut-off reply is retried, the tokens of both attempts are counted.
+
 **Kept as plumbing, the same in every arm:**
 - Gemma text tool-call parsing, and schema-error feedback (`repairing_agent.py`);
 - the output cap with one retry after a cut-off reply (`runtime.py`);

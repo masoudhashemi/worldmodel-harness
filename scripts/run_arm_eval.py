@@ -2,7 +2,8 @@
 
 The arms run back to back per task, in an order rotated across tasks, for the given
 number of rounds. The graph starts from every earlier run under runs/ (or, with
---unseen, from earlier runs outside these tasks' workflows) and learns from each of its
+--unseen, from earlier runs outside these tasks' workflows), listed in <out>/history.json
+when the run starts so a resume starts from the same history, and learns from each of its
 own trials once both arms of a task have run, from tool calls and results only. In the
 graph arm a learned policy decides which kinds of message each trial is shown
 (core/policy.py); it learns from the graph arm's own trials of this run, each measured
@@ -18,7 +19,7 @@ import time
 from pathlib import Path
 
 from worldmodel_harness.automationbench.domain import HttpDomain
-from worldmodel_harness.automationbench.traces import episode, load
+from worldmodel_harness.automationbench.traces import episode, episodes, trajectories
 from worldmodel_harness.core.graph import Graph, workflow
 from worldmodel_harness.core.lifting import lift_query
 from worldmodel_harness.core.policy import LearnedPolicy
@@ -34,9 +35,15 @@ CONTROL = "baseline"  # the arm the learned policy's outcomes are measured again
 def experience_graph(out: Path, tasks: list[str], rows: list[dict], arm: str, paired: bool, unseen: bool) -> tuple[Graph, LearnedPolicy]:
     """The graph at the start of the run, then the arm's own trials so far, in order (so a
     resumed run is the same), and the policy learned from those trials."""
-    flows = {workflow(t) for t in tasks}
-    others = [p for p in Path("runs").iterdir() if p.is_dir() and p.resolve() != out.resolve()]
-    graph = Graph(HttpDomain(), load(others, (lambda t: workflow(t) not in flows) if unseen else (lambda t: True)))
+    manifest = out / "history.json"
+    if manifest.exists():
+        history = json.loads(manifest.read_text())["trajectories"]
+    else:
+        flows = {workflow(t) for t in tasks}
+        others = [p for p in Path("runs").iterdir() if p.is_dir() and p.resolve() != out.resolve()]
+        history = trajectories(others, (lambda t: workflow(t) not in flows) if unseen else (lambda t: True))
+        manifest.write_text(json.dumps({"trajectories": history}, indent=1))
+    graph = Graph(HttpDomain(), episodes(history))
     policy = LearnedPolicy(graph.domain)
     done = {(r["task"], r["arm"], r["round"]) for r in rows}
     for row in rows:
@@ -55,8 +62,11 @@ def learn(graph: Graph, policy: LearnedPolicy, out: Path, task: str, rnd: int, a
     graph.add(found)
     other = out / "trajectories" / task / f"{CONTROL}-r{rnd}" / "trajectory.json"
     control = episode(other, task) if other.exists() else None
-    result = folder / "result.json"
-    log = json.loads(result.read_text()).get("experience", []) if result.exists() else []
+    result = json.loads((folder / "result.json").read_text()) if (folder / "result.json").exists() else {}
+    log = result.get("experience", [])
+    if result.get("advisor_calls", len(found.steps)) != len(found.steps):
+        print(f"  (policy: {task} r{rnd} skipped, its trace and the advisor's calls differ)", flush=True)
+        return
     if control:
         policy.learn(lift_query(found.query)[0], log, found.steps, control.steps)
 

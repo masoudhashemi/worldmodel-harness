@@ -84,7 +84,8 @@ def test_runaway_reply_is_retried_once_with_the_defect_named(monkeypatch):
         cut = len(sent) == 1 or replies == "always"
         content = "word " * 50 if cut else '<|tool_call>call:finish{summary:<|"|>done<|"|>}<tool_call|>'
         choice = {"finish_reason": "length" if cut else "stop", "message": {"role": "assistant", "content": content}}
-        return litellm.ModelResponse(choices=[choice])
+        usage = {"prompt_tokens": 100 * len(sent), "completion_tokens": 64 if cut else 10}
+        return litellm.ModelResponse(choices=[choice], usage=usage)
 
     monkeypatch.setattr(litellm, "acompletion", fake)
     client = runtime.GemmaLiteLLMClient(
@@ -95,7 +96,9 @@ def test_runaway_reply_is_retried_once_with_the_defect_named(monkeypatch):
     message = asyncio.run(client.generate(task, {}))
     assert len(sent) == 2 and sent[1][-1]["content"][0]["text"] == runtime.RUNAWAY_NOTE
     assert [b.name for b in message.blocks if isinstance(b, ToolCall)] == ["finish"]
+    assert (message.token_usage.input, message.token_usage.answer) == (300, 74)  # both attempts
     sent.clear()
     replies = "always"
     message = asyncio.run(client.generate(task, {}))
     assert len(sent) == 2 and message.blocks[0].text == ""
+    assert (message.token_usage.input, message.token_usage.answer) == (300, 128)

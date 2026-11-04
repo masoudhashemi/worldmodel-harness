@@ -133,5 +133,7 @@ async def run_trial(
     result.update(adapter.score())
     result["grading_details"] = adapter.grading_details()
     result["ledger"] = asdict(ledger)
+    if adapter.advisor is not None:  # the calls the advisor saw, to check logs against traces
+        result["advisor_calls"] = len(adapter.advisor.steps)
     (output_dir / "result.json").write_text(json.dumps(result, indent=2) + "\n")
     return result

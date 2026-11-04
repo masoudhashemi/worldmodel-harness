@@ -260,17 +260,24 @@ class GemmaLiteLLMClient(LiteLLMClient):
                     continue
                 raise
 
+        usage = r.get("usage") or {}
+        details = usage.get("completion_tokens_details")
+        token_usage = TokenUsage(
+            input=usage.get("prompt_tokens") or 0,
+            answer=usage.get("completion_tokens") or 0,
+            reasoning=(details.get("reasoning_tokens") or 0) if isinstance(details, dict) else 0,
+        )
         choice = r["choices"][0]
         if choice.finish_reason in ("max_tokens", "length"):
             # At temperature 0 Gemma can repeat one phrase inside a tool argument until the
             # limit. Retry once with the defect named; if it repeats, return an empty turn
-            # so the agent continues instead of the trial failing.
+            # so the agent continues instead of the trial failing. The tokens of every
+            # attempt are counted.
             if not any(getattr(m, "content", None) == RUNAWAY_NOTE for m in messages[-1:]):
-                return await self.generate([*messages, UserMessage(content=RUNAWAY_NOTE)], tools)
-            return AssistantMessage(
-                blocks=[TextBlock(text="")],
-                token_usage=TokenUsage(answer=(r.get("usage") or {}).get("completion_tokens") or 0),
-            )
+                retry = await self.generate([*messages, UserMessage(content=RUNAWAY_NOTE)], tools)
+                retry.token_usage = (retry.token_usage or TokenUsage()) + token_usage
+                return retry
+            return AssistantMessage(blocks=[TextBlock(text="")], token_usage=token_usage)
         msg = choice["message"]
         blocks = list(_parse_thinking_blocks(getattr(msg, "thinking_blocks", None)))
         if not blocks and getattr(msg, "reasoning_content", None) is not None:
@@ -296,14 +303,6 @@ class GemmaLiteLLMClient(LiteLLMClient):
                     arguments=tc["function"]["arguments"],
                 )
             )
-        usage = r.get("usage") or {}
-        token_usage = TokenUsage(
-            input=usage.get("prompt_tokens") or 0,
-            answer=usage.get("completion_tokens") or 0,
-            reasoning=getattr(usage.get("completion_tokens_details") or {}, "reasoning_tokens", 0)
-            if isinstance(usage.get("completion_tokens_details"), dict)
-            else 0,
-        )
         return AssistantMessage(blocks=blocks, token_usage=token_usage)
 
 
