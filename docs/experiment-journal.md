@@ -1522,6 +1522,46 @@ The familiar-step gain is clear. The graph arm also made more steps in total (85
 
 **Verdict: inconclusive, and the policy's learning signal is too confounded to trust.** Familiar steps improved, as in E022–E029. Accuracy is flat, and the no-regression check is not met against the earlier A/A bands. The next step is generic machinery, not a hand rule: measure each kind's outcome against a matched control (the baseline trial of the same task, as in E035, from tool calls only), and use more rounds so that per-template comparisons exist.
 
+## E039 — Replication of E038 with an A/A Arm (Live, 2026-11-05)
+
+`runs/e039-aa-replicate`, the same 51 tasks × 2 rounds, three arms: `baseline` (the control), `baseline2` (the same settings; it measures noise) and `graph`. Code `dfdab27`, the same learning code as E038. The graph starts from 32 earlier runs, now including E038. Measured with `step_metrics.py runs/e039-aa-replicate baseline graph arm=baseline2`.
+
+**Task guardrails.**
+
+| | baseline | baseline2 (A/A) | graph |
+|---|:-:|:-:|:-:|
+| Strict, round 0 / 1 / pooled | 11 / 11 / 22 | 13 / 11 / 24 | 13 / 8 / 21 |
+| Partial, pooled | 0.38 | 0.40 | 0.43 |
+| Rises / drops ≥ 0.1 vs baseline, pooled | n/a | 10 / 11 | 28 / 21 |
+| Strict passes lost vs baseline | n/a | 2 / 22 | 10 / 22 |
+| Environment calls per trial | 48.1 | n/a | 43.3 |
+| Calls after the last successful fetch | 15.7 | n/a | 10.5 |
+| Turns | 32.3 | 33.4 | 28.4 |
+
+**Regression against the measured noise band.**
+
+| | Graph drops | A/A drops | A/A 90% upper bound | Verdict |
+|---|:-:|:-:|:-:|:-:|
+| Round 0 | 9/51 (18%) | 6/51 | 19% | inside |
+| Round 1 | 12/51 (24%) | 5/51 | 16% | outside |
+| Pooled | 21/102 (21%) | 11/102 | 15% | outside |
+
+**Steps (F3, workflow seen).** Exploration turns per step 0.60 → 0.28, paired −0.27 (n=988; −0.21 and −0.31 per round). Searches per step 0.92 → 0.32. Written values found rather than made up: 58% → 52%, lower in both rounds.
+
+**The recurring regression, diagnosed (grades and trajectories, for diagnosis only).**
+- operations.twilio_production_incident v2 regressed in the graph arm in all 6 of its trials across E037–E039, and never in 10 baseline trials. Each time, after its reads, the agent sends the Twilio, Jira, Notion and Slack writes with no body at all, about 35 times over (210–234 writes). The environment accepts a body-less Twilio POST as a success with empty fields, so nothing tells the agent it is wrong. The same loop hit v3 once (E039 r1).
+- In every one of these trials, the `unmade` hint was shown before the first write: "runs made POST https://api.twilio.com/.../Messages.json and then POST .../Calls.json". It names write calls without their bodies. In E038 r0 it was the only kind shown, and the loop still happened.
+- The policy measures the outcome against the matched control, so these trials score about +200 calls when unmade is shown. But a per-template estimate needs 2 runs on each side, and the policy starts empty in every run. It only sees one or two twilio v2 trials per run before the end, so it never holds unmade back for this template.
+- Twilio v1–v3 account for 5 of the 10 lost strict passes; petty_cash_reconciliation v1 (both rounds) accounts for 2 more.
+
+**Policy.** At the end of the run, kind-level estimates show no difference beyond 1 se for any kind (plan −3.2 vs −5.8, sources −4.5 vs −4.1, unmade −0.4 vs −6.8, recovery −5.4 vs +10.3). Round 1 showed plan in 30/51, sources in 32/45, unmade in 5/45 and recovery in 24/25. E038's preference for plan and sources did not replicate as clearly.
+
+**Verdict: E038's gain does not replicate as non-inferior.** Against a noise band measured in the same run, the graph arm makes more tasks better (28 against 10) and more tasks worse (21 against 11). Pooled partial credit is +0.05 against the control and +0.03 against the second baseline. Strict is 21 against 22 and 24. The familiar-step gain replicates. Part of E038's accuracy gain was its weak baseline round. The clearest harm is a systematic one: a body-less write loop on one workflow, after hints that name writes without their arguments.
+
+Next, from generic machinery, not a hand rule:
+- carry the policy's outcomes across runs, so that per-template evidence accumulates (twilio v2 has 6 shown trials at about +200 calls each);
+- possibly, show a write in hints with its learned argument shape (its slots and their sources), as plan lines already do.
+
 ## E038 — Writes Guard, Confident Fills, Trimmed Episodes (Live, 2026-11-04)
 
 `runs/e038-writes-guard`, the same 51 tasks × 2 rounds as E037, baseline vs the graph arm, code `c93b769`. Changes since E037:
