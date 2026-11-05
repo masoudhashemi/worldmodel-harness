@@ -6,8 +6,9 @@ number of rounds. The graph starts from every earlier run under runs/ (or, with
 when the run starts so a resume starts from the same history, and learns from each of its
 own trials once both arms of a task have run, from tool calls and results only. In the
 graph arm a learned policy decides which kinds of message each trial is shown
-(core/policy.py); it learns from the graph arm's own trials of this run, each measured
-against the same task's baseline trial. Results are appended to
+(core/policy.py); it learns from the graph arm's trials of earlier runs (those that record
+the advisor's call count, listed in history.json too) and of this run, each measured
+against the same task's baseline trial of the same run and round. Results are appended to
 <out>/summary.json, so an interrupted run resumes where it stopped.
 Usage: run_arm_eval.py <out-dir> <tasks.json> [rounds] [arm,arm,...] [--unseen]
 """
@@ -38,14 +39,19 @@ def experience_graph(out: Path, tasks: list[str], rows: list[dict], arm: str, pa
     resumed run is the same), and the policy learned from those trials."""
     manifest = out / "history.json"
     if manifest.exists():
-        history = json.loads(manifest.read_text())["trajectories"]
+        listed = json.loads(manifest.read_text())
+        history, trials = listed["trajectories"], listed.get("policy_trials", [])
     else:
         flows = {workflow(t) for t in tasks}
-        others = [p for p in Path("runs").iterdir() if p.is_dir() and p.resolve() != out.resolve()]
-        history = trajectories(others, (lambda t: workflow(t) not in flows) if unseen else (lambda t: True))
-        manifest.write_text(json.dumps({"trajectories": history}, indent=1))
+        keep = (lambda t: workflow(t) not in flows) if unseen else (lambda t: True)
+        others = sorted(p for p in Path("runs").iterdir() if p.is_dir() and p.resolve() != out.resolve())
+        history = trajectories(others, keep)
+        trials = earlier_trials(others, arm, keep)
+        manifest.write_text(json.dumps({"trajectories": history, "policy_trials": trials}, indent=1))
     graph = Graph(HttpDomain(), episodes(history))
     policy = LearnedPolicy(graph.domain)
+    for run, task, rnd in trials:  # already in the graph through the history
+        learn(graph, policy, Path(run), task, rnd, arm, add=False)
     done = {(r["task"], r["arm"], r["round"]) for r in rows}
     for row in rows:
         if row["arm"] == arm and (not paired or (row["task"], CONTROL, row["round"]) in done):
@@ -53,14 +59,28 @@ def experience_graph(out: Path, tasks: list[str], rows: list[dict], arm: str, pa
     return graph, policy
 
 
-def learn(graph: Graph, policy: LearnedPolicy, out: Path, task: str, rnd: int, arm: str):
+def earlier_trials(runs: list[Path], arm: str, keep) -> list[tuple[str, str, int]]:
+    """(run, task, round) of the arm's trials in earlier runs that the policy can learn
+    from: the advisor's call count is recorded and the run has the control trial."""
+    found = []
+    for run in runs:
+        for result in sorted(run.glob(f"trajectories/*/{arm}-r*/result.json")):
+            task, rnd = result.parent.parent.name, int(result.parent.name.rsplit("-r", 1)[1])
+            control = run / "trajectories" / task / f"{CONTROL}-r{rnd}" / "trajectory.json"
+            if keep(task) and control.exists() and "advisor_calls" in json.loads(result.read_text()):
+                found.append((str(run), task, rnd))
+    return found
+
+
+def learn(graph: Graph, policy: LearnedPolicy, out: Path, task: str, rnd: int, arm: str, add: bool = True):
     """Add one trial to the graph, and to the policy against the task's control trial,
     from tool calls and results only."""
     folder = out / "trajectories" / task / f"{arm}-r{rnd}"
     found = episode(folder / "trajectory.json", task)
     if not found or not found.steps:
         return
-    graph.add(found)
+    if add:
+        graph.add(found)
     other = out / "trajectories" / task / f"{CONTROL}-r{rnd}" / "trajectory.json"
     control = episode(other, task) if other.exists() else None
     result = json.loads((folder / "result.json").read_text()) if (folder / "result.json").exists() else {}

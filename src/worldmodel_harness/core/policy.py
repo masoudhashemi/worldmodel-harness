@@ -13,7 +13,10 @@ from tool calls only:
   calls are only a gain if the work is still done; without this, a message that made the
   agent stop early would look best.
 Shown and held-back runs are compared per (query template, kind), falling back to the
-kind across templates. The decision is Thompson sampling on calls: the kind is shown with
+kind across templates only while the template has too few runs on both sides. A template
+with enough runs on one side only is explored (1/2) until the other side has them too, so
+its own evidence is not hidden by the kind's average (E039: one template lost every shown
+run, while the kind as a whole looked neutral). The decision is Thompson sampling on calls: the kind is shown with
 the probability that showing it leaves fewer calls, drawn from the posterior of the
 difference of the two means (Student t, pooled variance), so it keeps exploring while the
 evidence is weak and a single long run cannot lock it in (E036). It is held back when
@@ -105,9 +108,12 @@ class LearnedPolicy:
                 self.records[key][0 if shown else 1].append((calls, writes))
 
     def estimate(self, template: str, kind: str) -> Estimate | None:
-        """From the most specific key with MIN_RUNS on both sides, or None."""
+        """From the most specific key with MIN_RUNS on both sides, or None: also None when
+        the template has MIN_RUNS on one side only, so that it is explored."""
         for key in ((template, kind), ("*", kind)):
             shown, held = self.records.get(key, ([], []))
+            if key[0] != "*" and max(len(shown), len(held)) >= MIN_RUNS > min(len(shown), len(held)):
+                return None
             if len(shown) >= MIN_RUNS and len(held) >= MIN_RUNS:
                 _, se = _difference([c for c, _ in shown], [c for c, _ in held])
                 writes, writes_se = _difference([w for _, w in shown], [w for _, w in held])

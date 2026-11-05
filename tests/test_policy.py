@@ -79,6 +79,21 @@ def test_falls_back_to_the_kind_across_templates_and_is_seeded_by_task():
     assert a.show("sources", "new template", "s", "x") == b.show("sources", "new template", "s", "x")
 
 
+def test_a_template_with_runs_on_one_side_only_is_explored_not_averaged_away():
+    policy = LearnedPolicy(D)
+    for n in range(MIN_RUNS):
+        learn(policy, f"U{n}", "unmade", True, 3, 5)
+        learn(policy, f"V{n}", "unmade", False, 5, 3)
+    for _ in range(MIN_RUNS):
+        learn(policy, "T", "unmade", True, 200, 10)  # this template only ever shown, and badly
+    assert policy.estimate("T", "unmade") is None
+    assert policy.estimate("new template", "unmade") is not None
+    learn(policy, "T", "unmade", False, 10, 10)
+    learn(policy, "T", "unmade", False, 11, 10)
+    e = policy.estimate("T", "unmade")
+    assert (e.n_shown, e.n_held) == (MIN_RUNS, 2) and e.shown > e.held
+
+
 def test_a_shown_kind_is_shown_when_its_text_changes_and_decided_once_per_run():
     policy = LearnedPolicy(D)
     for n in range(MIN_RUNS):

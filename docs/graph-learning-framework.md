@@ -54,8 +54,13 @@ whether it was shown and the step it followed.
     decisions flip.
   - *Writes*: the distinct successful writes the run still made, minus the control's. Fewer
     calls are only a gain if the work is still done.
-- **Comparison.** Shown runs against held-back runs, per (query template, kind), falling back
-  to the kind.
+- **Comparison.** Shown runs against held-back runs, per (query template, kind). It falls back
+  to the kind only while the template has too few runs on both sides. A template with
+  enough runs on one side only is explored until the other side has them too, so its own
+  evidence is not averaged away (E039).
+- **Memory.** The policy learns from the graph trials of earlier runs too, each against the
+  baseline trial of its own run and round. Only trials that record the advisor's call count
+  qualify (E038 on). They are listed in `history.json` as `policy_trials`.
 - **Decision.** Thompson sampling on calls: show with the probability that showing leaves
   fewer calls, from a Student t posterior of the difference of the means. Held back when
   showing makes fewer writes beyond the graph's confidence level (`Z`), the same
